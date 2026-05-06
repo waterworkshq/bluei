@@ -1,0 +1,23 @@
+id: plugin-test
+name: Test Plugin
+version: 1.0.0
+author: Red
+
+languages:
+  - test
+
+requires_container: false
+
+discovery:
+  rules:
+    - id: test-rule
+      category: bug
+      confidence: 0.85
+      autofix: true
+
+validation:
+  baseline_checks: []
+
+detection:
+  files:
+    - test.txt

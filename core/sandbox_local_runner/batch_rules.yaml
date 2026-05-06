@@ -1,0 +1,58 @@
+# Batch PR grouping rules
+# Each rule defines how findings matching a pattern should be batched.
+# Isolation patterns force findings to remain solo (never batched).
+
+rules:
+  # Cross-rule "housekeeping" batch — groups all ruff style fixes
+  - rule_pattern: "ruff-*"
+    enabled: false  # opt-in, disabled by default
+    group_by: "cross-rule"
+    max_batch_size: 30
+    max_files_per_batch: 20
+    max_loc_per_batch: 1000
+    severity: "low"
+    isolation:
+      file_patterns:
+        - "**/migrations/*.py"
+        - "**/middleware*.py"
+    priority: 10
+
+  # Individual rules (per-rule batching)
+  - rule_pattern: "ruff-c408"
+    enabled: true
+    group_by: "rule"
+    max_batch_size: 20
+    max_files_per_batch: 15
+    max_loc_per_batch: 500
+    severity: "normal"
+    isolation:
+      file_patterns:
+        - "**/migrations/*.py"
+    priority: 1
+
+  - rule_pattern: "ruff-b904"
+    enabled: true
+    group_by: "rule"
+    max_batch_size: 15
+    max_files_per_batch: 10
+    max_loc_per_batch: 300
+    severity: "normal"
+    isolation:
+      file_patterns:
+        - "**/middleware*.py"
+    priority: 2
+
+  - rule_pattern: "ruff-b007"
+    enabled: true
+    group_by: "rule"
+    max_batch_size: 10
+    severity: "low"
+    priority: 3
+
+  - rule_pattern: "ruff-s311"
+    enabled: true
+    group_by: "file"
+    max_batch_size: 10
+    max_files_per_batch: 5
+    severity: "high"  # security-related, keep batches small
+    priority: 4

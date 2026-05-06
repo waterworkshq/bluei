@@ -1,0 +1,46 @@
+# QA Agent Repository Configuration
+# Generated from template
+
+repo:
+  id: {{ id }}
+  name: {{ name }}
+  path: {{ path }}
+  language: {{ language }}
+  framework: {{ framework }}
+  enabled: true
+  plugin_id: {{ plugin_id }}
+
+discovery:
+  internal: true
+  external_script: null
+  skip_internal: false
+
+rules:
+  enabled: null
+  disabled: []
+
+fix:
+  engine: deterministic
+  claude_template: ''
+
+validation:
+  baseline_checks: []
+  allow_unchanged_baseline_failures: true
+
+limits:
+  open_issues_cap: 20
+  open_prs_cap: 5
+  max_prs_per_run: 2
+  max_issues_per_run: 10
+  max_files_changed: 5
+  max_loc_diff: 200
+  max_fix_attempts: 3
+
+cooldowns:
+  finding_seconds: 14400
+  merge_minutes: 30
+  staleness_seconds: 7200
+
+github:
+  live_actions: false
+  auto_merge: false

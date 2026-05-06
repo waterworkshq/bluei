@@ -1,0 +1,44 @@
+{
+  "name": "qa-agent",
+  "version": "2.5.0",
+  "description": "Standalone autonomous repository QA — discovers issues, creates PRs, manages code health.",
+  "note": "NPM package name is a placeholder. Rename before publishing (see README).",
+  "bin": {
+    "qa-agent": "./bin/qa-agent.js"
+  },
+  "scripts": {
+    "postinstall": "node bin/qa-agent.js init || true"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "files": [
+    "qa-agent",
+    "qa_agent/",
+    "core/",
+    "scripts/",
+    "templates/",
+    "plugins/",
+    "bin/",
+    "CHANGELOG.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "qa",
+    "code-review",
+    "github",
+    "automation",
+    "quality-assurance",
+    "autonomous"
+  ],
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vikasagarwal101/qa-agent"
+  }
+}

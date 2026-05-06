@@ -1,0 +1,57 @@
+id: plugin-typescript
+name: TypeScript/JavaScript Plugin
+version: 1.0.0
+author: Red
+
+languages:
+  - typescript
+  - javascript
+
+requires_container: true
+container_name: null
+
+discovery:
+  rules:
+    - id: xo-max-lines
+      category: refactor
+      confidence: 0.85
+      autofix: true
+      claude_required: true
+      
+    - id: xo-complexity
+      category: refactor
+      confidence: 0.82
+      autofix: true
+      claude_required: true
+      
+    - id: xo-no-warning-comments
+      category: lint
+      confidence: 0.80
+      autofix: true
+      
+    - id: type-explicit-any
+      category: type-safety
+      confidence: 0.85
+      autofix: true
+      
+    - id: type-missing-return
+      category: type-safety
+      confidence: 0.80
+      autofix: true
+      claude_required: true
+      
+    - id: test-coverage-branch
+      category: test-coverage
+      confidence: 0.82
+      autofix: true
+      claude_required: true
+
+validation:
+  baseline_checks:
+    - ["npm", "test"]
+    - ["npm", "run", "lint"]
+
+detection:
+  files:
+    - tsconfig.json
+    - package.json

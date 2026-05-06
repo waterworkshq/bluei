@@ -1,0 +1,17 @@
+repos:
+- enabled: true
+  id: repo-qa-sandbox
+  language: python
+  name: qa-sandbox
+  path: /home/vikas/.openclaw/workspace/qa-sandbox-repo
+- enabled: true
+  id: repo-ky
+  language: typescript
+  name: ky
+  path: /home/vikas/.openclaw/workspace/phase2/ky
+- enabled: true
+  id: repo-20260320000242-440a9a10
+  language: typescript
+  name: zulip
+  path: /home/vikas/.openclaw/workspace/zulip
+version: '1.0'

@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.bak
+
+# Runtime state (per-repo, not source)
+repos/
+state-archive/
+locks/*.lock
+*.tmp
+
+# Sandbox artifacts
+sandbox-state.json
+sandbox-trial-status.json
+
+# Logs
+logs/
+
+# Node
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+claude/
+claude/
+opencode/
+phase2/

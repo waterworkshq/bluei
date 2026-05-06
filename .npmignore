@@ -1,0 +1,34 @@
+# Dependencies (installed at npm install)
+node_modules/
+
+# Test files
+tests/
+*.test.js
+*.test.py
+
+# Cache
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# CI/Dev artifacts
+.locks/
+logs/
+reports/
+docs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Temporary
+*.tmp
+*.swp
+*.swo
+
+# Not needed in published package
+.github/
+CONTRIBUTING.md
+scripts/test-all.sh

@@ -1,0 +1,47 @@
+id: plugin-python
+name: Python Plugin
+version: 1.0.0
+author: Red
+
+languages:
+  - python
+
+requires_container: false
+
+discovery:
+  rules:
+    - id: discount-math-sign
+      category: bug
+      confidence: 0.95
+      autofix: true
+      
+    - id: catalog-query-not-normalized
+      category: bug
+      confidence: 0.93
+      autofix: true
+      
+    - id: broad-except
+      category: lint
+      confidence: 0.88
+      autofix: false
+      
+    - id: trailing-whitespace
+      category: lint
+      confidence: 0.75
+      autofix: true
+      
+    - id: perf-pop-front-loop
+      category: perf-smell
+      confidence: 0.83
+      autofix: true
+
+validation:
+  baseline_checks:
+    - ["python3", "-m", "pytest", "-q"]
+
+detection:
+  files:
+    - setup.py
+    - pyproject.toml
+    - requirements.txt
+    - Pipfile

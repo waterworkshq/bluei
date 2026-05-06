@@ -1,0 +1,1297 @@
+#!/usr/bin/env python3
+"""QA Agent CLI entry point."""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent))
+
+from qa_agent import __version__
+from qa_agent.config import ConfigManager
+from qa_agent.registry import RepoRegistry
+from qa_agent.health import HealthEngine
+from qa_agent.state import StateManager
+from qa_agent.plugins import PluginLoader
+from qa_agent.onboard import OnboardEngine, OnboardOptions
+from qa_agent.runner import RunEngine, RunOptions
+from qa_agent.models import RepoStatus, SafetyMode
+from qa_agent.healer import TransientArtifactHealer
+
+
+def _status_icon(status):
+    return {
+        RepoStatus.READY: '✅',
+        RepoStatus.RUNNING: '🏃',
+        RepoStatus.PAUSED: '⏸️',
+        RepoStatus.ERROR: '❌',
+        RepoStatus.IDLE: '💤',
+        RepoStatus.ONBOARDING: '🔄',
+    }.get(status, '❓')
+
+
+def _health_icon(score: float) -> str:
+    if score >= 70:
+        return '🟢'
+    if score >= 50:
+        return '🟡'
+    return '🔴'
+
+
+def _load_recent_runs(state: StateManager, repo_name: str, limit: int = 5):
+    return state.list_runs(repo_name, limit=limit)
+
+
+def _load_status_artifact(state: StateManager, repo_name: str) -> dict:
+    status_file = state._get_state_dir(repo_name) / 'status.json'
+    if not status_file.exists():
+        return {}
+    try:
+        return json.loads(status_file.read_text())
+    except Exception:
+        return {}
+
+
+def _fmt_ts(value: str | None) -> str:
+    if not value:
+        return 'never'
+    try:
+        dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        return dt.astimezone().strftime('%Y-%m-%d %H:%M')
+    except Exception:
+        return value
+
+
+def _whatsapp_repo_summary(repo, recent_runs, status_artifact=None):
+    last_run = recent_runs[0] if recent_runs else None
+    last_phase = last_run.get('phase') if last_run else 'n/a'
+    last_status = last_run.get('status') if last_run else repo.status.value
+    lines = [
+        f"{_status_icon(repo.status)} {repo.config.name}",
+        f"Health: {_health_icon(repo.current_health_score)} {repo.current_health_score:.1f}/100",
+        f"Findings: {repo.current_findings_count} | Fixes: {repo.total_fixes} | PRs: {repo.total_prs} | Merges: {repo.total_merges}",
+        f"Last: {last_phase} -> {last_status} @ {_fmt_ts(repo.last_run_at)}",
+    ]
+    review = (status_artifact or {}).get('review_care') or {}
+    if review:
+        lines.append(
+            f"Review: active {review.get('active_managed_prs', 0)} | blocked {review.get('review_blocked_prs', 0)} | planned {review.get('retry_planned_prs', 0)} | prepared {review.get('retry_prepared_prs', 0)} | executed {review.get('retry_executed_prs', 0)} | pending-push {review.get('pending_push_prs', 0)} | push-failed {review.get('failed_push_prs', 0)} | exhausted {review.get('retry_exhausted_prs', 0)} | ready {review.get('merge_ready_prs', 0)}"
+        )
+    return '\n'.join(lines)
+
+
+def _text_report_summary(repo, findings, issues, runs, days: int, review_care: dict = None) -> str:
+    open_issues = len([x for x in issues.get('issues', []) if x.get('status') == 'open'])
+    created_prs = sum(int(run.get('prs_created', 0)) for run in runs)
+    verified_fixes = sum(int(run.get('fixes_verified', 0)) for run in runs)
+    failures = [run for run in runs if run.get('status') not in {'completed', 'ok'}]
+    lines = [
+        f"QA report: {repo.config.name}",
+        f"Health: {repo.current_health_score:.1f}/100 | Findings: {len(findings)} | Open issues: {open_issues}",
+        f"Last {days}d runs: {len(runs)} | Verified fixes: {verified_fixes} | PRs created: {created_prs}",
+    ]
+    if failures:
+        lines.append(f"Recent failures: {len(failures)} (latest: {failures[0].get('phase')} -> {failures[0].get('status')})")
+    if runs:
+        latest = runs[0]
+        lines.append(f"Latest run: {latest.get('phase')} -> {latest.get('status')} @ {_fmt_ts(latest.get('ended_at') or latest.get('started_at'))}")
+    if review_care and review_care.get('active_managed_prs', 0) > 0:
+        lines.append(
+            f"Review care: active={review_care.get('active_managed_prs')} blocked={review_care.get('review_blocked_prs')} "
+            f"pending-push={review_care.get('pending_push_prs', 0)} push-failed={review_care.get('failed_push_prs', 0)} "
+            f"exhausted={review_care.get('retry_exhausted_prs')} ready={review_care.get('merge_ready_prs')}"
+        )
+    return '\n'.join(lines)
+
+
+def _doctor_check(name: str, ok: bool, detail: str) -> dict:
+    return {'name': name, 'ok': ok, 'detail': detail}
+
+
+def _run_shell(command: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ['bash', '-lc', command],
+        cwd=str(cwd) if cwd else None,
+        text=True,
+        capture_output=True,
+    )
+
+
+def _package_manager_hints(repo_path: Path) -> list[str]:
+    hints = []
+    if (repo_path / 'pnpm-lock.yaml').exists():
+        hints.append('pnpm')
+    if (repo_path / 'package-lock.json').exists():
+        hints.append('npm')
+    if (repo_path / 'yarn.lock').exists():
+        hints.append('yarn')
+    if (repo_path / 'bun.lock').exists() or (repo_path / 'bun.lockb').exists():
+        hints.append('bun')
+    if (repo_path / 'requirements.txt').exists() or (repo_path / 'pyproject.toml').exists():
+        hints.append('python')
+    return hints
+
+
+def _guess_validation_commands(repo_path: Path, language: str) -> list[list[str]]:
+    commands: list[list[str]] = []
+    package_json = repo_path / 'package.json'
+    if language in {'typescript', 'javascript'} and package_json.exists():
+        try:
+            pkg = json.loads(package_json.read_text())
+            scripts = pkg.get('scripts', {})
+            if 'test' in scripts:
+                commands.append(['npm', 'test'])
+            if 'lint' in scripts:
+                commands.append(['npm', 'run', 'lint'])
+            if 'build' in scripts:
+                commands.append(['npm', 'run', 'build'])
+            if 'typecheck' in scripts:
+                commands.append(['npm', 'run', 'typecheck'])
+        except Exception:
+            pass
+    if language == 'python':
+        if (repo_path / 'pytest.ini').exists() or (repo_path / 'pyproject.toml').exists() or (repo_path / 'tests').exists():
+            commands.append(['pytest', '-q'])
+        if (repo_path / 'pyproject.toml').exists() or (repo_path / '.ruff.toml').exists():
+            commands.append(['ruff', 'check', '.'])
+    return commands
+
+
+def cmd_status(args):
+    """Show agent status."""
+    config = ConfigManager()
+    registry = RepoRegistry(config)
+    state = StateManager(config.repos_dir)
+
+    if getattr(args, 'repo', None):
+        repo = registry.find_by_name(args.repo)
+        if not repo:
+            print(f"Error: Repository not found: {args.repo}")
+            return 1
+        recent_runs = _load_recent_runs(state, repo.config.name, limit=5)
+        status_artifact = _load_status_artifact(state, repo.config.name)
+        if args.format == 'whatsapp':
+            print(_whatsapp_repo_summary(repo, recent_runs, status_artifact))
+            return 0
+        if args.format == 'json':
+            print(json.dumps({'repo': repo.to_dict(), 'recent_runs': recent_runs}, indent=2))
+            return 0
+
+        print(f"QA Agent Status: {repo.config.name}")
+        print("=" * 60)
+        print(f"Status: {_status_icon(repo.status)} {repo.status.value}")
+        print(f"Health: {_health_icon(repo.current_health_score)} {repo.current_health_score:.1f}/100")
+        print(f"Language: {repo.config.language}")
+        print(f"Findings: {repo.current_findings_count}")
+        print(f"Fix engine: {repo.config.fix_engine}")
+        print(f"Fallbacks: {', '.join(repo.config.fallback_engines)}")
+        print(f"Safety mode: {repo.config.safety.get('mode', 'observe')}")
+        print(f"Safety profile: {repo.config.safety.get('profile', 'conservative')}")
+        print(f"Last run: {_fmt_ts(repo.last_run_at)}")
+        review = status_artifact.get('review_care', {})
+        if review:
+            print(
+                "Review care: "
+                f"active={review.get('active_managed_prs', 0)} "
+                f"blocked={review.get('review_blocked_prs', 0)} "
+                f"retry-eligible={review.get('retry_eligible_prs', 0)} "
+                f"planned={review.get('retry_planned_prs', 0)} "
+                f"prepared={review.get('retry_prepared_prs', 0)} "
+                f"executed={review.get('retry_executed_prs', 0)} "
+                f"failed={review.get('retry_failed_prs', 0)} "
+                f"exhausted={review.get('retry_exhausted_prs', 0)} "
+                f"ready={review.get('merge_ready_prs', 0)}"
+            )
+        if recent_runs:
+            print("\nRecent runs:")
+            for run in recent_runs[:5]:
+                print(f"  - {run.get('phase')}: {run.get('status')} ({run.get('fix_engine')}) @ {_fmt_ts(run.get('ended_at') or run.get('started_at'))}")
+        return 0
+
+    repos = registry.list_all()
+    if args.format == 'whatsapp':
+        lines = [f"QA Agent | repos: {len(repos)}"]
+        for repo in repos:
+            lines.append(f"{_status_icon(repo.status)} {repo.config.name} | {_health_icon(repo.current_health_score)} {repo.current_health_score:.1f} | findings {repo.current_findings_count}")
+        print('\n'.join(lines))
+        return 0
+    if args.format == 'json':
+        print(json.dumps({'version': __version__, 'workspace': str(config.workspace), 'repos': [r.to_dict() for r in repos]}, indent=2))
+        return 0
+
+    print("QA Agent Status")
+    print("=" * 60)
+    print(f"Version: {__version__}")
+    print(f"Workspace: {config.workspace}")
+    print(f"\nRepositories: {len(repos)}")
+    if repos:
+        print("-" * 60)
+        for repo in repos:
+            print(f"  {_status_icon(repo.status)} {repo.config.name}")
+            print(f"      Language: {repo.config.language}")
+            print(f"      Health: {_health_icon(repo.current_health_score)} {repo.current_health_score:.1f}/100")
+            print(f"      Findings: {repo.current_findings_count}")
+            if repo.last_run_at:
+                print(f"      Last run: {repo.last_run_at}")
+    return 0
+
+
+def cmd_repos_list(args):
+    """List all repos."""
+    config = ConfigManager()
+    registry = RepoRegistry(config)
+    repos = registry.list_all()
+    
+    if not repos:
+        print("No repos configured.")
+        print("\nTo onboard a new repo, run:")
+        print("  qa-agent onboard --repo /path/to/repo")
+        return 0
+    
+    print("Configured Repositories:")
+    print("-" * 60)
+    for repo in repos:
+        status = "enabled" if repo.config.enabled else "disabled"
+        print(f"  {repo.config.name}:")
+        print(f"      Status: {status}")
+        print(f"      Language: {repo.config.language}")
+        print(f"      Health: {repo.current_health_score:.1f}/100")
+        print()
+    
+    return 0
+
+
+def cmd_repos_show(args):
+    """Show repo details."""
+    config = ConfigManager()
+    registry = RepoRegistry(config)
+    
+    repo = registry.find_by_name(args.repo)
+    if not repo:
+        print(f"Error: Repository not found: {args.repo}")
+        return 1
+    
+    print(f"Repository: {repo.config.name}")
+    print("=" * 60)
+    print(f"ID: {repo.config.id}")
+    print(f"Path: {repo.config.path}")
+    print(f"Language: {repo.config.language}")
+    print(f"Framework: {repo.config.framework or 'Not detected'}")
+    print(f"Plugin: {repo.config.plugin_id or 'None'}")
+    print(f"Status: {repo.status.value}")
+    print(f"Enabled: {repo.config.enabled}")
+    print()
+    print("Health & Metrics:")
+    print(f"  Health Score: {repo.current_health_score:.1f}/100")
+    print(f"  Findings: {repo.current_findings_count}")
+    print(f"  Total Fixes: {repo.total_fixes}")
+    print(f"  Total PRs: {repo.total_prs}")
+    print(f"  Total Merges: {repo.total_merges}")
+    
+    if repo.onboarded_at:
+        print(f"\nOnboarded: {repo.onboarded_at}")
+    if repo.last_run_at:
+        print(f"Last Run: {repo.last_run_at}")
+    
+    return 0
+
+
+def cmd_preflight(args):
+    """Assess whether a repository is ready for standalone QA onboarding."""
+    repo_path = Path(args.repo).resolve()
+    if not repo_path.exists():
+        print(f"Error: Repository path does not exist: {repo_path}")
+        return 1
+
+    config = ConfigManager()
+    registry = RepoRegistry(config)
+    health = HealthEngine()
+    state = StateManager(config.repos_dir)
+    plugins = PluginLoader(config.plugins_dir)
+    engine = OnboardEngine(registry, plugins, health, state)
+
+    language = engine.detect_language(repo_path)
+    framework = engine.detect_framework(repo_path, language.name)
+    plugin_id = engine.select_plugin(language.name, framework)
+    package_hints = _package_manager_hints(repo_path)
+    suggested_checks = _guess_validation_commands(repo_path, language.name)
+
+    checks = []
+    checks.append(_doctor_check('repo-path', repo_path.exists(), str(repo_path)))
+    checks.append(_doctor_check('git', shutil.which('git') is not None, shutil.which('git') or 'missing'))
+    checks.append(_doctor_check('gh', shutil.which('gh') is not None, shutil.which('gh') or 'missing'))
+    checks.append(_doctor_check('runner', (config.workspace / 'core' / 'sandbox_local_runner.py').exists(), str(config.workspace / 'core' / 'sandbox_local_runner.py')))
+    checks.append(_doctor_check('plugin', plugin_id is not None, plugin_id or f'no plugin for language={language.name}'))
+    checks.append(_doctor_check('claude', shutil.which('claude') is not None, shutil.which('claude') or 'missing'))
+    checks.append(_doctor_check('opencode', shutil.which('opencode') is not None, shutil.which('opencode') or 'missing'))
+
+    git_ok = False
+    git_detail = 'not a git repository'
+    git_proc = _run_shell('git rev-parse --is-inside-work-tree', cwd=repo_path)
+    if git_proc.returncode == 0:
+        git_ok = git_proc.stdout.strip() == 'true'
+        git_detail = 'git repository' if git_ok else git_proc.stdout.strip() or 'unknown'
+    checks.append(_doctor_check('git-repo', git_ok, git_detail))
+
+    gh_ok = False
+    gh_detail = 'gh missing'
+    if shutil.which('gh'):
+        proc = _run_shell('gh auth status >/dev/null 2>&1')
+        gh_ok = proc.returncode == 0
+        gh_detail = 'authenticated' if gh_ok else 'not authenticated'
+    checks.append(_doctor_check('gh-auth', gh_ok, gh_detail))
+
+    docker_needed = (repo_path / 'docker-compose.yml').exists() or (repo_path / 'docker-compose.yaml').exists() or (repo_path / 'Dockerfile').exists()
+    if docker_needed:
+        if shutil.which('docker'):
+            proc = _run_shell('docker ps >/dev/null 2>&1')
+            checks.append(_doctor_check('docker', proc.returncode == 0, 'available' if proc.returncode == 0 else 'unavailable'))
+        else:
+            checks.append(_doctor_check('docker', False, 'missing'))
+
+    clean_ok = True
+    clean_detail = 'clean working tree'
+    autoheal_note = None
+    if git_ok:
+        status_proc = _run_shell('git status --porcelain', cwd=repo_path)
+        dirty = bool(status_proc.stdout.strip())
+        clean_ok = not dirty
+        if dirty:
+            healer = TransientArtifactHealer(repo_path)
+            if healer.is_exclusively_transient_dirty():
+                autoheal_note = 'transient-artifact-only (auto-healable via qa-agent heal)'
+                clean_detail = f'uncommitted changes (transient artifacts only)'
+            else:
+                clean_detail = 'uncommitted changes present (manual review needed)'
+        else:
+            clean_detail = 'clean working tree'
+    checks.append(_doctor_check('safety-clean-tree', clean_ok, clean_detail))
+
+    result = {
+        'repo_path': str(repo_path),
+        'language': language.name,
+        'secondary_languages': language.secondary_languages,
+        'framework': framework,
+        'plugin_id': plugin_id,
+        'package_hints': package_hints,
+        'suggested_validation_commands': suggested_checks,
+        'checks': checks,
+        'ready': all(check['ok'] for check in checks if check['name'] not in {'claude', 'opencode', 'safety-clean-tree'}),
+        'autoheal_note': autoheal_note,
+    }
+
+    if args.format == 'json':
+        print(json.dumps(result, indent=2))
+        return 0 if result['ready'] else 1
+
+    if args.format == 'whatsapp':
+        lines = [
+            f"QA preflight: {repo_path.name}",
+            f"Language: {language.name}" + (f" + {', '.join(language.secondary_languages)}" if language.secondary_languages else "") + f" | Framework: {framework or 'n/a'} | Plugin: {plugin_id or 'none'}",
+            f"Package hints: {', '.join(package_hints) if package_hints else 'none'}",
+            f"Default safety: mode observe | profile conservative",
+        ]
+        if suggested_checks:
+            lines.append('Suggested validation: ' + ' ; '.join(' '.join(cmd) for cmd in suggested_checks))
+        for check in checks:
+            lines.append(f"{'✅' if check['ok'] else '❌'} {check['name']}: {check['detail']}")
+        print('\n'.join(lines))
+        return 0 if result['ready'] else 1
+
+    print(f"QA preflight: {repo_path}")
+    print('=' * 60)
+    print(f"Language: {language.name}")
+    if language.secondary_languages:
+        print(f"Secondary languages: {', '.join(language.secondary_languages)} (mixed repo)")
+    print(f"Framework: {framework or 'n/a'}")
+    print(f"Plugin: {plugin_id or 'none'}")
+    print(f"Package hints: {', '.join(package_hints) if package_hints else 'none'}")
+    if suggested_checks:
+        print('Suggested validation commands:')
+        for cmd in suggested_checks:
+            print('  - ' + ' '.join(cmd))
+    print('\nChecks:')
+    for check in checks:
+        print(f"  {'OK' if check['ok'] else 'FAIL':<5} {check['name']}: {check['detail']}")
+    if autoheal_note:
+        print(f"\n  💡 {autoheal_note}")
+    print(f"\nReady for onboarding: {'yes' if result['ready'] else 'no'}")
+    return 0 if result['ready'] else 1
+
+
+def cmd_onboard(args):
+    """Onboard a new repository."""
+    from pathlib import Path
+    
+    repo_path = Path(args.repo).resolve()
+    
+    if not repo_path.exists():
+        print(f"Error: Repository path does not exist: {repo_path}")
+        return 1
+    
+    config = ConfigManager()
+    registry = RepoRegistry(config)
+    health = HealthEngine()
+    state = StateManager(config.repos_dir)
+    
+    plugins = PluginLoader(config.plugins_dir)
+    
+    engine = OnboardEngine(registry, plugins, health, state)
+
+    # Self-heal transient artifacts before onboarding if dirty tree is exclusively transient
+    healer = TransientArtifactHealer(repo_path)
+    if healer.is_dirty():
+        safe, reason = healer.safe_to_autoheal(require_clean_worktree=True)
+        if safe:
+            heal_result = healer.heal(remove_artifacts=True, dry_run=False)
+            print(f"💡 Auto-healed transient artifacts: .gitignore updated, {len(heal_result['artifacts_removed'])} artifact(s) removed")
+    
+    print(f"🔍 Onboarding repository: {repo_path}")
+    
+    try:
+        result = engine.onboard(
+            repo_path,
+            OnboardOptions(
+                name=args.name,
+                language=args.language,
+                template=args.template,
+                capture_baseline=not args.skip_baseline,
+                mode=args.mode,
+                profile=args.profile,
+                allow_dirty_worktree=args.allow_dirty_worktree,
+            )
+        )
+        
+        print(f"\n✅ Repository onboarded successfully!")
+        print(f"\n📋 Details:")
+        print(f"   Name: {result.repo.config.name}")
+        lang_label = result.language.name
+        if result.language.secondary_languages:
+            lang_label += f" + {', '.join(result.language.secondary_languages)} (mixed)"
+        print(f"   Language: {lang_label}")
+        print(f"   Framework: {result.repo.config.framework or 'Not detected'}")
+        print(f"   Package manager: {result.language.package_manager or 'Not detected'}")
+        print(f"   Build tool: {result.language.build_tool or 'Not detected'}")
+        print(f"   Plugin: {result.plugin_id}")
+        print(f"   Template: {result.template or 'heuristic-default'}")
+        print(f"   Fix engine: {result.repo.config.fix_engine}")
+        print(f"   Fallbacks: {', '.join(result.repo.config.fallback_engines)}")
+        print(f"   Safety mode: {result.repo.config.safety.get('mode', 'observe')}")
+        print(f"   Safety profile: {result.repo.config.safety.get('profile', 'conservative')}")
+        print(f"\n📊 Initial Assessment:")
+        print(f"   Findings: {result.findings_count}")
+        if result.health:
+            print(f"   Health Score: {result.health.score}/100 ({result.health.band})")
+        
+        if result.baseline:
+            print(f"\n📸 Baseline captured: {result.baseline.id}")
+
+        if result.suggested_checks:
+            print(f"\n🧪 Inferred baseline checks:")
+            for cmd in result.suggested_checks:
+                print(f"   - {' '.join(cmd)}")
+
+        if result.review_items:
+            print(f"\n⚠️ Review before live runs:")
+            for item in result.review_items:
+                print(f"   - {item}")
+        
+        print(f"\n🚀 Next steps:")
+        print(f"   Preflight: qa-agent preflight --repo {repo_path}")
+        print(f"   Run: qa-agent run --repo {result.repo.config.name} --phase issue-cycle --dry-run")
+        print(f"   Status: qa-agent repos show {result.repo.config.name}")
+        
+        return 0
+        
+    except Exception as e:
+        print(f"\n❌ Onboarding failed: {e}")
+        return 1
+
+
+def _phase_allowed_for_mode(mode: str, phase: str, dry_run: bool) -> tuple[bool, str]:
+    if dry_run:
+        return True, ''
+    if mode == SafetyMode.OBSERVE.value:
+        return False, 'Observe mode blocks non-dry-run execution.'
+    if mode == SafetyMode.ISSUE_ONLY.value and phase in {'pr-cycle', 'merge-cycle'}:
+        return False, 'Issue-only mode blocks PR and merge execution.'
+    if mode == SafetyMode.PR.value and phase == 'merge-cycle':
+        return False, 'PR mode blocks merge execution.'
+    return True, ''
+
+
+def cmd_run(args):
+    """Run QA cycle on a repository."""
+    config = ConfigManager()
+    registry = RepoRegistry(config)
+    health = HealthEngine()
+    state = StateManager(config.repos_dir)
+    
+    # Find repo
+    repo = registry.find_by_name(args.repo)
+    if not repo:
+        print(f"Error: Repository not found: {args.repo}")
+        return 1
+    
+    if not repo.config.enabled:
+        print(f"Error: Repository is disabled: {args.repo}")
+        return 1
+
+    allowed, reason = _phase_allowed_for_mode(repo.config.safety.get('mode', SafetyMode.OBSERVE.value), args.phase, args.dry_run)
+    if not allowed:
+        print(f"Error: {reason}")
+        return 1
+
+    if not args.dry_run and repo.config.safety.get('require_clean_worktree', True):
+        repo_path = Path(repo.config.path)
+        healer = TransientArtifactHealer(repo_path)
+        if healer.is_dirty():
+            safe, reason = healer.safe_to_autoheal(require_clean_worktree=True)
+            if safe:
+                heal_result = healer.heal(remove_artifacts=True, dry_run=False)
+                print(f'💡 Auto-healed transient artifacts before run: {len(heal_result["artifacts_removed"])} removed, {len(heal_result["gitignore_entries_added"])} .gitignore entries added')
+            else:
+                print(f'Error: Live execution blocked because the repository working tree is dirty.')
+                return 1
+    
+    # Setup runner
+    runner = RunEngine(registry, state, health, config)
+    
+    print(f"🏃 Running {args.phase} cycle on {args.repo}...")
+    print(f"   Dry run: {args.dry_run}")
+    
+    # Execute
+    result = runner.run(repo, RunOptions(
+        phase=args.phase,
+        dry_run=args.dry_run,
+        fix_engine=args.fix_engine,
+        allow_review_push=args.allow_review_push,
+    ))
+    
+    # Print results
+    print(f"\n📊 Results:")
+    print(f"   Status: {result.run.status}")
+    print(f"   Duration: {result.run.duration_seconds}s")
+    print(f"   Findings: {result.run.findings_detected}")
+    print(f"   Issues: {result.run.issues_created}")
+    print(f"   Fixes: {result.run.fixes_verified}/{result.run.fix_attempts}")
+    print(f"   PRs: {result.run.prs_created}")
+    
+    if result.run.health_delta != 0:
+        delta = f"+{result.run.health_delta}" if result.run.health_delta > 0 else str(result.run.health_delta)
+        print(f"\n📈 Health: {result.run.health_before:.1f} → {result.run.health_after:.1f} ({delta})")
+    
+    if result.error:
+        print(f"\n❌ Error: {result.error}")
+        return 1
+    
+    return 0
+
+
+def cmd_report(args):
+    """Generate a report for a repository."""
+    from qa_agent.report import ReportGenerator
+    from qa_agent.health import HealthEngine
+
+    config = ConfigManager()
+    registry = RepoRegistry(config)
+    health_engine = HealthEngine()
+    state = StateManager(config.repos_dir)
+
+    repo = registry.find_by_name(args.repo)
+    if not repo:
+        print(f"Error: Repository not found: {args.repo}")
+        return 1
+
+    # Get health history
+    history = health_engine.get_health_history(
+        args.repo,
+        state._get_state_dir(args.repo),
+        days=args.days
+    )
+
+    # Get findings by category
+    findings = state.load_findings(args.repo)
+    findings_by_category = {}
+    for finding in findings:
+        key = finding.category or finding.rule or 'unknown'
+        findings_by_category[key] = findings_by_category.get(key, 0) + 1
+    issues = state.load_issues(args.repo)
+    runs = state.list_runs(args.repo, limit=max(10, args.days * 6))
+
+    # Get baseline
+    baselines = state.list_baselines(args.repo)
+    baseline = None
+    if baselines:
+        baseline_data = state.load_baseline(args.repo, baselines[0])
+        if baseline_data:
+            from qa_agent.models import Baseline
+            baseline = Baseline(**baseline_data) if isinstance(baseline_data, dict) else None
+
+    # Calculate current health
+    health = health_engine.calculate(findings)
+
+    # Get review care diagnostics
+    review_care = _load_review_care_diagnostics(state, args.repo)
+
+    if args.format in {'text', 'whatsapp'}:
+        print(_text_report_summary(repo, findings, issues, runs, args.days, review_care))
+        return 0
+
+    print(f"Generating report for {args.repo}...")
+    generator = ReportGenerator()
+    output_path = Path(args.output) if args.output else None
+
+    report_path = generator.generate_pdf(
+        repo=repo,
+        baseline=baseline,
+        health=health,
+        history=history,
+        findings_by_category=findings_by_category,
+        output_path=output_path,
+        review_care=review_care,
+    )
+
+    print(f"\nReport generated: {report_path}")
+    return 0
+
+
+def cmd_health(args):
+    """Show health score for a repo."""
+    config = ConfigManager()
+    registry = RepoRegistry(config)
+    
+    repo = registry.find_by_name(args.repo)
+    if not repo:
+        print(f"Error: Repository not found: {args.repo}")
+        return 1
+    
+    # Get health history
+    state = StateManager(config.repos_dir)
+    health_engine = HealthEngine()
+    history = health_engine.get_health_history(
+        args.repo, 
+        state._get_state_dir(args.repo),
+        days=args.days
+    )
+
+    if getattr(args, 'format', 'text') == 'whatsapp':
+        lines = [
+            f"Health: {repo.config.name}",
+            f"Score: {_health_icon(repo.current_health_score)} {repo.current_health_score:.1f}/100",
+            f"Findings: {repo.current_findings_count}",
+        ]
+        if history:
+            lines.append(f"Trend: {history[-1]['score']:.1f} -> {history[0]['score']:.1f} ({len(history)} samples)")
+        print('\n'.join(lines))
+        return 0
+    
+    print(f"Health Report: {repo.config.name}")
+    print("=" * 60)
+    print(f"Score: {repo.current_health_score:.1f}/100")
+    
+    if history:
+        print(f"\nHistory (last {len(history)} runs):")
+        for h in history[-5:]:
+            print(f"  {h['timestamp'][:10]}: {h['score']:.1f}")
+    
+    return 0
+
+
+def cmd_install_cron(args):
+    """Install host cron entries for a repo."""
+    config = ConfigManager()
+    repo = RepoRegistry(config).find_by_name(args.repo)
+    if not repo:
+        print(f"Error: Repository not found: {args.repo}")
+        return 1
+
+    script = config.workspace / 'scripts' / 'install-cron.sh'
+    if not script.exists():
+        print(f"Error: Cron installer not found: {script}")
+        return 1
+
+    mode = (repo.config.safety or {}).get('mode', SafetyMode.OBSERVE.value)
+    include_pr = '1' if mode in {SafetyMode.PR.value, SafetyMode.MERGE.value} else '0'
+    # Review-cycle manages existing PRs and retries; safe to run in ISSUE_ONLY and above
+    include_review = '1' if mode in {SafetyMode.ISSUE_ONLY.value, SafetyMode.PR.value, SafetyMode.MERGE.value} else '0'
+    include_merge = '1' if mode == SafetyMode.MERGE.value else '0'
+
+    env = {
+        **os.environ,
+        'ISSUE_SCHEDULE': args.issue_schedule,
+        'PR_SCHEDULE': args.pr_schedule,
+        'REVIEW_SCHEDULE': args.review_schedule,
+        'MERGE_SCHEDULE': args.merge_schedule,
+        'INCLUDE_PR': include_pr,
+        'INCLUDE_REVIEW': include_review,
+        'INCLUDE_MERGE': include_merge,
+    }
+    proc = subprocess.run([str(script), args.repo], text=True, capture_output=True, env=env)
+    output = (proc.stdout or '') + (('\n' + proc.stderr) if proc.stderr else '')
+    print(output.strip())
+    return proc.returncode
+
+
+def cmd_heal(args):
+    """Heal a dirty worktree by updating .gitignore and/or removing transient artifacts."""
+    repo_path = Path(args.repo).resolve()
+    if not repo_path.exists():
+        print(f"Error: Repository path does not exist: {repo_path}")
+        return 1
+
+    healer = TransientArtifactHealer(repo_path)
+
+    if not healer.is_dirty():
+        print(f"Working tree is already clean for {repo_path}")
+        return 0
+
+    safe, reason = healer.safe_to_autoheal(require_clean_worktree=not args.force)
+    if not safe and not args.force:
+        print(f"Cannot auto-heal: {reason}")
+        print("Use --force to heal anyway (not recommended).")
+        return 1
+
+    heal_result = healer.heal(
+        remove_artifacts=args.remove_artifacts,
+        dry_run=args.dry_run,
+    )
+
+    if args.dry_run:
+        print(f"[dry-run] Would heal transient artifacts for: {repo_path}")
+    else:
+        print(f"Healed transient artifacts for: {repo_path}")
+
+    if heal_result['gitignore_entries_added']:
+        print(f"  .gitignore entries added: {', '.join(heal_result['gitignore_entries_added'])}")
+    if heal_result['artifacts_removed']:
+        print(f"  Artifacts removed: {', '.join(heal_result['artifacts_removed'])}")
+
+    remaining = healer.get_dirty_paths()
+    if remaining and not args.dry_run:
+        print(f"\n  Remaining dirty paths (non-transient, manual review needed):")
+        for p in remaining[:10]:
+            print(f"    - {p}")
+        if len(remaining) > 10:
+            print(f"    ... and {len(remaining) - 10} more")
+
+    return 0
+
+
+def _load_review_care_diagnostics(state: StateManager, repo_name: str) -> dict:
+    """Load review-care diagnostics for a repo."""
+    status_artifact = _load_status_artifact(state, repo_name)
+    review_care = status_artifact.get('review_care', {})
+    active_prs = state.load_active_prs(repo_name)
+    review_state = state.load_review_state(repo_name)
+
+    pr_list = active_prs.get('prs', {})
+    blocked_prs = []
+    exhausted_prs = []
+    paused_prs = []
+    ready_prs = []
+    pending_push_prs = []
+    failed_push_prs = []
+
+    for pr_key, pr_data in pr_list.items():
+        pr_number = pr_data.get('pr_number', pr_key)
+        status = pr_data.get('status', 'unknown')
+        merge_state = (pr_data.get('merge_readiness') or {}).get('state', 'unknown')
+        review_record = (review_state.get('prs', {}).get(pr_key, {}))
+        execution_result = pr_data.get('execution_result') or review_record.get('execution_result') or {}
+        push_result = execution_result.get('push_result') or {}
+        attempts = review_record.get('attempts_used', 0)
+
+        pr_info = {
+            'pr_number': pr_number,
+            'status': status,
+            'merge_state': merge_state,
+            'attempts': attempts,
+            'branch': pr_data.get('branch', 'unknown'),
+            'push_status': push_result.get('status'),
+            'push_target_branch': push_result.get('target_branch'),
+            'changed_files': execution_result.get('changed_files') or [],
+            'last_action_reason': review_record.get('last_action_reason'),
+        }
+
+        if status == 'retry_exhausted':
+            exhausted_prs.append(pr_info)
+        elif status == 'loop_guard_paused':
+            paused_prs.append(pr_info)
+        elif status == 'retry_pending_push' or merge_state == 'awaiting_operator_push':
+            pending_push_prs.append(pr_info)
+        elif status == 'retry_failed_push':
+            failed_push_prs.append(pr_info)
+        elif merge_state == 'blocked_by_review':
+            blocked_prs.append(pr_info)
+        elif merge_state == 'ready_for_merge':
+            ready_prs.append(pr_info)
+
+    return {
+        'enabled': review_care.get('enabled', False),
+        'active_managed_prs': review_care.get('active_managed_prs', 0),
+        'review_blocked_prs': review_care.get('review_blocked_prs', 0),
+        'retry_eligible_prs': review_care.get('retry_eligible_prs', 0),
+        'retry_planned_prs': review_care.get('retry_planned_prs', 0),
+        'retry_prepared_prs': review_care.get('retry_prepared_prs', 0),
+        'retry_executed_prs': review_care.get('retry_executed_prs', 0),
+        'retry_failed_prs': review_care.get('retry_failed_prs', 0),
+        'retry_exhausted_prs': review_care.get('retry_exhausted_prs', 0),
+        'merge_ready_prs': review_care.get('merge_ready_prs', 0),
+        'paused_prs': review_care.get('paused_prs', 0),
+        'last_review_cycle_at': review_care.get('last_review_cycle_at'),
+        'blocked_prs_detail': blocked_prs,
+        'exhausted_prs_detail': exhausted_prs,
+        'paused_prs_detail': paused_prs,
+        'ready_prs_detail': ready_prs,
+        'pending_push_prs_detail': pending_push_prs,
+        'failed_push_prs_detail': failed_push_prs,
+        'pending_push_prs': len(pending_push_prs),
+        'failed_push_prs': len(failed_push_prs),
+    }
+
+
+def cmd_doctor(args):
+    """Run operational checks for the standalone QA agent."""
+    config = ConfigManager()
+    registry = RepoRegistry(config)
+    state = StateManager(config.repos_dir)
+
+    repo_names = [args.repo] if args.repo else [r.config.name for r in registry.list_all()]
+    checks = []
+    checks.append(_doctor_check('python3', shutil.which('python3') is not None, shutil.which('python3') or 'missing'))
+    checks.append(_doctor_check('git', shutil.which('git') is not None, shutil.which('git') or 'missing'))
+    checks.append(_doctor_check('gh', shutil.which('gh') is not None, shutil.which('gh') or 'missing'))
+    checks.append(_doctor_check('claude', shutil.which('claude') is not None, shutil.which('claude') or 'missing'))
+    checks.append(_doctor_check('opencode', shutil.which('opencode') is not None, shutil.which('opencode') or 'missing'))
+    checks.append(_doctor_check('runner', (config.workspace / 'core' / 'sandbox_local_runner.py').exists(), str(config.workspace / 'core' / 'sandbox_local_runner.py')))
+
+    gh_ok = False
+    gh_detail = 'gh missing'
+    if shutil.which('gh'):
+        proc = subprocess.run(['bash', '-lc', 'gh auth status >/dev/null 2>&1'], text=True)
+        gh_ok = proc.returncode == 0
+        gh_detail = 'authenticated' if gh_ok else 'not authenticated'
+    checks.append(_doctor_check('gh-auth', gh_ok, gh_detail))
+
+    if shutil.which('docker'):
+        proc = subprocess.run(['bash', '-lc', 'docker ps >/dev/null 2>&1'], text=True)
+        checks.append(_doctor_check('docker', proc.returncode == 0, 'available' if proc.returncode == 0 else 'unavailable'))
+    else:
+        checks.append(_doctor_check('docker', False, 'missing'))
+
+    repo_reports = []
+    for repo_name in repo_names:
+        repo = registry.find_by_name(repo_name)
+        if not repo:
+            repo_reports.append({'repo': repo_name, 'error': 'not found'})
+            continue
+        runs = state.list_runs(repo_name, limit=5)
+        latest = runs[0] if runs else None
+        review_care_diag = _load_review_care_diagnostics(state, repo_name)
+        repo_reports.append({
+            'repo': repo_name,
+            'enabled': repo.config.enabled,
+            'status': repo.status.value,
+            'fix_engine': repo.config.fix_engine,
+            'fallbacks': repo.config.fallback_engines,
+            'last_run': latest.get('status') if latest else 'never',
+            'last_phase': latest.get('phase') if latest else 'n/a',
+            'health': repo.current_health_score,
+            'findings': repo.current_findings_count,
+            'review_care': review_care_diag,
+        })
+
+    if args.format == 'json':
+        print(json.dumps({'checks': checks, 'repos': repo_reports}, indent=2))
+        return 0 if all(c['ok'] for c in checks) else 1
+
+    if args.format == 'whatsapp':
+        lines = ['QA Agent Doctor']
+        for check in checks:
+            lines.append(f"{'✅' if check['ok'] else '❌'} {check['name']}: {check['detail']}")
+        for report in repo_reports:
+            if 'error' in report:
+                lines.append(f"❌ {report['repo']}: {report['error']}")
+            else:
+                lines.append(f"{report['repo']} | {report['status']} | engine {report['fix_engine']} | last {report['last_phase']}->{report['last_run']}")
+                rc = report.get('review_care', {})
+                if rc.get('active_managed_prs', 0) > 0:
+                    lines.append(f"  review: active={rc.get('active_managed_prs')} blocked={rc.get('review_blocked_prs')} pending-push={rc.get('pending_push_prs', 0)} push-failed={rc.get('failed_push_prs', 0)} exhausted={rc.get('retry_exhausted_prs')}")
+                    if rc.get('pending_push_prs_detail'):
+                        for pr in rc.get('pending_push_prs_detail', [])[:3]:
+                            lines.append(f"    pending push: PR #{pr['pr_number']} branch={pr['branch']} files={len(pr.get('changed_files', []))}")
+                    if rc.get('failed_push_prs_detail'):
+                        for pr in rc.get('failed_push_prs_detail', [])[:3]:
+                            lines.append(f"    push failed: PR #{pr['pr_number']} branch={pr['branch']} status={pr.get('push_status') or pr['status']}")
+        print('\n'.join(lines))
+        return 0 if all(c['ok'] for c in checks) else 1
+
+    print('QA Agent Doctor')
+    print('=' * 60)
+    for check in checks:
+        print(f"{'OK' if check['ok'] else 'FAIL':<5} {check['name']}: {check['detail']}")
+    print('\nRepositories')
+    print('-' * 60)
+    for report in repo_reports:
+        if 'error' in report:
+            print(f"{report['repo']}: {report['error']}")
+        else:
+            print(f"{report['repo']}: status={report['status']} health={report['health']:.1f} findings={report['findings']} backend={report['fix_engine']} last={report['last_phase']}->{report['last_run']}")
+            rc = report.get('review_care', {})
+            if rc.get('active_managed_prs', 0) > 0 or rc.get('enabled'):
+                print(f"  Review care: enabled={rc.get('enabled')} active={rc.get('active_managed_prs')} blocked={rc.get('review_blocked_prs')} planned={rc.get('retry_planned_prs')} prepared={rc.get('retry_prepared_prs')} executed={rc.get('retry_executed_prs')} pending-push={rc.get('pending_push_prs', 0)} push-failed={rc.get('failed_push_prs', 0)} failed={rc.get('retry_failed_prs')} exhausted={rc.get('retry_exhausted_prs')} ready={rc.get('merge_ready_prs')} paused={rc.get('paused_prs')}")
+                if rc.get('last_review_cycle_at'):
+                    print(f"    last review cycle: {_fmt_ts(rc.get('last_review_cycle_at'))}")
+                if rc.get('pending_push_prs_detail'):
+                    for pr in rc.get('pending_push_prs_detail', [])[:3]:
+                        print(f"    PENDING PUSH: PR #{pr['pr_number']} branch={pr['branch']} files={len(pr.get('changed_files', []))} target={pr.get('push_target_branch') or pr['branch']}")
+                if rc.get('failed_push_prs_detail'):
+                    for pr in rc.get('failed_push_prs_detail', [])[:3]:
+                        print(f"    PUSH FAILED: PR #{pr['pr_number']} branch={pr['branch']} push_status={pr.get('push_status') or pr['status']}")
+                if rc.get('exhausted_prs_detail'):
+                    for pr in rc.get('exhausted_prs_detail', []):
+                        print(f"    EXHAUSTED: PR #{pr['pr_number']} branch={pr['branch']} attempts={pr['attempts']}")
+                if rc.get('paused_prs_detail'):
+                    for pr in rc.get('paused_prs_detail', []):
+                        print(f"    PAUSED: PR #{pr['pr_number']} branch={pr['branch']} status={pr['status']}")
+                if rc.get('blocked_prs_detail') and len(rc.get('blocked_prs_detail', [])) <= 3:
+                    for pr in rc.get('blocked_prs_detail', []):
+                        print(f"    BLOCKED: PR #{pr['pr_number']} branch={pr['branch']} attempts={pr['attempts']}")
+    return 0 if all(c['ok'] for c in checks) else 1
+
+
+def cmd_init(args):
+    """Interactive first-run setup wizard."""
+    print("=" * 52)
+    print(" QA Agent — First-Run Setup")
+    print("=" * 52)
+
+    # 1. Check prerequisites
+    print("\n[1/6] Checking prerequisites...")
+    missing = []
+    for bin in ('python3', 'git', 'gh'):
+        r = subprocess.run(['which', bin], capture_output=True)
+        if r.returncode != 0:
+            missing.append(bin)
+    if missing:
+        print(f"  ✗ Missing: {', '.join(missing)}. Install them first.")
+        return 1
+    print("  ✓ python3, git, gh — all found")
+
+    # 2. Bootstrap venv if needed
+    print("\n[2/6] Setting up Python environment...")
+    root = Path(__file__).resolve().parents[1]
+    venv_dir = root / '.venv'
+    if not venv_dir.exists():
+        uv = subprocess.run(['which', 'uv'], capture_output=True)
+        if uv.returncode != 0:
+            print("  ✗ uv not found. Install it: https://docs.astral.sh/uv/")
+            return 1
+        print("  → Creating .venv with uv...")
+        subprocess.run(['uv', 'venv', str(venv_dir)], check=True)
+    print("  ✓ Python environment ready")
+
+    # 3. GitHub auth
+    print("\n[3/6] GitHub authentication...")
+    gh_auth = subprocess.run(['gh', 'auth', 'status'], capture_output=True, text=True)
+    if gh_auth.returncode != 0:
+        print("  ✗ Not authenticated with GitHub.")
+        print("  → Run: gh auth login")
+        return 1
+    print("  ✓ GitHub authenticated")
+
+    # 4. Repo selection
+    print("\n[4/6] Repository to onboard")
+    print("  Options:")
+    print("    1) Enter a local repo path")
+    print("    2) Enter a GitHub URL (https://github.com/user/repo)")
+    print("    q) Quit and configure manually")
+    repo_path = None
+    while repo_path is None:
+        choice = input("\n  Your choice [1/2/q]: ").strip()
+        if choice.lower() == 'q':
+            print("  Exiting. Run './qa-agent onboard' when ready.")
+            return 0
+        if choice == '1':
+            p = input("  Local path: ").strip()
+            if Path(p).is_dir():
+                repo_path = p
+            else:
+                print(f"  ✗ Path not found: {p}")
+        elif choice == '2':
+            url = input("  GitHub URL: ").strip()
+            # Clone to temp
+            gh_user = subprocess.run(
+                ['gh', 'api', 'user', '--jq', '.login'],
+                capture_output=True, text=True,
+                env={**os.environ, 'GH_TOKEN': subprocess.run(['gh', 'auth', 'token'],
+                    capture_output=True, text=True).stdout.strip()}
+            )
+            if gh_user.returncode != 0:
+                print("  ✗ Could not determine GitHub username")
+                continue
+            user = gh_user.stdout.strip()
+            owner_re = url.split('github.com/')[-1].strip('/')
+            local_name = owner_re.split('/')[-1] if '/' in owner_re else owner_re
+            clone_dir = root / 'repos' / local_name
+            if clone_dir.exists():
+                print(f"  → Using existing clone: {clone_dir}")
+                repo_path = str(clone_dir)
+            else:
+                print(f"  → Cloning {url} to {clone_dir}...")
+                subprocess.run(['git', 'clone', url, str(clone_dir)], check=True)
+                repo_path = str(clone_dir)
+        else:
+            print("  Invalid choice.")
+
+    print(f"  → Using: {repo_path}")
+
+    # 5. Safety mode
+    print("\n[5/6] Safety mode — how autonomous should this be?")
+    print("  observe     — dry-run only, no changes to GitHub")
+    print("  issue-only  — creates issues only, no PRs")
+    print("  pr          — creates issues and PRs, no merges")
+    print("  merge       — full autonomy including merges")
+    mode_map = {'1': 'observe', '2': 'issue-only', '3': 'pr', '4': 'merge'}
+    safety_choice = input("\n  Choice [1=observe, 2=issue-only, 3=pr, 4=merge]: ").strip()
+    safety_mode = mode_map.get(safety_choice, 'observe')
+    print(f"  → Safety mode: {safety_mode}")
+
+    # 6. Cron schedule preference
+    print("\n[6/6] Cron schedule — how often to run?")
+    print("  1) Every 4 hours (default, good balance)")
+    print("  2) Every 2 hours (aggressive)")
+    print("  3) Every 6 hours (relaxed)")
+    print("  4) No cron (manual only)")
+    cron_map = {'1': '0 */4 * * *', '2': '0 */2 * * *', '3': '0 */6 * * *', '4': None}
+    cron_choice = input("\n  Choice [1/2/3/4]: ").strip()
+    issue_schedule = cron_map.get(cron_choice, '0 */4 * * *')
+    do_cron = cron_choice != '4'
+
+    # Run onboard
+    print(f"\n→ Running onboard...")
+    OnboardOpts = OnboardOptions
+    result = OnboardEngine().onboard(
+        repo_path=Path(repo_path),
+        name=Path(repo_path).name,
+        language=None,
+        template=None,
+        skip_baseline=False,
+        mode=safety_mode,
+        profile='conservative' if safety_mode == 'observe' else 'balanced',
+    )
+    if result.config is None:
+        print(f"\n✗ Onboarding failed: {result.error}")
+        return 1
+
+    repo_name = result.config.name
+    print(f"  ✓ Onboarded as: {repo_name}")
+
+    # Install cron if requested
+    if do_cron:
+        print(f"\n→ Installing cron schedule...")
+        env = {
+            **os.environ,
+            'ISSUE_SCHEDULE': issue_schedule,
+            'PR_SCHEDULE': '0 */6 * * *',
+            'REVIEW_SCHEDULE': '30 * * * *',
+            'MERGE_SCHEDULE': '0 6,18 * * *',
+            'INCLUDE_PR': '1' if safety_mode in {'pr', 'merge'} else '0',
+            'INCLUDE_REVIEW': '1',
+            'INCLUDE_MERGE': '1' if safety_mode == 'merge' else '0',
+        }
+        script = Path(__file__).resolve().parents[1] / 'scripts' / 'install-cron.sh'
+        r = subprocess.run([str(script), repo_name], env=env)
+        print(f"  {'✓ Cron installed' if r.returncode == 0 else '✗ Cron install failed'}")
+    else:
+        print("\n  Skipping cron install.")
+
+    print("\n" + "=" * 52)
+    print(f" QA Agent setup complete for '{repo_name}'")
+    print("=" * 52)
+    print(f"\n  Next steps:")
+    print(f"    ./qa-agent status --repo {repo_name}")
+    print(f"    ./qa-agent run --repo {repo_name} --phase issue-cycle --dry-run")
+    print(f"\n  See ./qa-agent --help for all commands.")
+    return 0
+
+
+def cmd_update(args):
+    """Self-update qa-agent to the latest version."""
+    root = Path(__file__).resolve().parents[1]
+
+    # Detect install method
+    npm_pkg = root / 'package.json'
+    is_npm_install = npm_pkg.exists()
+    git_dir = root / '.git'
+
+    if is_npm_install:
+        print("→ Updating via npm...")
+        r = subprocess.run(['npm', 'update', '-g'], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"✗ npm update failed: {r.stderr}")
+            return 1
+        print("✓ Updated via npm")
+        print(f"  Run: qa-agent --version to verify")
+        return 0
+
+    if git_dir.exists():
+        print("→ Updating via git pull...")
+        r = subprocess.run(['git', '-C', str(root), 'pull', '--ff-only'], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"✗ git pull failed: {r.stderr}")
+            print("  If you have local changes, stash or reset first.")
+            return 1
+        print("✓ Updated via git pull")
+        # Reinstall deps in case requirements changed
+        venv_py = root / '.venv' / 'bin' / 'python3'
+        if venv_py.exists():
+            print("→ Updating Python dependencies...")
+            req = root / 'requirements.txt'
+            if req.exists():
+                subprocess.run([str(venv_py), '-m', 'pip', 'install', '-r', str(req), '-q'])
+        print(f"  Run: qa-agent --version to verify")
+        return 0
+
+    print("✗ Could not determine how qa-agent was installed.")
+    print("  Install method not detected (no .git and no package.json).")
+    print("  To install: git clone <repo> or npm install -g <package>")
+    return 1
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='QA Agent - Autonomous Repository Quality Assurance',
+        prog='qa-agent'
+    )
+    parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
+    
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    
+    # status
+    status_parser = subparsers.add_parser('status', help='Show agent status')
+    status_parser.add_argument('--repo', help='Repository name')
+    status_parser.add_argument('--format', choices=['text', 'whatsapp', 'json'], default='text', help='Output format')
+    
+    # repos
+    repos_parser = subparsers.add_parser('repos', help='Repository management')
+    repos_sub = repos_parser.add_subparsers(dest='repos_command', help='Repo commands')
+    
+    repos_sub.add_parser('list', help='List all repos')
+    
+    repos_show = repos_sub.add_parser('show', help='Show repo details')
+    repos_show.add_argument('repo', help='Repository name')
+    
+    # preflight
+    preflight_parser = subparsers.add_parser('preflight', help='Assess a repository before onboarding')
+    preflight_parser.add_argument('--repo', required=True, help='Path to repository')
+    preflight_parser.add_argument('--format', choices=['text', 'whatsapp', 'json'], default='text', help='Output format')
+
+    # onboard
+    onboard_parser = subparsers.add_parser('onboard', help='Onboard a new repository')
+    onboard_parser.add_argument('--repo', required=True, help='Path to repository')
+    onboard_parser.add_argument('--name', help='Repository name (default: directory name)')
+    onboard_parser.add_argument('--language', help='Force language detection')
+    onboard_parser.add_argument('--template', help='Explicit repo template to use')
+    onboard_parser.add_argument('--skip-baseline', action='store_true', help='Skip baseline capture')
+    onboard_parser.add_argument('--mode', choices=['observe', 'issue-only', 'pr', 'merge'], default='observe', help='Safety mode')
+    onboard_parser.add_argument('--profile', choices=['conservative', 'balanced', 'aggressive'], default='conservative', help='Safety profile')
+    onboard_parser.add_argument('--allow-dirty-worktree', action='store_true', help='Allow onboarding without a clean working tree')
+    
+    # run
+    run_parser = subparsers.add_parser('run', help='Run QA cycle')
+    run_parser.add_argument('--repo', required=True, help='Repository name')
+    run_parser.add_argument('--phase', default='orchestrated', 
+                            choices=['issue-cycle', 'pr-cycle', 'review-cycle', 'merge-cycle', 'orchestrated', 'verify-only'],
+                            help='Run phase')
+    run_parser.add_argument('--dry-run', action='store_true', default=True, help='Dry run (preview only)')
+    run_parser.add_argument('--no-dry-run', action='store_false', dest='dry_run', help='Execute for real')
+    run_parser.add_argument('--fix-engine', choices=['auto', 'deterministic', 'claude', 'opencode'], help='Fix engine to use')
+    run_parser.add_argument('--allow-review-push', action='store_true', help='Allow review-cycle to commit and push validated remediation changes')
+    
+    # health
+    health_parser = subparsers.add_parser('health', help='Show health score')
+    health_parser.add_argument('--repo', required=True, help='Repository name')
+    health_parser.add_argument('--days', type=int, default=30, help='Days of history')
+    health_parser.add_argument('--format', choices=['text', 'whatsapp'], default='text', help='Output format')
+    
+    # report
+    report_parser = subparsers.add_parser('report', help='Generate report')
+    report_parser.add_argument('--repo', required=True, help='Repository name')
+    report_parser.add_argument('--output', '-o', help='Output file path')
+    report_parser.add_argument('--days', type=int, default=30, help='Days of history')
+    report_parser.add_argument('--format', choices=['pdf', 'text', 'whatsapp'], default='pdf', help='Output format')
+
+    # doctor
+    doctor_parser = subparsers.add_parser('doctor', help='Run operational checks')
+    doctor_parser.add_argument('--repo', help='Repository name')
+    doctor_parser.add_argument('--format', choices=['text', 'whatsapp', 'json'], default='text', help='Output format')
+
+    # install-cron
+    cron_parser = subparsers.add_parser('install-cron', help='Install host cron schedule for a repo')
+    cron_parser.add_argument('--repo', required=True, help='Repository name')
+    cron_parser.add_argument('--issue-schedule', default='0 */4 * * *', help='Cron schedule for issue-cycle')
+    cron_parser.add_argument('--pr-schedule', default='0 */6 * * *', help='Cron schedule for pr-cycle')
+    cron_parser.add_argument('--review-schedule', default='30 * * * *', help='Cron schedule for review-cycle')
+    cron_parser.add_argument('--merge-schedule', default='0 6,18 * * *', help='Cron schedule for merge-cycle')
+
+    # heal
+    heal_parser = subparsers.add_parser('heal', help='Heal dirty worktree caused by transient artifacts')
+    heal_parser.add_argument('--repo', required=True, help='Path to repository')
+    heal_parser.add_argument('--dry-run', action='store_true', default=True, help='Preview healing actions (default)')
+    heal_parser.add_argument('--no-dry-run', action='store_false', dest='dry_run', help='Execute healing (update .gitignore and remove artifacts)')
+    heal_parser.add_argument('--remove-artifacts', action='store_true', default=False, help='Also remove transient artifact directories/files')
+    heal_parser.add_argument('--force', action='store_true', help='Force heal even when not exclusively transient (not recommended)')
+
+    # init
+    init_parser = subparsers.add_parser('init', help='Interactive first-run setup wizard')
+
+    # update
+    update_parser = subparsers.add_parser('update', help='Self-update qa-agent to the latest version')
+
+    args = parser.parse_args()
+    
+    if args.command == 'status':
+        return cmd_status(args)
+    elif args.command == 'repos':
+        if args.repos_command == 'list':
+            return cmd_repos_list(args)
+        elif args.repos_command == 'show':
+            return cmd_repos_show(args)
+        else:
+            repos_parser.print_help()
+            return 0
+    elif args.command == 'preflight':
+        return cmd_preflight(args)
+    elif args.command == 'onboard':
+        return cmd_onboard(args)
+    elif args.command == 'run':
+        return cmd_run(args)
+    elif args.command == 'health':
+        return cmd_health(args)
+    elif args.command == 'report':
+        return cmd_report(args)
+    elif args.command == 'doctor':
+        return cmd_doctor(args)
+    elif args.command == 'install-cron':
+        return cmd_install_cron(args)
+    elif args.command == 'heal':
+        return cmd_heal(args)
+    elif args.command == 'init':
+        return cmd_init(args)
+    elif args.command == 'update':
+        return cmd_update(args)
+    else:
+        parser.print_help()
+        return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

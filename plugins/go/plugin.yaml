@@ -1,0 +1,25 @@
+id: plugin-go
+name: Go Plugin
+version: 1.0.0
+author: Red
+
+languages:
+  - go
+
+requires_container: false
+
+discovery:
+  rules:
+    - id: debt-todo-marker
+      category: technical-debt
+      confidence: 0.72
+      autofix: false
+
+validation:
+  baseline_checks:
+    - ["go", "test", "./..."]
+
+detection:
+  files:
+    - go.mod
+    - go.sum

@@ -1,0 +1,26 @@
+id: plugin-rust
+name: Rust Plugin
+version: 1.0.0
+author: Red
+
+languages:
+  - rust
+
+requires_container: false
+
+discovery:
+  rules:
+    - id: debt-todo-marker
+      category: technical-debt
+      confidence: 0.72
+      autofix: false
+
+validation:
+  baseline_checks:
+    - ["cargo", "test"]
+    - ["cargo", "check"]
+
+detection:
+  files:
+    - Cargo.toml
+    - Cargo.lock
