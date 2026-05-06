@@ -377,7 +377,7 @@ def main() -> int:
     p.add_argument('--reconcile-only', action='store_true', default=False)
     p.add_argument(
         '--run-phase',
-        choices=['issue-cycle', 'pr-cycle', 'merge-cycle', 'refactor-cycle', 'orchestrated', 'verify-only', 'detect-only', 'e2e', 'docs-index'],
+        choices=['issue-cycle', 'pr-cycle', 'merge-cycle', 'refactor-cycle', 'orchestrated', 'verify-only', 'detect-only', 'e2e', 'docs-index', 'clean-prs'],
         default='orchestrated',
     )
 
@@ -558,6 +558,26 @@ def main() -> int:
             log_file,
             f'refactor-cycle: done processed={processed} approved={approved} '
             f'pending={pending} failed={failed}',
+        )
+        return 0
+
+    if args.run_phase == 'clean-prs':
+        from .clean_prs import clean_stale_prs
+        from .gh import get_origin_url, parse_github_repo
+        _slug_owner, _slug_name = parse_github_repo(get_origin_url(repo_path))
+        _repo_slug = f'{_slug_owner}/{_slug_name}' if _slug_owner and _slug_name else ''
+        _append_text(log_file, 'clean-prs: starting')
+        result = clean_stale_prs(
+            repo_slug=_repo_slug,
+            cwd=repo_path,
+            log_file=log_file,
+            dry_run=args.dry_run,
+            stale_hours=getattr(args, 'stale_pr_hours', 48),
+            dedup_window=getattr(args, 'stale_dedup_window', 24),
+        )
+        print(
+            f'[DONE] clean-prs closed={result["closed"]} '
+            f'duplicates={result["duplicates"]} stale={result["stale"]}'
         )
         return 0
 
