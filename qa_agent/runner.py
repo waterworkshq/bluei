@@ -448,11 +448,14 @@ class RunEngine:
             self.state.save_run(repo_name, run)
             return RunResult(run=run, success=False, output='', error=run.error)
 
-        # Update repo status
-        self.registry.update(repo_name, {
-            'status': RepoStatus.RUNNING.value,
-        })
-        
+        # Update repo status — inside try so errors are caught
+        try:
+            self.registry.update(repo_name, {
+                'status': RepoStatus.RUNNING.value,
+            })
+        except Exception:
+            pass
+
         try:
             if options.phase == 'review-cycle':
                 return self._run_review_cycle(repo, run, log_dir, options.dry_run, options.allow_review_push)
