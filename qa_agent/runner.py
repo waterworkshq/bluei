@@ -336,6 +336,25 @@ class RunEngine:
                 reason = tune_suggestion.get('_reason', 'retry/finding failure pattern detected')
                 print(f'[auto-tune] {reason} — adjusting thresholds')
 
+        # Cross-cycle signal: if retry failures persist, inform issue cycle
+        from .cycle_signals import CycleSignalStore
+        signal_store = CycleSignalStore(self.config.workspace / 'state' / 'cycle_signals.json')
+        if result.retry_failed_prs > 0:
+            signal_store.suppress_rule(
+                '__global__',
+                f'retry_failed x{result.retry_failed_prs} in review cycle — deprioritize new issue creation',
+                duration_cycles=8,
+            )
+        elif result.retry_exhausted_prs > 0:
+            signal_store.suppress_rule(
+                '__global__',
+                f'retry_exhausted x{result.retry_exhausted_prs} — exhaustive failures detected',
+                duration_cycles=12,
+            )
+        else:
+            # Clean cycle — lift any active global suppression
+            signal_store.lift_suppression('__global__')
+
         (log_dir / f'{run.id}.log').write_text(output + '\n', encoding='utf-8')
 
         run.ended_at = now_iso()

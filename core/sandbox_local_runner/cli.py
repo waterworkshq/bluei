@@ -848,11 +848,17 @@ def main() -> int:
                 findings=eligible_findings,
                 confidence_threshold=args.issue_confidence_threshold,
                 max_issues_per_run=1,
+                cycle_signals_path=AGENT_ROOT / 'state' / 'cycle_signals.json',
             )
             if not batch:
                 break
 
             for issue in batch:
+                # Skip cross-cycle suppressed entries
+                if issue.get('issue_id') == 'SUPPRESSED':
+                    suppressed_reason = issue.get('reason', 'suppressed')
+                    _append_text(log_file, f'suppressed-cross-cycle: finding={issue["finding_id"]} rule={issue.get("rule","?")} reason={suppressed_reason}')
+                    continue
                 if args.live_github_actions:
                     issue_finding = finding_from_issue_record(issue)
                     if issue_finding is not None:

@@ -545,9 +545,29 @@ def create_issues_for_findings(
     findings: List[Finding],
     confidence_threshold: float,
     max_issues_per_run: int,
+    cycle_signals_path: Optional[Path] = None,
 ) -> List[Dict[str, Any]]:
     existing = {str(x.get('finding_id')) for x in issues_data.get('issues', []) if x.get('finding_id')}
     created: List[Dict[str, Any]] = []
+
+    # Load cross-cycle signals to check for suppressed rules
+    _cycle_signal_checker = None
+    if cycle_signals_path is not None:
+        try:
+            from pathlib import Path as _Path
+            _signal_file = _Path(cycle_signals_path) if isinstance(cycle_signals_path, (str, _Path)) else cycle_signals_path
+            if _signal_file.exists():
+                # Inline read: check if this finding's rule is globally suppressed
+                _signal_data = json.loads(_signal_file.read_text())
+                _suppressed = _signal_data.get('suppressed_rules', {})
+                _now = datetime.now(timezone.utc).isoformat()
+                _active_suppressions = {
+                    r: info for r, info in _suppressed.items()
+                    if info.get('expires_at', '') > _now
+                }
+                _cycle_signal_checker = _active_suppressions
+        except (OSError, json.JSONDecodeError):
+            pass
 
     for finding in findings:
         if len(created) >= max_issues_per_run:
@@ -556,6 +576,31 @@ def create_issues_for_findings(
             continue
         if finding.finding_id in existing:
             continue
+
+        # Cross-cycle suppression check — skip suppressed rules
+        if _cycle_signal_checker:
+            _global_reason = _cycle_signal_checker.get('__global__')
+            if _global_reason:
+                created.append({
+                    'issue_id': 'SUPPRESSED',
+                    'finding_id': finding.finding_id,
+                    'rule': finding.rule,
+                    'status': 'suppressed_cross_cycle',
+                    'reason': _global_reason.get('reason', 'suppressed'),
+                    'created_at': now_iso(),
+                })
+                continue
+            _rule_reason = _cycle_signal_checker.get(finding.rule)
+            if _rule_reason:
+                created.append({
+                    'issue_id': 'SUPPRESSED',
+                    'finding_id': finding.finding_id,
+                    'rule': finding.rule,
+                    'status': 'suppressed_cross_cycle',
+                    'reason': _rule_reason.get('reason', 'suppressed'),
+                    'created_at': now_iso(),
+                })
+                continue
 
         issue_id = f"QA-{len(issues_data['issues']) + len(created) + 1:04d}"
         issue = {
