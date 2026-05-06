@@ -104,6 +104,23 @@ def check():
                 for l in error_lines[-3:]:
                     alerts.append(f"    {l[:120]}")
 
+    # Cross-repo: check escalation log for active patterns
+    escalation_file = ROOT / 'state' / 'escalation_log.jsonl'
+    if escalation_file.exists():
+        try:
+            unread = []
+            for line in escalation_file.read_text().strip().splitlines():
+                if not line.strip():
+                    continue
+                rec = json.loads(line)
+                for f in rec.get('findings', []):
+                    unread.append(f'  ⚠ {f["type"]}: {f["detail"]}')
+            if unread:
+                alerts.append('--- escalations ---')
+                alerts.extend(unread[-5:])  # last 5 only
+        except (json.JSONDecodeError, OSError):
+            pass
+
     return "\n".join(alerts)
 
 def smoke_test() -> str:
