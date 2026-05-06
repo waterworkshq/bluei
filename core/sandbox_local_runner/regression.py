@@ -45,7 +45,13 @@ def _find_test_deletions(
     repo_path: Path,
     base: str,
 ) -> List[Dict[str, Any]]:
-    """Find deleted test files and estimate test function loss."""
+    """Find deleted test files and estimate test function loss.
+
+    Note: A rename (D + A of matching content on different paths) will
+    fire a false positive for the D side.  The A side (new path) is not
+    flagged.  A future enhancement could pair D+A entries by content
+    hash to suppress rename false positives.
+    """
     deletions: List[Dict[str, Any]] = []
     test_prefixes = ('tests/', 'test_', 'spec/', '__tests__/')
 
@@ -54,11 +60,16 @@ def _find_test_deletions(
             continue
         fpath = change['path']
         if any(fpath.startswith(p) for p in test_prefixes):
-            # Count test functions in the deleted file (if available)
-            deleted_path = repo_path / fpath
+            # Estimate test functions from the base-branch version
+            rc, content = run_capture(
+                ['git', 'show', f'{base}:{fpath}'],
+                cwd=str(repo_path),
+            )
             func_count = 0
-            if not deleted_path.exists():
-                pass  # File was deleted, can't read it
+            if rc == 0 and content:
+                func_count = len([l for l in content.splitlines()
+                                  if l.strip().startswith(('def test_', 'async def test_',
+                                                            'it(', 'describe(', 'test('))])
             deletions.append({
                 'type': 'test_file_deleted',
                 'path': fpath,
