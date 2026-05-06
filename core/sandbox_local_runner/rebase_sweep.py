@@ -319,6 +319,7 @@ def sweep_rebase(
     log_file: Path,
     dry_run: bool = False,
     max_prs: int = 5,
+    rebase_stats_file: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Perform a rebase sweep after a merge.
 
@@ -451,5 +452,23 @@ def sweep_rebase(
         f"conflicted={len(result['conflicted'])} "
         f"skipped={len(result['skipped'])}",
     )
+
+    # Persist sweep telemetry
+    if rebase_stats_file is not None:
+        try:
+            record = {
+                "timestamp": now_iso(),
+                "repo": gh_repo_slug,
+                "merged_pr": merged_pr_number,
+                "base": base_branch,
+                "dry_run": dry_run,
+                "rebased": [{"pr": r["pr_number"], "branch": r.get("branch","")} for r in result["rebased"]],
+                "conflicted": [{"pr": c["pr_number"], "files": c.get("files",[])} for c in result["conflicted"]],
+                "skipped": [{"pr": s["pr_number"], "reason": s.get("reason","")} for s in result["skipped"]],
+            }
+            with open(rebase_stats_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, default=str) + "\n")
+        except OSError:
+            pass
 
     return result

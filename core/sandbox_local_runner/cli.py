@@ -407,6 +407,8 @@ def main() -> int:
                    help='Enable post-merge rebase sweep across sibling PRs')
     p.add_argument('--rebase-max-prs', type=int, default=5,
                    help='Max sibling PRs to rebase in one sweep')
+    p.add_argument('--rebase-stats-file', type=Path, default=None,
+                   help='Path to rebase telemetry JSONL (default: state/rebase_stats.jsonl)')
     p.add_argument('--max-queue-items', type=int, default=None,
                     help='Maximum number of refactor queue items to process per run (default: all approved)')
     p.add_argument('--auto-approve', action='store_true', default=False,
@@ -1596,6 +1598,7 @@ def main() -> int:
                         _append_text(log_file, 'auto-rebase: starting sibling sweep')
                         try:
                             base_branch = str(pr.get('baseRefName', 'main'))
+                            rebase_stats_file = getattr(args, 'rebase_stats_file', None) or (AGENT_ROOT / 'state' / 'rebase_stats.jsonl')
                             rebase_result = sweep_rebase(
                                 repo_path=repo_path,
                                 gh_repo_slug=gh_repo_slug,
@@ -1604,6 +1607,7 @@ def main() -> int:
                                 log_file=log_file,
                                 dry_run=args.dry_run,
                                 max_prs=args.rebase_max_prs,
+                                rebase_stats_file=rebase_stats_file,
                             )
                             for r in rebase_result.get('rebased', []):
                                 _append_text(log_file, f'rebase-ok: pr=#{r["pr_number"]}')
