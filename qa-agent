@@ -967,6 +967,90 @@ def cmd_doctor(args):
     return 0 if all(c['ok'] for c in checks) else 1
 
 
+def cmd_add_repo(args):
+    """Clone a GitHub repo and onboard in one step."""
+    url = args.url.rstrip('/')
+
+    # Resolve owner/repo from URL
+    if 'github.com/' in url:
+        repo_path_part = url.split('github.com/')[-1]
+        # Strip optional .git suffix
+        repo_path_part = repo_path_part.replace('.git', '')
+    else:
+        print(f"Error: Not a GitHub URL: {url}")
+        return 1
+
+    local_name = args.name or repo_path_part.split('/')[-1]
+    root = Path(__file__).resolve().parents[1]
+    clone_dir = root / 'repos' / local_name
+
+    if clone_dir.exists():
+        print(f"→ Repo directory already exists: {clone_dir}")
+    else:
+        print(f"→ Cloning {url} to {clone_dir}...")
+        r = subprocess.run(['git', 'clone', url, str(clone_dir)], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"✗ Clone failed: {r.stderr.strip()[:300]}")
+            return 1
+        print(f"  ✓ Cloned successfully")
+
+    # Run onboard
+    print(f"→ Onboarding {local_name}...")
+    config = ConfigManager()
+    registry = RepoRegistry(config)
+    health = HealthEngine()
+    state = StateManager(config.repos_dir)
+    plugins = PluginLoader(config.plugins_dir)
+    engine = OnboardEngine(registry, plugins, health, state)
+
+    try:
+        result = engine.onboard(
+            clone_dir,
+            OnboardOptions(
+                name=local_name,
+                language=None,
+                template=None,
+                capture_baseline=not args.skip_baseline,
+                mode=args.mode,
+                profile=args.profile,
+                allow_dirty_worktree=False,
+            )
+        )
+    except Exception as e:
+        print(f"✗ Onboarding failed: {e}")
+        return 1
+
+    print(f"  ✓ Onboarded: {result.repo.config.name}")
+    print(f"  ✓ Language: {result.language.name}")
+    print(f"  ✓ Plugin: {result.plugin_id}")
+    print(f"  ✓ Safety: {args.mode} / {args.profile}")
+
+    # Install cron if not skipped
+    if not args.no_cron:
+        print(f"→ Installing cron schedule...")
+        safety_mode = args.mode
+        env = {
+            **os.environ,
+            'ISSUE_SCHEDULE': '0 */4 * * *',
+            'PR_SCHEDULE': '0 */6 * * *',
+            'REVIEW_SCHEDULE': '30 * * * *',
+            'MERGE_SCHEDULE': '0 6,18 * * *',
+            'INCLUDE_PR': '1' if safety_mode in {'pr', 'merge'} else '0',
+            'INCLUDE_REVIEW': '1',
+            'INCLUDE_MERGE': '1' if safety_mode == 'merge' else '0',
+        }
+        script = root / 'scripts' / 'install-cron.sh'
+        if script.exists():
+            r = subprocess.run([str(script), local_name], env=env, capture_output=True, text=True)
+            output = (r.stdout or '') + (f'\n{r.stderr}' if r.stderr else '')
+            print(f"  {'✓ Cron installed' if r.returncode == 0 else f'✗ Cron install failed: {output.strip()[:200]}'}")
+        else:
+            print(f"  ⚠ installer not found: {script}")
+
+    print(f"\n✅ {local_name} ready. Run: qa-agent status --repo {local_name}")
+    return 0
+
+
 def cmd_init(args):
     """Interactive first-run setup wizard."""
     print("=" * 52)
@@ -1234,6 +1318,15 @@ def main():
     doctor_parser.add_argument('--repo', help='Repository name')
     doctor_parser.add_argument('--format', choices=['text', 'whatsapp', 'json'], default='text', help='Output format')
 
+    # add-repo
+    add_repo_parser = subparsers.add_parser('add-repo', help='Clone a GitHub repo and onboard in one step')
+    add_repo_parser.add_argument('--url', required=True, help='GitHub repository URL (https://github.com/owner/repo)')
+    add_repo_parser.add_argument('--name', help='Name for this repo (default: auto-detected from URL)')
+    add_repo_parser.add_argument('--mode', choices=['observe', 'issue-only', 'pr', 'merge'], default='observe', help='Safety mode')
+    add_repo_parser.add_argument('--profile', choices=['conservative', 'balanced', 'aggressive'], default='conservative', help='Safety profile')
+    add_repo_parser.add_argument('--skip-baseline', action='store_true', help='Skip baseline capture')
+    add_repo_parser.add_argument('--no-cron', action='store_true', help='Skip cron installation')
+
     # install-cron
     cron_parser = subparsers.add_parser('install-cron', help='Install host cron schedule for a repo')
     cron_parser.add_argument('--repo', required=True, help='Repository name')
@@ -1280,6 +1373,8 @@ def main():
         return cmd_report(args)
     elif args.command == 'doctor':
         return cmd_doctor(args)
+    elif args.command == 'add-repo':
+        return cmd_add_repo(args)
     elif args.command == 'install-cron':
         return cmd_install_cron(args)
     elif args.command == 'heal':
