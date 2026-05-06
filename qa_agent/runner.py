@@ -120,24 +120,23 @@ class RunEngine:
             stale_cutoff = datetime.now(timezone.utc).timestamp() - 14400  # 4 hours
             for lock_file in lock_dir.glob('*.lock'):
                 try:
-                    mtime = lock_file.stat().st_mtime
-                    if mtime < stale_cutoff:
+                    if lock_file.stat().st_mtime < stale_cutoff:
                         lock_file.unlink()
                 except (OSError, ValueError):
                     pass
 
-        # Prune orphaned worktree references
+        # Prune orphaned worktree references in repo clones
         repos_dir = self.config.workspace / 'repos'
-        for repo_dir in repos_dir.iterdir():
-            git_dir = repo_dir / '.git'
-            if git_dir.exists():
-                import subprocess
-                subprocess.run(
-                    ['git', 'worktree', 'prune'],
-                    cwd=str(repo_dir),
-                    capture_output=True,
-                    timeout=30,
-                )
+        if repos_dir.exists():
+            for repo_dir in repos_dir.iterdir():
+                git_dir = repo_dir / '.git'
+                if git_dir.exists():
+                    subprocess.run(
+                        ['git', 'worktree', 'prune'],
+                        cwd=str(repo_dir),
+                        capture_output=True,
+                        timeout=30,
+                    )
 
     def _resolve_backend(self, repo: Repo, requested_backend: Optional[str]) -> Dict[str, Optional[str]]:
         config = repo.config
