@@ -370,6 +370,33 @@ class RunEngine:
         run.health_after = health_score.score
         run.health_delta = health_score.score - repo.current_health_score
 
+        # Health trend — one record per cycle
+        _trend_file = self.config.workspace / 'state' / 'health_trend.jsonl'
+        try:
+            _trend_file.parent.mkdir(parents=True, exist_ok=True)
+            _tune_state = {}
+            _tune_path = self.config.workspace / 'state' / 'auto_tune.json'
+            if _tune_path.exists():
+                _tune_state = json.loads(_tune_path.read_text()).get('tuned_fields', {})
+            _trend_record = {
+                'ts': now_iso(),
+                'repo': repo.config.name,
+                'cycle': 'review',
+                'health_score': health_score.score,
+                'open_issues': len(findings),
+                'active_prs': result.active_prs,
+                'blocked_prs': result.blocked_prs,
+                'retry_failed': result.retry_failed_prs,
+                'retry_exhausted': result.retry_exhausted_prs,
+                'merge_ready': result.merge_ready_prs,
+                'tune_batch': _tune_state.get('max_prs_per_run'),
+                'tune_cooldown_h': _tune_state.get('finding_cooldown_seconds', 0) // 3600 if 'finding_cooldown_seconds' in _tune_state else None,
+            }
+            with open(_trend_file, 'a', encoding='utf-8') as _f:
+                _f.write(json.dumps(_trend_record, default=str) + '\n')
+        except OSError:
+            pass
+
         self.registry.update(repo.config.name, {
             'status': RepoStatus.READY.value,
             'last_run_at': now_iso(),
@@ -468,7 +495,35 @@ class RunEngine:
             run.health_before = repo.current_health_score
             run.health_after = health_score.score
             run.health_delta = health_score.score - repo.current_health_score
-            
+
+            # Health trend record
+            _trend_file = self.config.workspace / 'state' / 'health_trend.jsonl'
+            try:
+                _trend_file.parent.mkdir(parents=True, exist_ok=True)
+                _tune_state = {}
+                _tune_path = self.config.workspace / 'state' / 'auto_tune.json'
+                if _tune_path.exists():
+                    _tune_state = json.loads(_tune_path.read_text()).get('tuned_fields', {})
+                _trend_record = {
+                    'ts': now_iso(),
+                    'repo': repo_name,
+                    'cycle': options.phase,
+                    'health_score': health_score.score,
+                    'open_issues': len(findings),
+                    'findings_detected': metrics.get('findings_detected', 0),
+                    'issues_created': metrics.get('issues_created', 0),
+                    'fixes_verified': metrics.get('fixes_verified', 0),
+                    'fixes_failed': metrics.get('fixes_failed', 0),
+                    'prs_created': metrics.get('prs_created', 0),
+                    'merges_completed': metrics.get('merges_completed', 0),
+                    'tune_batch': _tune_state.get('max_prs_per_run'),
+                    'tune_cooldown_h': _tune_state.get('finding_cooldown_seconds', 0) // 3600 if 'finding_cooldown_seconds' in _tune_state else None,
+                }
+                with open(_trend_file, 'a', encoding='utf-8') as _f:
+                    _f.write(json.dumps(_trend_record, default=str) + '\n')
+            except OSError:
+                pass
+
             # Update repo state
             self.registry.update(repo_name, {
                 'status': RepoStatus.READY.value,
