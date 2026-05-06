@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """QA Agent watchdog — inspects latest run state and logs for both repos."""
 import json
+import subprocess
 import sys
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -104,5 +106,48 @@ def check():
 
     return "\n".join(alerts)
 
+def smoke_test() -> str:
+    """Run a quick dry cycle per repo to confirm the agent starts and completes."""
+    lines: list[str] = []
+    all_passed = True
+    for repo in REPOS:
+        start = time.time()
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable, "-m", "sandbox_local_runner",
+                    "--repo-path", str(ROOT / "repos" / repo),
+                    "status",
+                    "--dry-run",
+                    "--findings-limit", "1",
+                ],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            elapsed = time.time() - start
+            if result.returncode == 0:
+                lines.append(f"  ✅ {repo} smoke-test passed ({elapsed:.1f}s)")
+            else:
+                lines.append(f"  ❌ {repo} smoke-test FAILED rc={result.returncode} ({elapsed:.1f}s)")
+                lines.append(f"     stderr: {result.stderr.strip()[-200:]}")
+                all_passed = False
+        except subprocess.TimeoutExpired:
+            elapsed = time.time() - start
+            lines.append(f"  ❌ {repo} smoke-test TIMEOUT (>30s)")
+            all_passed = False
+        except Exception as exc:
+            lines.append(f"  ❌ {repo} smoke-test ERROR: {exc}")
+            all_passed = False
+
+    prefix = "✅ HEALTH OK" if all_passed else "❌ HEALTH FAILURE"
+    return f"{prefix}\n" + "\n".join(lines)
+
+
 if __name__ == "__main__":
-    print(check())
+    args = sys.argv[1:]
+    if "--smoke-test" in args:
+        print(smoke_test())
+    else:
+        print(check())
