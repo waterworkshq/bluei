@@ -34,11 +34,40 @@ class ConfigManager:
         return self.repos_dir / repo_name / 'config.yaml'
     
     def load_repo_config(self, repo_name: str) -> Optional[RepoConfig]:
-        """Load a repo's configuration."""
+        """Load a repo's configuration with validation."""
         config_path = self.get_repo_config_path(repo_name)
         if not config_path.exists():
             return None
-        return RepoConfig.from_yaml(config_path)
+        try:
+            config = RepoConfig.from_yaml(config_path)
+        except (ValueError, yaml.YAMLError, FileNotFoundError) as e:
+            self._log_config_error(repo_name, f"parse-error: {e}")
+            return None
+
+        errors = config.validate()
+        if errors:
+            self._log_config_error(repo_name, "; ".join(errors))
+            return None
+
+        return config
+
+    def _log_config_error(self, repo_name: str, detail: str) -> None:
+        """Write a config validation failure to the escalation log."""
+        from datetime import datetime, timezone
+        import json
+        record = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'type': 'config_validation_failure',
+            'repo': repo_name,
+            'detail': detail,
+        }
+        escalation_file = self.workspace / 'state' / 'escalation_log.jsonl'
+        try:
+            escalation_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(escalation_file, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(record) + '\n')
+        except OSError:
+            pass  # Best-effort logging
     
     def save_repo_config(self, config: RepoConfig) -> Path:
         """Save a repo's configuration."""

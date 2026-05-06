@@ -357,11 +357,54 @@ class RepoConfig:
             data['review_care'] = review_care
         return cls(**data)
     
+    def validate(self) -> List[str]:
+        """Validate config fields. Returns list of error messages (empty = valid)."""
+        errors: List[str] = []
+
+        # Required string fields
+        for field_name in ('name', 'id', 'language'):
+            value = getattr(self, field_name, '')
+            if not value or not isinstance(value, str):
+                errors.append(f"{field_name}: must be a non-empty string (got {type(value).__name__}: {value!r})")
+
+        # Path field
+        if not self.path or not isinstance(self.path, str):
+            errors.append(f"path: must be a non-empty string (got {type(self.path).__name__}: {self.path!r})")
+
+        # Fix engine
+        valid_engines = {'auto', 'deterministic', 'claude', 'opencode'}
+        if self.fix_engine and self.fix_engine not in valid_engines:
+            errors.append(f"fix_engine: must be one of {valid_engines} (got {self.fix_engine!r})")
+
+        # Limits must be dict of ints
+        if self.limits and isinstance(self.limits, dict):
+            for k, v in self.limits.items():
+                if not isinstance(v, int):
+                    errors.append(f"limits.{k}: must be an int (got {type(v).__name__}: {v!r})")
+
+        # Cooldowns must be dict of ints
+        if self.cooldowns and isinstance(self.cooldowns, dict):
+            for k, v in self.cooldowns.items():
+                if not isinstance(v, int):
+                    errors.append(f"cooldowns.{k}: must be an int (got {type(v).__name__}: {v!r})")
+
+        # Safety mode must be valid
+        if self.safety and isinstance(self.safety, dict):
+            mode = self.safety.get('mode', '')
+            if mode and mode not in {e.value for e in SafetyMode}:
+                errors.append(f"safety.mode: invalid value {mode!r}")
+
+        return errors
+
     @classmethod
     def from_yaml(cls, path: Path) -> 'RepoConfig':
         import yaml
+        if not path.exists():
+            raise FileNotFoundError(f"Config not found: {path}")
         with open(path) as f:
             data = yaml.safe_load(f)
+        if data is None:
+            raise ValueError(f"Empty or invalid YAML in {path}")
         return cls.from_dict(data)
 
 
