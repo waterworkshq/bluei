@@ -564,7 +564,6 @@ def main() -> int:
 
     if args.run_phase == 'clean-prs':
         from .clean_prs import clean_stale_prs
-        from .gh import get_origin_url, parse_github_repo
         _slug_owner, _slug_name = parse_github_repo(get_origin_url(repo_path))
         _repo_slug = f'{_slug_owner}/{_slug_name}' if _slug_owner and _slug_name else ''
         _append_text(log_file, 'clean-prs: starting')
