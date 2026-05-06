@@ -1762,6 +1762,25 @@ def main() -> int:
             what_changed='; '.join(changed_parts) if changed_parts else '',
             what_worked='; '.join(worked_parts) if worked_parts else '',
         )
+
+    # Escalation checks — only for merge-cycle and pr-cycle
+    if args.run_phase in ('merge-cycle', 'pr-cycle'):
+        from .escalation import run_escalation_checks
+        escalation_file = AGENT_ROOT / 'state' / 'escalation_log.jsonl'
+        rebase_stats_file = AGENT_ROOT / 'state' / 'rebase_stats.jsonl'
+        escalation_findings = run_escalation_checks(
+            run_log_file=log_file,
+            escalation_file=escalation_file,
+            issues_data=issues_data,
+            merges_failed=merges_failed,
+            merges_succeeded=merges_succeeded,
+            rebase_stats_file=rebase_stats_file,
+        )
+        if escalation_findings:
+            _append_text(log_file, f'escalation: {len(escalation_findings)} pattern(s) detected')
+            for ef in escalation_findings:
+                _append_text(log_file, f'  escalation-{ef["type"]}: {ef["detail"]}')
+
     return 0
 
 
