@@ -403,6 +403,8 @@ def main() -> int:
     p.add_argument('--staleness-threshold-seconds', type=int, default=DEFAULT_STALENESS_THRESHOLD_SECONDS)
     p.add_argument('--auto-merge-sandbox', action='store_true', default=False)
     p.add_argument('--merge-cooldown-minutes', type=int, default=30)
+    p.add_argument('--regression-check', action='store_true', default=False,
+                   help='Enable regression detection before merging (checks test deletions, export changes, lint regressions)')
     p.add_argument('--auto-rebase-enabled', action='store_true', default=False,
                    help='Enable post-merge rebase sweep across sibling PRs')
     p.add_argument('--rebase-max-prs', type=int, default=5,
@@ -1579,6 +1581,26 @@ def main() -> int:
                 merge_attempts += 1
                 if not check_health.get('has_checks', False):
                     _append_text(log_file, f'merge-caution: pr=#{pr_number} no checks found; proceeding')
+
+                # Regression check: compare PR branch against base before merge
+                if getattr(args, 'regression_check', False):
+                    from .regression import check_regressions
+                    head_ref = str(pr.get('headRefName', ''))
+                    base_ref = str(pr.get('baseRefName', 'main'))
+                    if head_ref:
+                        _append_text(log_file, f'regression: checking PR #{pr_number} ({head_ref} vs {base_ref})')
+                        # Fetch PR branch locally for comparison
+                        from .utils import run_no_capture
+                        run_no_capture(['git', 'fetch', 'origin', head_ref], cwd=repo_path)
+                        regression_findings = check_regressions(
+                            repo_path, f'origin/{base_ref}', f'origin/{head_ref}', log_file,
+                        )
+                        if regression_findings:
+                            detail = f'regression: {len(regression_findings)} finding(s) detected — blocking merge'
+                            merges_failed += 1
+                            blocked_reasons.append(detail)
+                            _append_text(log_file, detail)
+                            continue
 
                 merged, merge_reason = merge_pr(gh_repo_slug, pr_number, dry_run=args.dry_run, cwd=repo_path)
                 if merged:
