@@ -275,6 +275,32 @@ class RunEngine:
             f"retry_failed_prs={result.retry_failed_prs} retry_exhausted_prs={result.retry_exhausted_prs} "
             f"merge_ready_prs={result.merge_ready_prs} paused_prs={result.paused_prs}"
         )
+        # Persist review telemetry as structured JSONL
+        review_stats_file = self.config.workspace / 'state' / 'review_stats.jsonl'
+        try:
+            review_stats_file.parent.mkdir(parents=True, exist_ok=True)
+            record = {
+                'timestamp': now_iso(),
+                'repo': repo.config.name,
+                'dry_run': dry_run,
+                'active_prs': result.active_prs,
+                'blocked_prs': result.blocked_prs,
+                'retry_eligible': result.retry_eligible_prs,
+                'retry_planned': result.retry_planned_prs,
+                'retry_prepared': result.retry_prepared_prs,
+                'retry_executed': result.retry_executed_prs,
+                'retry_failed': result.retry_failed_prs,
+                'retry_exhausted': result.retry_exhausted_prs,
+                'merge_ready': result.merge_ready_prs,
+                'paused': result.paused_prs,
+                'findings_detected': result.findings_detected,
+                'findings_published': result.findings_published,
+                'findings_failed': result.findings_failed,
+            }
+            with open(review_stats_file, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(record, default=str) + '\n')
+        except OSError:
+            pass
         (log_dir / f'{run.id}.log').write_text(output + '\n', encoding='utf-8')
 
         run.ended_at = now_iso()
