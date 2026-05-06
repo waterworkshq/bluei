@@ -104,6 +104,22 @@ def check():
                 for l in error_lines[-3:]:
                     alerts.append(f"    {l[:120]}")
 
+    # Cross-repo: check review cycle telemetry for summary
+    review_stats = ROOT / 'state' / 'review_stats.jsonl'
+    if review_stats.exists():
+        try:
+            lines = review_stats.read_text().strip().splitlines()
+            if lines:
+                latest = json.loads(lines[-1])
+                alerts.append('--- review cycle ---')
+                alerts.append(f'  active: {latest.get("active_prs",0)} | blocked: {latest.get("blocked_prs",0)} | merge-ready: {latest.get("merge_ready",0)}')
+                if latest.get("retry_failed",0) > 0 or latest.get("retry_exhausted",0) > 0:
+                    alerts.append(f'  ⚠ retry failures: {latest.get("retry_failed",0)} exhausted: {latest.get("retry_exhausted",0)}')
+                if latest.get("findings_failed",0) > 0:
+                    alerts.append(f'  ⚠ findings failed: {latest.get("findings_failed",0)}')
+        except (json.JSONDecodeError, OSError):
+            pass
+
     # Cross-repo: check escalation log for active patterns
     escalation_file = ROOT / 'state' / 'escalation_log.jsonl'
     if escalation_file.exists():
