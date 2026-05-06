@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -117,6 +118,58 @@ def find_existing_github_pr(repo_slug: str, finding_id: str, cwd: Path) -> Optio
         body = str(pr.get('body') or '')
         if marker in body:
             return pr
+    return None
+
+
+def find_batch_pr_by_rule(
+    repo_slug: str,
+    rule_pattern: str,
+    cwd: Path,
+    max_age_hours: int = 24,
+) -> Optional[Dict[str, Any]]:
+    """Find an existing open batch PR for the same rule pattern.
+
+    Checks open PRs with head branch matching 'qa/batch-{rule_short}-*'
+    created within max_age_hours. Helps prevent duplicate batch PR creation.
+
+    Returns the PR dict if an active duplicate is found, None otherwise.
+    """
+    rule_short = rule_pattern.replace('ruff-', '')[:8]
+    branch_prefix = f'qa/batch-{rule_short}-'
+
+    payload = gh_json(
+        [
+            'gh', 'pr', 'list',
+            '--repo', repo_slug,
+            '--state', 'open',
+            '--limit', '50',
+            '--json', 'number,title,headRefName,createdAt,url',
+        ],
+        cwd=cwd,
+    )
+    if not isinstance(payload, list):
+        return None
+
+    now = datetime.now(timezone.utc)
+
+    for pr in payload:
+        ref = pr.get('headRefName', '')
+        if not ref.startswith(branch_prefix):
+            continue
+
+        created_str = pr.get('createdAt')
+        if not created_str:
+            continue
+
+        try:
+            created = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
+        except (ValueError, AttributeError):
+            continue
+
+        age_hours = (now - created).total_seconds() / 3600
+        if age_hours <= max_age_hours:
+            return pr
+
     return None
 
 

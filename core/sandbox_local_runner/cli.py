@@ -449,6 +449,8 @@ def main() -> int:
     p.add_argument('--no-batch-pr-split-on-failure', dest='batch_pr_split_on_failure',
                    action='store_false', default=True,
                    help='Do not split batches on fix failures')
+    p.add_argument('--batch-dedup-hours', type=int, default=24,
+                   help='Max age (hours) for existing batch PRs to be considered duplicates (default: 24)')
 
     args = p.parse_args()
 

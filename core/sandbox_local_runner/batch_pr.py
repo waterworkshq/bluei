@@ -1199,6 +1199,24 @@ def process_batch(
             _append_text(log_file, f'batch-abort: {batch.batch_id} no repo slug could be derived from {origin_url}')
             return False, 'no-repo-slug'
 
+        # Dedup check: skip if an equivalent batch PR is already open
+        from .gh import find_batch_pr_by_rule
+        dup_pr = find_batch_pr_by_rule(
+            repo_slug,
+            batch.rule_pattern,
+            cwd=repo_path,
+            max_age_hours=getattr(args, 'batch_dedup_hours', 24),
+        )
+        if dup_pr is not None:
+            _append_text(
+                log_file,
+                f'batch-skip-duplicate: {batch.batch_id} existing PR #{dup_pr["number"]} '
+                f'title={dup_pr.get("title","")} url={dup_pr.get("url","")}',
+            )
+            batch.status = BatchStatus.SKIPPED.value
+            _append_text(log_file, f'batch-abort: {batch.batch_id} duplicate PR #{dup_pr["number"]}')
+            return False, f'duplicate-existing-pr-#{dup_pr["number"]}'
+
     # Create shared worktree
     if not _create_worktree(repo_path, worktree_path, branch, log_file):
         batch.status = BatchStatus.FAILED.value

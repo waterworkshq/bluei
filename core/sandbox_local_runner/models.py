@@ -123,6 +123,7 @@ class BatchStatus(str, enum.Enum):
     SPLIT = "split"
     ABORTED = "aborted"
     DRY_RUN = "dry_run"
+    SKIPPED = "skipped"
 
 
 @dataclass
