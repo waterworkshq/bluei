@@ -1283,12 +1283,63 @@ class ReviewCycleEngine:
         review_state["prs"] = review_records
 
         # Preserve PRs not in current GitHub listing to avoid state loss
-        # on transient API gaps. Also attempt recovery for previously unreachable PRs.
+        # on transient API gaps. Also attempt recovery for previously unreachable PRs
+        # with exponential backoff. After MAX_UNREACHABLE_ATTEMPTS, escalate.
+        import datetime as _dt_mod
+        _MAX_UNREACHABLE_ATTEMPTS = 10
+        _RECOVERY_BACKOFF_MINUTES = [30, 60, 120, 240, 480, 720, 1440, 2880, 5760]
         current_pr_numbers = {str(p["number"]) for p in managed_prs}
         for pr_key, prev_record in previous_active_records.items():
             if pr_key not in current_pr_numbers:
-                # Recovery attempt: targeted API fetch for unreachable PRs
                 if prev_record.get("status") == "temporarily_unreachable" and not dry_run:
+                    recovery_attempts = prev_record.get("recovery_attempts", 0)
+                    next_recovery_at = prev_record.get("next_recovery_at")
+                    now = datetime.now(timezone.utc)
+
+                    # Check backoff — skip if not yet due
+                    if next_recovery_at:
+                        try:
+                            if isinstance(next_recovery_at, str):
+                                nxt = _dt_mod.datetime.fromisoformat(next_recovery_at)
+                            else:
+                                nxt = next_recovery_at
+                            if now < nxt:
+                                # Backoff active, preserve state as-is
+                                active_records[pr_key] = {
+                                    **prev_record,
+                                    "status": "temporarily_unreachable",
+                                    "updated_at": now_iso(),
+                                }
+                                review_records[pr_key] = previous_review_records.get(pr_key, {})
+                                continue
+                        except (ValueError, TypeError):
+                            pass
+
+                    # Check max attempts — escalate if exceeded
+                    if recovery_attempts >= _MAX_UNREACHABLE_ATTEMPTS:
+                        from .escalation import write_escalation
+                        write_escalation(
+                            message=(
+                                f"PR #{pr_key} unreachable after {recovery_attempts} recovery attempts — "
+                                "manual intervention needed"
+                            ),
+                            severity="error",
+                            repo=self.repo.config.name,
+                        )
+                        _logger.warning(
+                            "Unreachable PR #%s exceeded %d recovery attempts — escalated",
+                            pr_key, _MAX_UNREACHABLE_ATTEMPTS,
+                        )
+                        active_records[pr_key] = {
+                            **prev_record,
+                            "status": "permanently_unreachable",
+                            "recovery_attempts": recovery_attempts,
+                            "updated_at": now_iso(),
+                        }
+                        review_records[pr_key] = previous_review_records.get(pr_key, {})
+                        continue
+
+                    # Recovery attempt: targeted API fetch for unreachable PRs
                     try:
                         slug = self._get_repo_slug()
                         pr_data = json.loads(
@@ -1298,12 +1349,36 @@ class ReviewCycleEngine:
                             )
                         )
                         if pr_data.get("state") == "open":
-                            _logger.info("Recovering previously unreachable PR #%s", pr_key)
+                            _logger.info(
+                                "Recovered previously unreachable PR #%s "
+                                "(was stuck for %d attempts)",
+                                pr_key, recovery_attempts,
+                            )
                             managed_prs.append(pr_data)
                             current_pr_numbers.add(pr_key)
                             continue
                     except Exception as exc:
                         _logger.debug("Recovery fetch failed for PR #%s: %s", pr_key, exc)
+
+                    # Failed recovery — increment counter, apply exponential backoff
+                    new_attempts = recovery_attempts + 1
+                    backoff_idx = min(new_attempts - 1, len(_RECOVERY_BACKOFF_MINUTES) - 1)
+                    backoff_minutes = _RECOVERY_BACKOFF_MINUTES[backoff_idx]
+                    next_recovery = now + _dt_mod.timedelta(minutes=backoff_minutes)
+                    _logger.info(
+                        "Unreachable PR #%s recovery attempt %d failed — "
+                        "next attempt in %d min",
+                        pr_key, new_attempts, backoff_minutes,
+                    )
+                    active_records[pr_key] = {
+                        **prev_record,
+                        "status": "temporarily_unreachable",
+                        "recovery_attempts": new_attempts,
+                        "next_recovery_at": next_recovery.isoformat(),
+                        "updated_at": now_iso(),
+                    }
+                    review_records[pr_key] = previous_review_records.get(pr_key, {})
+                    continue
 
                 active_records[pr_key] = {
                     **prev_record,
