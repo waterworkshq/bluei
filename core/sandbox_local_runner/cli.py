@@ -683,6 +683,9 @@ def main() -> int:
     fixes_failed_verification = 0
     issues_escalated_max_retries = 0
     created_prs = 0
+    claude_invocations = 0
+    opencode_invocations = 0
+    deterministic_invocations = 0
     merge_attempts = 0
     merges_succeeded = 0
     merges_failed = 0
@@ -1179,6 +1182,11 @@ def main() -> int:
                     finding.rule in CLAUDE_REQUIRED_RULES or
                     is_llm_fixable
                 )
+                # Track model invocation for cost tracking
+                if use_claude_engine:
+                    claude_invocations += 1
+                else:
+                    deterministic_invocations += 1
                 # Store prompt hint for LLM-fixable rules
                 extra_prompt = llm_rules.get(finding.rule, {}).get('prompt_hint') if is_llm_fixable else None
 
@@ -1715,6 +1723,8 @@ def main() -> int:
             'merged_pr_urls': merged_pr_urls,
             'blocked_events': len(blocked_reasons),
             'blocked_reasons': blocked_reasons,
+            'claude_invocations': claude_invocations,
+            'deterministic_invocations': deterministic_invocations,
         },
     )
 
@@ -1723,7 +1733,8 @@ def main() -> int:
         f'fix_attempts={fix_attempts} fixes_verified={fixes_verified} '
         f'fixes_failed_verification={fixes_failed_verification} prs_created={created_prs} '
         f'issues_escalated_max_retries={issues_escalated_max_retries} '
-        f'merges={merges_succeeded}/{merge_attempts}'
+        f'merges={merges_succeeded}/{merge_attempts} '
+        f'cost: claude={claude_invocations} deterministic={deterministic_invocations}'
     )
     _append_text(
         log_file,
@@ -1731,7 +1742,8 @@ def main() -> int:
         f'fix_attempts={fix_attempts} fixes_verified={fixes_verified} '
         f'fixes_failed_verification={fixes_failed_verification} prs={created_prs} '
         f'issues_escalated_max_retries={issues_escalated_max_retries} '
-        f'merges={merges_succeeded}/{merge_attempts}',
+        f'merges={merges_succeeded}/{merge_attempts} '
+        f'cost: claude={claude_invocations} deterministic={deterministic_invocations}',
     )
 
     # Auto-log lesson at end of active cycles (not reconcile-only or verify-only)
