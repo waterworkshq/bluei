@@ -440,6 +440,7 @@ def main() -> int:
     p.add_argument('--review-feedback', default='')
     p.add_argument('--log-lesson', dest='log_lesson', default='', help='Manual lesson entry to append to LESSONS_LOG.md')
     p.add_argument('--lessons-file', default=str(DEFAULT_LESSONS_LOG))
+    p.add_argument('--tune-override', default='', help='Info flag: auto-tune overrides applied this cycle (e.g. max_prs_per_run=1)')
 
     # Batch PR engine (Phase 1)
     p.add_argument('--batch-pr-enabled', action='store_true', default=True,

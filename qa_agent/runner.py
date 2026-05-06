@@ -230,6 +230,29 @@ class RunEngine:
         if config.baseline_checks:
             args.extend(['--baseline-checks', json.dumps(config.baseline_checks)])
 
+        # Auto-tune overrides — read from state/auto_tune.json and apply
+        tune_path = self.config.workspace / 'state' / 'auto_tune.json'
+        try:
+            if tune_path.exists():
+                tune = json.loads(tune_path.read_text())
+                tuned = tune.get('tuned_fields', {})
+                if tuned:
+                    overrides: List[str] = []
+                    if 'max_prs_per_run' in tuned:
+                        val = int(tuned['max_prs_per_run'])
+                        idx = args.index('--max-prs-per-run') + 1
+                        args[idx] = str(val)
+                        overrides.append(f'max_prs_per_run={val}')
+                    if 'finding_cooldown_seconds' in tuned:
+                        val = int(tuned['finding_cooldown_seconds'])
+                        idx = args.index('--finding-cooldown-seconds') + 1
+                        args[idx] = str(val)
+                        overrides.append(f'finding_cooldown={val // 3600}h')
+                    if overrides:
+                        args.extend(['--tune-override', '; '.join(overrides)])
+        except (OSError, json.JSONDecodeError, ValueError, IndexError):
+            pass
+
         return args
     
     def _parse_output(self, output: str) -> Dict[str, int]:
@@ -301,6 +324,18 @@ class RunEngine:
                 f.write(json.dumps(record, default=str) + '\n')
         except OSError:
             pass
+
+        # Auto-tune: check telemetry patterns and adjust thresholds
+        from .auto_tune import compute_tune, flag_tune_success
+        tune_path = self.config.workspace / 'state' / 'auto_tune.json'
+        if result.retry_failed_prs == 0 and result.findings_failed == 0:
+            flag_tune_success(tune_path)
+        else:
+            tune_suggestion = compute_tune(review_stats_file, tune_path)
+            if tune_suggestion:
+                reason = tune_suggestion.get('_reason', 'retry/finding failure pattern detected')
+                print(f'[auto-tune] {reason} — adjusting thresholds')
+
         (log_dir / f'{run.id}.log').write_text(output + '\n', encoding='utf-8')
 
         run.ended_at = now_iso()
