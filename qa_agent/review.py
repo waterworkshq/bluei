@@ -1254,6 +1254,8 @@ class ReviewCycleEngine:
         self, dry_run: bool = True, allow_review_push: bool = False
     ) -> ReviewCycleResult:
         mode = self._get_review_mode()
+        mnemo_avail = self._mnemo_available()
+        _logger.info("review-cycle mode=%s mnemo_available=%s", mode, mnemo_avail)
         if mode == ReviewMode.AUTONOMOUS_REVIEW.value:
             return self._run_autonomous_review_cycle(dry_run, allow_review_push)
         elif mode == ReviewMode.REMEDIATION.value:
