@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ceph QA Report</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+/* ── Ceph Brand Colors ───────────────────────── */
+:root {
+  --abyss: #060a0e;
+  --deep: #0d1824;
+  --whale: #111a24;
+  --blowhole: #e4ecf4;
+  --echo: #1e4858;
+  --dorsal: #2a5f73;
+  --breach: #fa746f;
+  --krill: #f0c060;
+  --glass: rgba(17, 26, 36, 0.7);
+  --border: rgba(228, 236, 244, 0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--abyss);
+  color: var(--blowhole);
+  min-height: 100vh;
+  line-height: 1.6;
+}
+.container { max-width: 1280px; margin: 0 auto; padding: 24px 32px 64px; }
+
+/* ── Header ─────────────────────────────────── */
+.header {
+  display: flex; align-items: center; gap: 16px;
+  padding: 32px 0; border-bottom: 1px solid var(--border);
+  margin-bottom: 32px;
+}
+.header-icon {
+  width: 48px; height: 48px; border-radius: 12px;
+  background: linear-gradient(135deg, var(--dorsal), var(--echo));
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; font-weight: 700; color: var(--blowhole);
+}
+.header h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.3px; }
+.header .subtitle {
+  font-size: 14px; color: rgba(228,236,244,0.5); margin-top: 2px;
+}
+.header .meta {
+  margin-left: auto; text-align: right; font-size: 13px; color: rgba(228,236,244,0.4);
+}
+
+/* ── Cards ──────────────────────────────────── */
+.card {
+  background: var(--glass);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 24px;
+  margin-bottom: 20px;
+}
+.card h2 {
+  font-size: 15px; font-weight: 600; color: rgba(228,236,244,0.7);
+  text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 16px;
+}
+.grid-2, .grid-3, .grid-4 {
+  display: grid; gap: 20px;
+}
+
+/* ── Health Gauge ───────────────────────────── */
+.health-gauge {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 32px 0;
+}
+.gauge-ring {
+  position: relative; width: 200px; height: 200px;
+}
+.gauge-ring canvas { width: 100% !important; height: 100% !important; }
+.gauge-value {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  text-align: center;
+}
+.gauge-value .number {
+  font-size: 52px; font-weight: 700; line-height: 1;
+  background: linear-gradient(135deg, var(--breach), var(--krill));
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.gauge-value .label {
+  font-size: 13px; color: rgba(228,236,244,0.5); margin-top: 4px;
+}
+.health-stats {
+  display: flex; gap: 24px; justify-content: center; margin-top: 20px;
+}
+.health-stat { text-align: center; }
+.health-stat .n { font-size: 20px; font-weight: 600; }
+.health-stat .l { font-size: 12px; color: rgba(228,236,244,0.4); margin-top: 2px; }
+
+/* ── Category Chart ─────────────────────────── */
+.chart-wrapper {
+  position: relative; height: 240px;
+}
+
+/* ── Tables ─────────────────────────────────── */
+table {
+  width: 100%; border-collapse: collapse;
+}
+th {
+  text-align: left; padding: 10px 12px;
+  font-size: 12px; font-weight: 600; color: rgba(228,236,244,0.4);
+  text-transform: uppercase; letter-spacing: 0.6px;
+  border-bottom: 1px solid var(--border);
+}
+td {
+  padding: 10px 12px; font-size: 14px;
+  border-bottom: 1px solid rgba(228,236,244,0.04);
+}
+tr:last-child td { border-bottom: none; }
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 4px;
+  font-size: 12px; font-weight: 500;
+}
+.badge-bug { background: rgba(250,116,111,0.15); color: var(--breach); }
+.badge-lint { background: rgba(240,192,96,0.15); color: var(--krill); }
+.badge-style { background: rgba(42,95,115,0.25); color: var(--dorsal); }
+.badge-security { background: rgba(250,116,111,0.12); color: #ff8a80; }
+.badge-secret { background: rgba(250,116,111,0.2); color: #ff5252; }
+.badge-dead-code { background: rgba(228,236,244,0.1); color: rgba(228,236,244,0.5); }
+.badge-simplify { background: rgba(30,72,88,0.3); color: var(--echo); }
+.badge-refactor { background: rgba(240,192,96,0.1); color: #f5d76e; }
+
+/* ── Language Tags ──────────────────────────── */
+.lang-tags { display: flex; flex-wrap: wrap; gap: 8px; }
+.lang-tag {
+  padding: 6px 16px; border-radius: 8px;
+  font-size: 13px; font-weight: 500;
+  background: rgba(42,95,115,0.15);
+  border: 1px solid rgba(42,95,115,0.2);
+  display: flex; align-items: center; gap: 6px;
+}
+.lang-tag .count {
+  color: var(--krill); font-weight: 600;
+}
+
+/* ── Summary ────────────────────────────────── */
+.summary-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+}
+.summary-item {
+  background: rgba(30,72,88,0.15);
+  border-radius: 12px; padding: 20px; text-align: center;
+}
+.summary-item .value { font-size: 28px; font-weight: 700; }
+.summary-item .label { font-size: 12px; color: rgba(228,236,244,0.4); margin-top: 4px; }
+
+/* ── Color for health scores ────────────────── */
+.color-green { color: #81c784; }
+.color-yellow { color: var(--krill); }
+.color-red { color: var(--breach); }
+
+/* ── Responsive ─────────────────────────────── */
+@media (min-width: 1024px) {
+  .grid-2 { grid-template-columns: 1fr 1fr; }
+  .grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .grid-4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+}
+@media (max-width: 768px) {
+  .container { padding: 16px; }
+  .header { flex-direction: column; align-items: flex-start; }
+  .header .meta { margin-left: 0; text-align: left; }
+  .gauge-ring { width: 160px; height: 160px; }
+  .gauge-value .number { font-size: 40px; }
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+  <!-- ═══ Header ═══ -->
+  <div class="header">
+    <div class="header-icon">⟁</div>
+    <div>
+      <h1>Ceph QA Report</h1>
+      <div class="subtitle" id="repo-name">Repository</div>
+    </div>
+    <div class="meta" id="report-meta">Generated — <span id="report-date"></span></div>
+  </div>
+
+  <!-- ═══ Summary Cards ═══ -->
+  <div class="summary-grid" id="summary-grid"></div>
+
+  <!-- ═══ Health + Categories ═══ -->
+  <div class="grid-2">
+    <div class="card">
+      <h2>Health Score</h2>
+      <div class="health-gauge">
+        <div class="gauge-ring">
+          <canvas id="health-canvas"></canvas>
+          <div class="gauge-value">
+            <div class="number" id="health-number">—</div>
+            <div class="label">out of 100</div>
+          </div>
+        </div>
+        <div class="health-stats" id="health-stats"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Findings by Category</h2>
+      <div class="chart-wrapper"><canvas id="category-chart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- ═══ Trend + Languages ═══ -->
+  <div class="grid-2">
+    <div class="card">
+      <h2>Health Trend (30 days)</h2>
+      <div class="chart-wrapper" style="height:280px"><canvas id="trend-chart"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>Language Distribution</h2>
+      <div class="chart-wrapper" style="height:280px"><canvas id="lang-chart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- ═══ Top Rules ═══ -->
+  <div class="card">
+    <h2>Top Rules by Frequency</h2>
+    <table id="rules-table">
+      <thead><tr><th>Rule</th><th>Category</th><th>Count</th><th>Language</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+// ═══ Data ═══════════════════════════════════════
+// This object will be replaced at generation time.
+const DATA = {
+  "repo": {
+    "name": "click-test",
+    "path": "/tmp/ceph-test-click",
+    "language": "unknown",
+    "safety_mode": "active"
+  },
+  "health_score": 81.0,
+  "counts": {
+    "total_findings": 485,
+    "open_issues": 10,
+    "open_prs": 20,
+    "findings_fixed": 0
+  },
+  "findings_by_category": {
+    "bug": 0,
+    "lint": 1,
+    "style": 482,
+    "security": 1,
+    "secret": 0,
+    "dead-code": 0,
+    "simplify": 0,
+    "refactor": 0,
+    "other": 1
+  },
+  "health_trend": [
+    {
+      "date": "2026-05-10",
+      "score": 100.0
+    },
+    {
+      "date": "2026-05-10",
+      "score": 97.7
+    },
+    {
+      "date": "2026-05-11",
+      "score": 81.0
+    }
+  ],
+  "top_rules": [
+    {
+      "rule": "mdl-md013",
+      "category": "style",
+      "count": 359,
+      "language": "\u2014"
+    },
+    {
+      "rule": "ruff-c408",
+      "category": "style",
+      "count": 21,
+      "language": "\u2014"
+    },
+    {
+      "rule": "mdl-md027",
+      "category": "style",
+      "count": 21,
+      "language": "\u2014"
+    },
+    {
+      "rule": "mdl-md007",
+      "category": "style",
+      "count": 15,
+      "language": "\u2014"
+    },
+    {
+      "rule": "mdl-md041",
+      "category": "style",
+      "count": 12,
+      "language": "\u2014"
+    },
+    {
+      "rule": "mdl-md030",
+      "category": "style",
+      "count": 11,
+      "language": "\u2014"
+    },
+    {
+      "rule": "mdl-md014",
+      "category": "style",
+      "count": 10,
+      "language": "\u2014"
+    },
+    {
+      "rule": "mdl-md012",
+      "category": "style",
+      "count": 8,
+      "language": "\u2014"
+    },
+    {
+      "rule": "mdl-md032",
+      "category": "style",
+      "count": 8,
+      "language": "\u2014"
+    },
+    {
+      "rule": "mdl-md031",
+      "category": "style",
+      "count": 4,
+      "language": "\u2014"
+    },
+    {
+      "rule": "mdl-md022",
+      "category": "style",
+      "count": 4,
+      "language": "\u2014"
+    },
+    {
+      "rule": "mdl-md004",
+      "category": "style",
+      "count": 3,
+      "language": "\u2014"
+    },
+    {
+      "rule": "mdl-md028",
+      "category": "style",
+      "count": 2,
+      "language": "\u2014"
+    },
+    {
+      "rule": "mdl-md040",
+      "category": "style",
+      "count": 2,
+      "language": "\u2014"
+    },
+    {
+      "rule": "mdl-md033",
+      "category": "style",
+      "count": 2,
+      "language": "\u2014"
+    }
+  ],
+  "language_distribution": {
+    "generic": 1,
+    "python": 22,
+    "shell": 1,
+    "markdown": 461
+  },
+  "generated_at": "2026-05-11T09:16:14.720035+00:00"
+};
+
+// ═══ Render ═════════════════════════════════════
+document.addEventListener('DOMContentLoaded', () => {
+  const d = DATA;
+  document.getElementById('repo-name').textContent = d.repo.name + (d.repo.language ? ` · ${d.repo.language}` : '');
+  document.getElementById('report-date').textContent = new Date().toLocaleString();
+
+  // Summary
+  const summary = document.getElementById('summary-grid');
+  const sm = [
+    { v: d.counts.total_findings, l: 'Total Findings' },
+    { v: d.counts.open_issues, l: 'Open Issues' },
+    { v: d.counts.open_prs, l: 'Open PRs' },
+    { v: d.counts.findings_fixed, l: 'Issues Fixed' },
+  ];
+  sm.forEach(s => {
+    const el = document.createElement('div'); el.className = 'summary-item';
+    el.innerHTML = `<div class="value">${s.v}</div><div class="label">${s.l}</div>`;
+    summary.appendChild(el);
+  });
+
+  // Health gauge
+  const hs = Math.round(d.health_score);
+  document.getElementById('health-number').textContent = hs;
+  const hc = document.getElementById('health-canvas');
+  const ctx = hc.getContext('2d');
+  hc.width = 400; hc.height = 400;
+  const cx = 200, cy = 200, r = 170, lw = 28;
+  const start = -Math.PI * 0.75;
+  const end = Math.PI * 0.75;
+  const total = end - start;
+  const pct = Math.min(Math.max(hs / 100, 0), 1);
+
+  // Background arc
+  ctx.beginPath(); ctx.arc(cx, cy, r, start, end);
+  ctx.strokeStyle = 'rgba(228,236,244,0.06)'; ctx.lineWidth = lw; ctx.lineCap = 'round'; ctx.stroke();
+
+  // Foreground arc
+  const angle = start + total * pct;
+  const grad = ctx.createLinearGradient(0, 0, 400, 400);
+  grad.addColorStop(0, '#fa746f'); grad.addColorStop(0.5, '#f0c060'); grad.addColorStop(1, '#81c784');
+  ctx.beginPath(); ctx.arc(cx, cy, r, start, angle);
+  ctx.strokeStyle = grad; ctx.lineWidth = lw; ctx.lineCap = 'round'; ctx.stroke();
+
+  // Health stats
+  const stats = document.getElementById('health-stats');
+  const ss = [
+    { v: d.counts.total_findings, l: 'Findings', c: 'color-yellow' },
+    { v: d.counts.open_issues, l: 'Issues', c: hs >= 70 ? 'color-green' : 'color-red' },
+  ];
+  ss.forEach(s => {
+    const el = document.createElement('div'); el.className = 'health-stat';
+    el.innerHTML = `<div class="n ${s.c}">${s.v}</div><div class="l">${s.l}</div>`;
+    stats.appendChild(el);
+  });
+
+  // Category chart
+  const cats = d.findings_by_category || {};
+  const catLabels = Object.keys(cats).filter(k => cats[k] > 0);
+  const catVals = catLabels.map(k => cats[k]);
+  const catColors = {
+    bug: '#fa746f', lint: '#f0c060', style: '#2a5f73', security: '#ff8a80',
+    secret: '#ff5252', 'dead-code': 'rgba(228,236,244,0.3)',
+    simplify: '#1e4858', refactor: '#f5d76e', other: 'rgba(228,236,244,0.15)'
+  };
+  new Chart(document.getElementById('category-chart'), {
+    type: 'doughnut',
+    data: {
+      labels: catLabels,
+      datasets: [{ data: catVals, backgroundColor: catLabels.map(k => catColors[k] || '#555'), borderWidth: 0 }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'right', labels: { color: 'rgba(228,236,244,0.6)', padding: 16 } } }
+    }
+  });
+
+  // Trend chart
+  if (d.health_trend && d.health_trend.length > 0) {
+    const trend = d.health_trend;
+    new Chart(document.getElementById('trend-chart'), {
+      type: 'line',
+      data: {
+        labels: trend.map(p => p.date || p.label || ''),
+        datasets: [{
+          label: 'Health Score',
+          data: trend.map(p => p.score ?? p.value ?? 0),
+          borderColor: '#f0c060', backgroundColor: 'rgba(240,192,96,0.08)',
+          fill: true, tension: 0.3, pointRadius: 3,
+          pointBackgroundColor: '#f0c060', borderWidth: 2
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          y: { min: 0, max: 100, grid: { color: 'rgba(228,236,244,0.04)' },
+               ticks: { color: 'rgba(228,236,244,0.3)' } },
+          x: { grid: { display: false }, ticks: { color: 'rgba(228,236,244,0.3)', maxTicksLimit: 10 } }
+        },
+        plugins: { legend: { display: false } }
+      }
+    });
+  } else {
+    document.getElementById('trend-chart').parentElement.innerHTML = '<div style="text-align:center;padding:60px 0;color:rgba(228,236,244,0.2);font-size:14px;">No trend data available</div>';
+  }
+
+  // Language chart
+  const langs = d.language_distribution || {};
+  const langLabels = Object.keys(langs);
+  const langVals = langLabels.map(k => langs[k]);
+  if (langVals.length > 0) {
+    new Chart(document.getElementById('lang-chart'), {
+      type: 'bar',
+      data: {
+        labels: langLabels,
+        datasets: [{
+          data: langVals,
+          backgroundColor: ['#fa746f','#f0c060','#2a5f73','#81c784','#1e4858','rgba(228,236,244,0.3)'],
+          borderRadius: 4, borderSkipped: false
+        }]
+      },
+      options: {
+        indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        scales: {
+          x: { grid: { color: 'rgba(228,236,244,0.04)' }, ticks: { color: 'rgba(228,236,244,0.3)' } },
+          y: { grid: { display: false }, ticks: { color: 'rgba(228,236,244,0.6)' } }
+        },
+        plugins: { legend: { display: false } }
+      }
+    });
+  } else {
+    document.getElementById('lang-chart').parentElement.innerHTML = '<div style="text-align:center;padding:60px 0;color:rgba(228,236,244,0.2);font-size:14px;">No language data</div>';
+  }
+
+  // Top rules table
+  const tb = document.querySelector('#rules-table tbody');
+  const rules = d.top_rules || [];
+  if (rules.length === 0) {
+    tb.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:40px;color:rgba(228,236,244,0.2);">No rules data available</td></tr>';
+  } else {
+    rules.slice(0, 20).forEach(r => {
+      const cat = (r.category || 'other').toLowerCase();
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td style="font-family:monospace;font-size:13px;">${r.rule || r.name || '—'}</td>
+        <td><span class="badge badge-${cat}">${r.category || 'other'}</span></td>
+        <td>${r.count ?? r.value ?? 0}</td>
+        <td style="color:rgba(228,236,244,0.4);font-size:13px;">${r.language || '—'}</td>
+      `;
+      tb.appendChild(tr);
+    });
+  }
+});
+</script>
+</body>
+</html>

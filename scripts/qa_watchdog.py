@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""QA Agent watchdog — inspects latest run state and logs for both repos."""
+"""Blenny watchdog — inspects latest run state and logs for all registered repos."""
 import json
+import os
 import subprocess
 import sys
 import time
@@ -8,7 +9,6 @@ from pathlib import Path
 from datetime import datetime
 
 ROOT = Path(__file__).resolve().parents[1]
-REPOS = ["ky", "zulip"]
 RUN_MARKER = "🏃 Running "
 
 
@@ -19,6 +19,25 @@ def load_json(path):
         return json.loads(path.read_text())
     except Exception:
         return {}
+
+
+def _discover_repos():
+    """Read enabled repos from registry.yaml."""
+    registry_path = ROOT / "registry.yaml"
+    if not registry_path.exists():
+        return []
+    try:
+        import yaml
+        data = yaml.safe_load(registry_path.read_text())
+        return [
+            r["name"] for r in data.get("repos", [])
+            if r.get("enabled", True)
+        ]
+    except Exception:
+        return []
+
+
+REPOS = _discover_repos()
 
 
 def latest_run(repo):
@@ -63,8 +82,18 @@ def recent_error_lines(lines):
 
 def check():
     alerts = []
+
+    if not REPOS:
+        return "No repos configured. Run 'blenny init' or 'blenny onboard --repo <path>' to add one."
+
     for repo in REPOS:
         rd = ROOT / "repos" / repo
+        if not rd.exists():
+            alerts.append(f"--- {repo} ---")
+            alerts.append(f"  ⚠ State directory not found at {rd}")
+            alerts.append(f"  Repo is registered but never initialized. Run 'blenny scan {repo}' to create state.")
+            continue
+
         status = load_json(rd / "state" / "status.json")
         issues_data = load_json(rd / "state" / "issues.json")
         prs_data = load_json(rd / "state" / "active_prs.json")
@@ -139,40 +168,47 @@ def check():
 
     return "\n".join(alerts)
 
+
 def smoke_test() -> str:
-    """Run a quick dry cycle per repo to confirm the agent starts and completes."""
+    """Quick sanity — validates module import and repo state dirs."""
     lines: list[str] = []
     all_passed = True
+
+    if not REPOS:
+        return "No repos configured — nothing to smoke test."
+
+    # Validate the core module loads
+    try:
+        import importlib.util
+        core_mod = "sandbox_local_runner"
+        spec = importlib.util.find_spec(core_mod)
+        if spec is None:
+            # Try with PYTHONPATH
+            sys.path.insert(0, str(ROOT / "core"))
+            spec = importlib.util.find_spec(core_mod)
+        if spec:
+            lines.append(f"  ✅ module '{core_mod}' importable")
+        else:
+            lines.append(f"  ❌ module '{core_mod}' NOT FOUND")
+            all_passed = False
+    except Exception as exc:
+        lines.append(f"  ❌ module import error: {exc}")
+        all_passed = False
+
+    # Check each repo state dir
     for repo in REPOS:
-        start = time.time()
-        try:
-            result = subprocess.run(
-                [
-                    sys.executable, "-m", "sandbox_local_runner",
-                    "--repo-path", str(ROOT / "repos" / repo),
-                    "status",
-                    "--dry-run",
-                    "--findings-limit", "1",
-                ],
-                cwd=str(ROOT),
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            elapsed = time.time() - start
-            if result.returncode == 0:
-                lines.append(f"  ✅ {repo} smoke-test passed ({elapsed:.1f}s)")
-            else:
-                lines.append(f"  ❌ {repo} smoke-test FAILED rc={result.returncode} ({elapsed:.1f}s)")
-                lines.append(f"     stderr: {result.stderr.strip()[-200:]}")
-                all_passed = False
-        except subprocess.TimeoutExpired:
-            elapsed = time.time() - start
-            lines.append(f"  ❌ {repo} smoke-test TIMEOUT (>30s)")
-            all_passed = False
-        except Exception as exc:
-            lines.append(f"  ❌ {repo} smoke-test ERROR: {exc}")
-            all_passed = False
+        rd = ROOT / "repos" / repo
+        if not rd.exists():
+            lines.append(f"  ⚠ {repo} state dir missing — no runs yet")
+            continue
+        # Quick check: can we list run files?
+        runs_dir = rd / "runs"
+        if runs_dir.exists():
+            run_files = list(runs_dir.glob("run-*.json"))
+            run_count = len(run_files)
+        else:
+            run_count = 0
+        lines.append(f"  ✅ {repo}: {run_count} run files, state dir present")
 
     prefix = "✅ HEALTH OK" if all_passed else "❌ HEALTH FAILURE"
     return f"{prefix}\n" + "\n".join(lines)

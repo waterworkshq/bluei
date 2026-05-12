@@ -1,0 +1,6 @@
+STATUS=STABLE
+MARKED_AT=2026-05-06T04:22:00+05:30
+MARKED_BY=QA-Stability-Watch-Cron
+CONSECUTIVE_CLEAN_CHECKS=3
+REMAINING_KNOWN_ISSUES=ky#38_temporarily_unreachable,zulip#120_temporarily_unreachable,zulip#121_temporarily_unreachable,zulip_issue_cap_guard
+NOTE=Sound confirmed threshold passed. No regressions after 12-fix batch. Cron can be retired or reduced to daily.

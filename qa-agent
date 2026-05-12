@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""QA Agent CLI entry point."""
+"""QA Agent — Autonomous repository quality assurance (blenny backend)."""
 
 import argparse
 import json
@@ -183,7 +183,7 @@ def cmd_status(args):
             print(json.dumps({'repo': repo.to_dict(), 'recent_runs': recent_runs}, indent=2))
             return 0
 
-        print(f"QA Agent Status: {repo.config.name}")
+        print(f"Blenny — {repo.config.name}: {status}")
         print("=" * 60)
         print(f"Status: {_status_icon(repo.status)} {repo.status.value}")
         print(f"Health: {_health_icon(repo.current_health_score)} {repo.current_health_score:.1f}/100")
@@ -216,7 +216,7 @@ def cmd_status(args):
 
     repos = registry.list_all()
     if args.format == 'whatsapp':
-        lines = [f"QA Agent | repos: {len(repos)}"]
+        lines = [f"Blenny (qa-agent) | repos: {len(repos)}"]
         for repo in repos:
             lines.append(f"{_status_icon(repo.status)} {repo.config.name} | {_health_icon(repo.current_health_score)} {repo.current_health_score:.1f} | findings {repo.current_findings_count}")
         print('\n'.join(lines))
@@ -225,7 +225,7 @@ def cmd_status(args):
         print(json.dumps({'version': __version__, 'workspace': str(config.workspace), 'repos': [r.to_dict() for r in repos]}, indent=2))
         return 0
 
-    print("QA Agent Status")
+    print("Blenny — Status")
     print("=" * 60)
     print(f"Version: {__version__}")
     print(f"Workspace: {config.workspace}")
@@ -251,7 +251,7 @@ def cmd_repos_list(args):
     if not repos:
         print("No repos configured.")
         print("\nTo onboard a new repo, run:")
-        print("  qa-agent onboard --repo /path/to/repo")
+        print("  blenny onboard --repo /path/to/repo")
         return 0
     
     print("Configured Repositories:")
@@ -503,9 +503,9 @@ def cmd_onboard(args):
                 print(f"   - {item}")
         
         print(f"\n🚀 Next steps:")
-        print(f"   Preflight: qa-agent preflight --repo {repo_path}")
-        print(f"   Run: qa-agent run --repo {result.repo.config.name} --phase issue-cycle --dry-run")
-        print(f"   Status: qa-agent repos show {result.repo.config.name}")
+        print(f"   Preflight: blenny preflight --repo {repo_path}")
+        print(f"   Run: blenny duster {result.repo.config.name}")
+        print(f"   Status: blenny status {result.repo.config.name}")
         
         return 0
         
@@ -596,7 +596,6 @@ def cmd_run(args):
 
 def cmd_report(args):
     """Generate a report for a repository."""
-    from qa_agent.report import ReportGenerator
     from qa_agent.health import HealthEngine
 
     config = ConfigManager()
@@ -640,11 +639,45 @@ def cmd_report(args):
     # Get review care diagnostics
     review_care = _load_review_care_diagnostics(state, args.repo)
 
+    # -- New format: json / html (Phase 5 dashboard) --
+    if args.format == 'json':
+        sys.path.insert(0, str(Path(__file__).resolve().parent / 'core'))
+        from sandbox_local_runner.report import extract_report_data
+        data = extract_report_data(
+            repo_path=str(repo.config.path),
+            repo_name=args.repo,
+            state_dir=state._get_state_dir(args.repo),
+            repos_dir=config.repos_dir,
+            days=args.days,
+        )
+        print(json.dumps(data, indent=2))
+        return 0
+
+    if args.format == 'html':
+        sys.path.insert(0, str(Path(__file__).resolve().parent / 'core'))
+        from sandbox_local_runner.report import extract_report_data, generate_report_html
+        data = extract_report_data(
+            repo_path=str(repo.config.path),
+            repo_name=args.repo,
+            state_dir=state._get_state_dir(args.repo),
+            repos_dir=config.repos_dir,
+            days=args.days,
+        )
+        html = generate_report_html(data)
+        output_path = Path(args.output) if args.output else (
+            Path(__file__).resolve().parent / 'reports' / f"{args.repo}-report.html"
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(html)
+        print(f"\nHTML report generated: {output_path}")
+        return 0
+
     if args.format in {'text', 'whatsapp'}:
         print(_text_report_summary(repo, findings, issues, runs, args.days, review_care))
         return 0
 
     print(f"Generating report for {args.repo}...")
+    from qa_agent.report import ReportGenerator
     generator = ReportGenerator()
     output_path = Path(args.output) if args.output else None
 
@@ -737,6 +770,159 @@ def cmd_install_cron(args):
     output = (proc.stdout or '') + (('\n' + proc.stderr) if proc.stderr else '')
     print(output.strip())
     return proc.returncode
+
+
+def _resolve_repo_path(arg: str) -> Path:
+    """Resolve a repo name or path to an actual filesystem path.
+    
+    Checks the registry first (by name), then falls back to direct path resolution.
+    """
+    config = ConfigManager()
+    registry = RepoRegistry(config)
+    repo_obj = registry.find_by_name(arg)
+    if repo_obj and repo_obj.config.path:
+        p = Path(repo_obj.config.path).resolve()
+        if p.exists():
+            return p, repo_obj.config.name
+    p = Path(arg).resolve()
+    return p, p.name
+
+
+def cmd_ci(args):
+    """Generate a GitHub Actions workflow (.github/workflows/blenny.yml) for a repo."""
+    repo_path, repo_name = _resolve_repo_path(args.repo)
+    if not repo_path.exists():
+        print(f"Error: Repository path does not exist: {repo_path}")
+        return 1
+
+    # Locate the template
+    root = Path(__file__).resolve().parent
+    template_path = root / 'templates' / 'ci.yml.j2'
+    if not template_path.exists():
+        # Search broader
+        for candidate in [root.parent / 'templates' / 'ci.yml.j2', root / 'templates' / 'ci.yml.j2']:
+            if candidate.exists():
+                template_path = candidate
+                break
+
+    if not template_path.exists():
+        print(f"Error: CI template not found at templates/ci.yml.j2")
+        return 1
+
+    try:
+        template = template_path.read_text()
+    except Exception as e:
+        print(f"Error: Failed to read template: {e}")
+        return 1
+
+    # Simple template rendering (Jinja2-free)
+    agent_root = str(root.resolve())
+    rendered = (
+        template.replace('{{ repo_name }}', repo_name)
+        .replace('__BLENNY_INSTALL_PATH__', agent_root)
+    )
+
+    # Create .github/workflows directory
+    workflow_dir = repo_path / '.github' / 'workflows'
+    workflow_dir.mkdir(parents=True, exist_ok=True)
+
+    output_path = workflow_dir / 'blenny.yml'
+    if output_path.exists() and not args.force:
+        print(f"Warning: {output_path} already exists. Use --force to overwrite.")
+        return 1
+
+    output_path.write_text(rendered)
+    print(f"✅ Generated CI workflow: {output_path}")
+    return 0
+
+
+def cmd_install_hook(args):
+    """Install a pre-commit hook that runs blenny duster on staged changes."""
+    repo_path, repo_name = _resolve_repo_path(args.repo)
+    if not repo_path.exists():
+        print(f"Error: Repository path does not exist: {repo_path}")
+        return 1
+
+    git_dir = repo_path / '.git'
+    if not git_dir.exists():
+        print(f"Error: Not a git repository: {repo_path}")
+        return 1
+
+    hooks_dir = repo_path / '.git' / 'hooks'
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+
+    hook_path = hooks_dir / 'pre-commit'
+    if hook_path.exists() and not args.force:
+        print(f"Warning: {hook_path} already exists. Use --force to overwrite.")
+        return 1
+
+    # Resolve the blenny script location relative to the qa-agent root
+    root = Path(__file__).resolve().parent
+    blenny_script = root / 'bin' / 'blenny'
+    agent_root = str(root.resolve())
+
+    hook_script = f'''#!/usr/bin/env bash
+# Pre-commit hook generated by `blenny install-hook`
+# Runs blenny duster (dry-run scan) on staged changes before each commit.
+#
+# To skip, use: git commit --no-verify
+# To uninstall: rm .git/hooks/pre-commit
+
+set -euo pipefail
+
+# Only run on tracked file types (skip binaries)
+BLENNY={blenny_script}
+REPO_PATH=$(git rev-parse --show-toplevel 2>/dev/null || echo "{repo_path}")
+
+# Check if blenny is available
+if [[ ! -x "$BLENNY" ]]; then
+    echo "⚠️  blenny not found at $BLENNY — skipping pre-commit check" >&2
+    exit 0
+fi
+
+# Get staged files
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
+if [[ -z "$STAGED_FILES" ]]; then
+    exit 0
+fi
+
+# Filter to tracked file types (skip binaries)
+SKIP_PATTERNS='[.](png|jpg|jpeg|gif|bmp|ico|svg|woff|woff2|ttf|otf|eot|pdf|zip|tar|gz|bz2|xz|7z|rar|exe|dll|so|dylib|o|a|lib|pyc|pyo|class|jar|war|ear)$'
+FILTERED=()
+for file in $STAGED_FILES; do
+    if echo "$file" | grep -qE "$SKIP_PATTERNS"; then
+        continue
+    fi
+    FILTERED+=("$file")
+done
+
+if [[ ${{#FILTERED[@]}} -eq 0 ]]; then
+    exit 0
+fi
+
+echo "🧹 Blenny: Running duster (dry-run scan) on staged changes..." >&2
+
+# Run blenny duster on the repo
+if ! "$BLENNY" duster "$(basename "$REPO_PATH")" --repo-path "$REPO_PATH" >/dev/null 2>&1; then
+    echo "⚠️  Blenny duster found issues in staged files." >&2
+    echo "   Review and fix issues, or commit with --no-verify to skip." >&2
+    echo "" >&2
+    # Show findings summary
+    "$BLENNY" duster "$(basename "$REPO_PATH")" --repo-path "$REPO_PATH" 2>&1 | tail -20
+    exit 1
+fi
+
+echo "✅ Blenny: No issues found in staged changes." >&2
+exit 0
+'''
+
+    hook_path.write_text(hook_script)
+    hook_path.chmod(0o755)  # Make executable
+
+    print(f"✅ Installed pre-commit hook: {hook_path}")
+    print(f"   The hook runs 'blenny duster' on staged changes before each commit.")
+    print(f"   To skip the check: git commit --no-verify")
+    return 0
 
 
 def cmd_heal(args):
@@ -913,7 +1099,7 @@ def cmd_doctor(args):
         return 0 if all(c['ok'] for c in checks) else 1
 
     if args.format == 'whatsapp':
-        lines = ['QA Agent Doctor']
+        lines = ['Blenny — Doctor']
         for check in checks:
             lines.append(f"{'✅' if check['ok'] else '❌'} {check['name']}: {check['detail']}")
         for report in repo_reports:
@@ -933,7 +1119,7 @@ def cmd_doctor(args):
         print('\n'.join(lines))
         return 0 if all(c['ok'] for c in checks) else 1
 
-    print('QA Agent Doctor')
+    print('Blenny — Doctor')
     print('=' * 60)
     for check in checks:
         print(f"{'OK' if check['ok'] else 'FAIL':<5} {check['name']}: {check['detail']}")
@@ -1047,14 +1233,14 @@ def cmd_add_repo(args):
         else:
             print(f"  ⚠ installer not found: {script}")
 
-    print(f"\n✅ {local_name} ready. Run: qa-agent status --repo {local_name}")
+    print(f"\n✅ {local_name} ready. Run: blenny status --repo {local_name}")
     return 0
 
 
 def cmd_init(args):
     """Interactive first-run setup wizard."""
     print("=" * 52)
-    print(" QA Agent — First-Run Setup")
+    print(" Blenny — First-Run Setup")
     print("=" * 52)
 
     # 1. Check prerequisites
@@ -1101,7 +1287,7 @@ def cmd_init(args):
     while repo_path is None:
         choice = input("\n  Your choice [1/2/q]: ").strip()
         if choice.lower() == 'q':
-            print("  Exiting. Run './qa-agent onboard' when ready.")
+            print("  Exiting. Run 'blenny onboard' when ready.")
             return 0
         if choice == '1':
             p = input("  Local path: ").strip()
@@ -1198,17 +1384,17 @@ def cmd_init(args):
         print("\n  Skipping cron install.")
 
     print("\n" + "=" * 52)
-    print(f" QA Agent setup complete for '{repo_name}'")
+    print(f" Blenny setup complete for '{repo_name}'")
     print("=" * 52)
     print(f"\n  Next steps:")
-    print(f"    ./qa-agent status --repo {repo_name}")
-    print(f"    ./qa-agent run --repo {repo_name} --phase issue-cycle --dry-run")
-    print(f"\n  See ./qa-agent --help for all commands.")
+    print(f"    blenny status --repo {repo_name}")
+    print(f"    blenny run --repo {repo_name} --phase issue-cycle --dry-run")
+    print(f"\n  See blenny --help for all commands.")
     return 0
 
 
 def cmd_update(args):
-    """Self-update qa-agent to the latest version."""
+    """Self-update Blenny (qa-agent) to the latest version."""
     root = Path(__file__).resolve().parents[1]
 
     # Detect install method
@@ -1311,7 +1497,7 @@ def main():
     report_parser.add_argument('--repo', required=True, help='Repository name')
     report_parser.add_argument('--output', '-o', help='Output file path')
     report_parser.add_argument('--days', type=int, default=30, help='Days of history')
-    report_parser.add_argument('--format', choices=['pdf', 'text', 'whatsapp'], default='pdf', help='Output format')
+    report_parser.add_argument('--format', choices=['pdf', 'text', 'whatsapp', 'json', 'html'], default='pdf', help='Output format')
 
     # doctor
     doctor_parser = subparsers.add_parser('doctor', help='Run operational checks')
@@ -1349,6 +1535,16 @@ def main():
     # update
     update_parser = subparsers.add_parser('update', help='Self-update qa-agent to the latest version')
 
+    # ci
+    ci_parser = subparsers.add_parser('ci', help='Generate GitHub Actions CI workflow')
+    ci_parser.add_argument('--repo', required=True, help='Path to the repository')
+    ci_parser.add_argument('--force', action='store_true', help='Overwrite existing workflow file')
+
+    # install-hook
+    hook_parser = subparsers.add_parser('install-hook', help='Install pre-commit hook that runs blenny duster')
+    hook_parser.add_argument('--repo', required=True, help='Path to the repository')
+    hook_parser.add_argument('--force', action='store_true', help='Overwrite existing hook')
+
     args = parser.parse_args()
     
     if args.command == 'status':
@@ -1375,6 +1571,10 @@ def main():
         return cmd_doctor(args)
     elif args.command == 'add-repo':
         return cmd_add_repo(args)
+    elif args.command == 'ci':
+        return cmd_ci(args)
+    elif args.command == 'install-hook':
+        return cmd_install_hook(args)
     elif args.command == 'install-cron':
         return cmd_install_cron(args)
     elif args.command == 'heal':

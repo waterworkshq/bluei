@@ -1,0 +1,534 @@
+#!/usr/bin/env python3
+"""
+blenny — Keep your waters clean. Ink and dust.
+
+Thin, smart dispatcher. Handles venv bootstrap, lexicon mapping,
+help text, and dispatch — then hands off to the qa-agent engine.
+"""
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+BLENNY_VERSION = "2.5.0"
+
+# ── Resolve paths ──────────────────────────────────────────────
+BLENNY_DIR = Path(__file__).resolve().parent.parent
+QA_AGENT = BLENNY_DIR / "qa-agent"
+VENV_PYTHON = BLENNY_DIR / ".venv" / "bin" / "python3"
+BLENNY_SECRETS = BLENNY_DIR / "bin" / "blenny_secrets.py"
+
+
+# ── Colors (no-op if not a TTY) ────────────────────────────────
+if sys.stderr.isatty():
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+    CYAN = '\033[36m'
+    GREEN = '\033[32m'
+    YELLOW = '\033[33m'
+    RED = '\033[31m'
+    RESET = '\033[0m'
+else:
+    BOLD = DIM = CYAN = GREEN = YELLOW = RED = RESET = ''
+
+
+# ── Venv bootstrap (from qa-agent.js) ──────────────────────────
+def _has_venv() -> bool:
+    return VENV_PYTHON.exists()
+
+
+def _python_works() -> bool:
+    try:
+        subprocess.run([str(VENV_PYTHON), "--version"], capture_output=True, check=True)
+        return True
+    except Exception:
+        return False
+
+
+def _bootstrap() -> bool:
+    print("blenny: Python environment not found, running bootstrap...", file=sys.stderr)
+    bootstrap_script = BLENNY_DIR / "scripts" / "bootstrap.sh"
+    try:
+        subprocess.run(["bash", str(bootstrap_script)], cwd=str(BLENNY_DIR), check=True)
+        return True
+    except subprocess.CalledProcessError:
+        print(f"blenny: bootstrap failed. Run 'bash {bootstrap_script}' manually.", file=sys.stderr)
+        return False
+
+
+def _ensure_python() -> str:
+    """Return a working python3 path. Bootstraps if needed."""
+    if _has_venv() and _python_works():
+        return str(VENV_PYTHON)
+    if not _has_venv() and _bootstrap() and _python_works():
+        return str(VENV_PYTHON)
+    for candidate in ["python3", "python"]:
+        try:
+            subprocess.run([candidate, "--version"], capture_output=True, text=True)
+            return candidate
+        except FileNotFoundError:
+            continue
+    print("blenny: no Python interpreter found.", file=sys.stderr)
+    sys.exit(1)
+
+
+# ── Help text system ───────────────────────────────────────────
+HELP_TEXT = {
+    "blenny": f"""{BOLD}blenny{RESET} {DIM}— Keep your waters clean. Ink and dust.{RESET}
+
+{BOLD}Usage:{RESET}
+  {GREEN}blenny <command>{RESET} [{YELLOW}options{RESET}]
+  {GREEN}blenny help{RESET} [{CYAN}<command>{RESET}]       Show help for a specific command
+
+{BOLD}Commands:{RESET}
+
+  {GREEN}init{RESET}             {DIM}Interactive first-run setup wizard{RESET}
+  {GREEN}onboard{RESET}          {DIM}Headless onboarding for a new repo{RESET}
+  {GREEN}install{RESET}          {DIM}Print installation/setup instructions{RESET}
+  {GREEN}setup{RESET}            {DIM}Alias for install{RESET}
+  {GREEN}update{RESET}           {DIM}Self-update to the latest version{RESET}
+
+  {GREEN}status{RESET}     <name> {DIM}Show agent or repo status{RESET}
+  {GREEN}scan{RESET}       <name> {DIM}Run discovery/issue-cycle scan on a repo{RESET}
+  {GREEN}ink{RESET}        <name> {DIM}Fix issues and open Pull Requests{RESET}
+  {GREEN}duster{RESET}     <name> {DIM}Dry-run a scan — preview findings, no changes{RESET}
+  {GREEN}doctor{RESET}     <name> {DIM}Run operational checks/diagnostics{RESET}
+  {GREEN}run{RESET}        <name> {DIM}Run full orchestrated QA cycle{RESET}
+  {GREEN}secrets{RESET}      <path> {DIM}Scan for hardcoded secrets{RESET}
+  {GREEN}health{RESET}     <name> {DIM}Show health score{RESET}
+  {GREEN}report{RESET}     <name> {DIM}Generate a QA report (PDF by default){RESET}
+  {GREEN}preflight{RESET}  <name> {DIM}Assess a repository before onboarding{RESET}
+  {GREEN}heal{RESET}       <name> {DIM}Heal dirty worktrees from transient artifacts{RESET}
+
+  {GREEN}ci{RESET}        <name> {DIM}Generate GitHub Actions CI workflow{RESET}
+  {GREEN}install-hook{RESET}  <name> {DIM}Install pre-commit hook{RESET}
+  {GREEN}install-cron{RESET}  <name> {DIM}Install host cron schedule for repo cycles{RESET}
+
+{BOLD}Examples:{RESET}
+  blenny init            {DIM}# Interactive wizard{RESET}
+  blenny install         {DIM}# Show install instructions{RESET}
+  blenny scan diet-app   {DIM}# Scan a repo for issues{RESET}
+  blenny ink workout-app {DIM}# Fix issues and open PRs{RESET}
+  blenny health diet-app {DIM}# Show health score{RESET}
+  blenny report diet-app {DIM}# Generate PDF report{RESET}
+  blenny secrets ./src   {DIM}# Scan for secrets{RESET}
+
+Run {BOLD}blenny help{RESET} [{CYAN}<command>{RESET}] for detailed help on any command.
+""",
+
+    "init": f"""{BOLD}blenny init{RESET}
+
+{DIM}Interactive first-run setup wizard. Guides you through cloning repos,
+configuring safety settings, and scheduling cycles.{RESET}
+
+{BOLD}Quick start:{RESET}
+  blenny init
+  blenny init --repo /path/to/my-project
+""",
+
+    "onboard": f"""{BOLD}blenny onboard{RESET}
+
+{DIM}Headless onboarding for an existing local repository.{RESET}
+
+{BOLD}Usage:{RESET}
+  blenny onboard --repo {CYAN}<path>{RESET} [options]
+
+{BOLD}Options:{RESET}
+  --name {CYAN}<name>{RESET}              Custom name (default: directory name)
+  --language {CYAN}<lang>{RESET}          Force language detection
+  --mode {CYAN}<mode>{RESET}              Safety mode: observe, issue-only, pr, merge
+  --profile {CYAN}<profile>{RESET}        Safety profile: conservative, balanced, aggressive
+  --skip-baseline            Skip baseline capture
+  --allow-dirty-worktree     Allow onboarding with dirty working tree
+""",
+
+    "install": f"""{BOLD}blenny install{RESET}
+
+{DIM}Print installation/setup instructions.{RESET}
+
+{BOLD}Quick Install:{RESET}
+  # 1. Clone the repo
+  git clone <repo-url> ~/.blenny
+  cd ~/.blenny
+
+  # 2. Bootstrap
+  ./scripts/bootstrap.sh
+
+  # 3. Symlink blenny to PATH
+  ln -sf "$(pwd)/bin/blenny" ~/.local/bin/blenny
+
+  # 4. Verify
+  blenny --version
+  blenny help
+""",
+
+    "status": f"""{BOLD}blenny status{RESET} [{CYAN}<repo-name>{RESET}]
+
+{DIM}Show agent status or repository status.{RESET}
+
+{BOLD}Usage:{RESET}
+  blenny status                 {DIM}# Show agent-wide status{RESET}
+  blenny status {CYAN}<name>{RESET}      {DIM}# Show specific repo status{RESET}
+""",
+
+    "scan": f"""{BOLD}blenny scan{RESET} {CYAN}<repo-name>{RESET} [{YELLOW}options{RESET}]
+
+{DIM}Run a discovery/issue-cycle scan on a repository.
+Discovers findings and creates GitHub issues for them.{RESET}
+
+{BOLD}Usage:{RESET}
+  blenny scan {CYAN}<repo-name>{RESET} [{YELLOW}--fix-engine {CYAN}<engine>{RESET}]
+
+{BOLD}Options:{RESET}
+  --fix-engine {CYAN}<engine>{RESET}     Fix engine: auto, deterministic, claude, opencode
+""",
+
+    "ink": f"""{BOLD}blenny ink{RESET} {CYAN}<repo-name>{RESET} [{YELLOW}options{RESET}]
+
+{DIM}Fix findings and open Pull Requests.
+Creates issues AND opens PRs with automated fixes.{RESET}
+
+{BOLD}Usage:{RESET}
+  blenny ink {CYAN}<repo-name>{RESET} [{YELLOW}--fix-engine {CYAN}<engine>{RESET}]
+
+{BOLD}Options:{RESET}
+  --fix-engine {CYAN}<engine>{RESET}     Fix engine: auto, deterministic, claude, opencode
+""",
+
+    "duster": f"""{BOLD}blenny duster{RESET} {CYAN}<repo-name>{RESET}
+
+{DIM}A duster is a gentle, non-destructive way to remove dust.
+Scans the repo for issues and reports what it finds without
+creating any issues, PRs, or making any changes.{RESET}
+
+{BOLD}Usage:{RESET}
+  blenny duster {CYAN}<repo-name>{RESET}
+""",
+
+    "doctor": f"""{BOLD}blenny doctor{RESET} [{CYAN}<name>{RESET}]
+
+{DIM}Run operational diagnostics on a repository or the whole agent.
+Checks configuration, dependencies, tool availability, and more.{RESET}
+
+{BOLD}Usage:{RESET}
+  blenny doctor {CYAN}<name>{RESET}     {DIM}# Check a specific repo{RESET}
+  blenny doctor                {DIM}# Check all repos{RESET}
+""",
+
+    "run": f"""{BOLD}blenny run{RESET} {CYAN}<repo-name>{RESET} [{YELLOW}options{RESET}]
+
+{DIM}Run a full orchestrated QA cycle (discover, fix, review, merge).
+Equivalent to running scan → ink → verify in sequence.{RESET}
+
+{BOLD}Usage:{RESET}
+  blenny run {CYAN}<repo-name>{RESET} [{YELLOW}--dry-run{RESET}]
+
+{BOLD}Options:{RESET}
+  --dry-run                     Preview without making changes
+  --fix-engine {CYAN}<engine>{RESET}     Fix engine: auto, deterministic, claude, opencode
+""",
+
+    "secrets": f"""{BOLD}blenny secrets{RESET} {CYAN}<path>{RESET}
+
+{DIM}Scan a directory for hardcoded secrets (API keys, tokens,
+passwords, private keys, high-entropy strings).{RESET}
+
+{BOLD}Usage:{RESET}
+  blenny secrets {CYAN}<path>{RESET}
+""",
+
+    "health": f"""{BOLD}blenny health{RESET} {CYAN}<repo-name>{RESET} [{YELLOW}options{RESET}]
+
+{DIM}Show the health score (0–100) for a repository.{RESET}
+
+{BOLD}Usage:{RESET}
+  blenny health {CYAN}<repo-name>{RESET}
+
+{BOLD}Options:{RESET}
+  --days {CYAN}<n>{RESET}               Days of history (default: 30)
+  --format {CYAN}<fmt>{RESET}           Output format: text, whatsapp (default: text)
+""",
+
+    "report": f"""{BOLD}blenny report{RESET} {CYAN}<repo-name>{RESET} [{YELLOW}options{RESET}]
+
+{DIM}Generate a comprehensive QA report for a repository.
+PDF by default. Also supports text, JSON, HTML, and WhatsApp formats.{RESET}
+
+{BOLD}Usage:{RESET}
+  blenny report {CYAN}<repo-name>{RESET}
+  blenny report {CYAN}<repo-name>{RESET} --format text
+  blenny report {CYAN}<repo-name>{RESET} -o report.pdf
+
+{BOLD}Options:{RESET}
+  --format {CYAN}<fmt>{RESET}           Output format: pdf, text, json, html, whatsapp
+  --output, -o {CYAN}<path>{RESET}      Output file path
+  --days {CYAN}<n>{RESET}               Days of history (default: 30)
+""",
+
+    "preflight": f"""{BOLD}blenny preflight{RESET} --repo {CYAN}<path>{RESET}
+
+{DIM}Assess whether a repository is ready for standalone QA onboarding.{RESET}
+
+{BOLD}Usage:{RESET}
+  blenny preflight --repo {CYAN}<path>{RESET}
+""",
+
+    "heal": f"""{BOLD}blenny heal{RESET} --repo {CYAN}<path>{RESET} [{YELLOW}options{RESET}]
+
+{DIM}Heal a dirty worktree caused by transient artifacts (pycache, lock files).
+By default runs as a dry-run — add --no-dry-run to actually heal.{RESET}
+
+{BOLD}Usage:{RESET}
+  blenny heal --repo {CYAN}<path>{RESET}             {DIM}# Dry-run preview{RESET}
+  blenny heal --repo {CYAN}<path>{RESET} --no-dry-run {DIM}# Execute healing{RESET}
+
+{BOLD}Options:{RESET}
+  --no-dry-run                  Actually heal (default: dry-run)
+  --remove-artifacts            Also remove transient artifact directory/files
+""",
+
+    "install-cron": f"""{BOLD}blenny install-cron{RESET} {CYAN}<repo-name>{RESET} [{YELLOW}options{RESET}]
+
+{DIM}Install host cron schedule for a repository cycle automation.{RESET}
+
+{BOLD}Usage:{RESET}
+  blenny install-cron {CYAN}<repo-name>{RESET}
+  blenny install-cron {CYAN}<repo-name>{RESET} --issue-schedule "0 */2 * * *"
+
+{BOLD}Options:{RESET}
+  --issue-schedule {CYAN}<cron>{RESET}    Issue cycle schedule (default: 0 */4 * * *)
+  --pr-schedule {CYAN}<cron>{RESET}       PR cycle schedule (default: 0 */6 * * *)
+  --review-schedule {CYAN}<cron>{RESET}   Review cycle schedule (default: 30 * * * *)
+  --merge-schedule {CYAN}<cron>{RESET}    Merge cycle schedule (default: 0 6,18 * * *)
+""",
+
+    "ci": f"""{BOLD}blenny ci{RESET} {CYAN}<repo-path>{RESET}
+
+{DIM}Generate a GitHub Actions CI workflow (.github/workflows/blenny.yml).{RESET}
+
+{BOLD}Usage:{RESET}
+  blenny ci {CYAN}<repo-path>{RESET}
+  blenny ci {CYAN}<repo-path>{RESET} --force      {DIM}# Overwrite existing{RESET}
+""",
+
+    "install-hook": f"""{BOLD}blenny install-hook{RESET} {CYAN}<repo-path>{RESET}
+
+{DIM}Install a pre-commit hook that runs blenny duster on every commit.{RESET}
+
+{BOLD}Usage:{RESET}
+  blenny install-hook {CYAN}<repo-path>{RESET}
+  blenny install-hook {CYAN}<repo-path>{RESET} --force  {DIM}# Overwrite existing{RESET}
+""",
+
+    "update": f"""{BOLD}blenny update{RESET}
+
+{DIM}Self-update to the latest version.{RESET}
+
+{BOLD}Usage:{RESET}
+  blenny update
+""",
+}
+
+
+# ── Command dispatch ───────────────────────────────────────────
+def _run_qa_agent(args: list[str]) -> int:
+    """Run qa-agent script with given args, returns exit code."""
+    python = _ensure_python()
+    cmd = [python, str(QA_AGENT)] + args
+    result = subprocess.run(cmd)
+    return result.returncode
+
+
+def _cmd_version():
+    """Print version info — blenny + backend."""
+    try:
+        python = _ensure_python()
+        backend = subprocess.run(
+            [python, str(QA_AGENT), "--version"],
+            capture_output=True, text=True, timeout=5
+        )
+        backend_ver = backend.stdout.strip()
+    except Exception:
+        backend_ver = None
+
+    print(f"blenny version {BLENNY_VERSION}")
+    if backend_ver:
+        print(f"backend: {backend_ver}")
+    return 0
+
+
+def _cmd_help(cmd: str | None = None):
+    """Print help text."""
+    if cmd and cmd in HELP_TEXT:
+        print(HELP_TEXT[cmd])
+    else:
+        print(HELP_TEXT["blenny"])
+    return 0
+
+
+def _help_requested(args: list[str]) -> bool:
+    """Check if -h/--help is anywhere in remaining args."""
+    return any(a in ("-h", "--help") for a in args)
+
+
+def _requires_name(cmd: str, rest: list[str]) -> bool:
+    """Validate that a positional name was provided; return error if not."""
+    if not rest or rest[0].startswith("-"):
+        print(f"blenny: '{cmd}' requires a repo name", file=sys.stderr)
+        print(f"Usage: blenny {cmd} <repo-name>", file=sys.stderr)
+        return False
+    return True
+
+
+# ── Subcommand handlers ────────────────────────────────────────
+def _cmd_init():
+    return _run_qa_agent(["init"])
+
+def _cmd_onboard(rest: list[str]):
+    return _run_qa_agent(["onboard"] + rest)
+
+def _cmd_install():
+    print(HELP_TEXT["install"])
+    return 0
+
+def _cmd_update():
+    return _run_qa_agent(["update"])
+
+def _cmd_status(rest: list[str]):
+    args = ["status"]
+    if rest and not rest[0].startswith("-"):
+        args.extend(["--repo", rest[0]])
+        rest = rest[1:]
+    return _run_qa_agent(args + rest)
+
+def _cmd_scan(name: str, passthrough: list[str]):
+    return _run_qa_agent(["run", "--repo", name, "--phase", "issue-cycle", "--no-dry-run"] + passthrough)
+
+def _cmd_ink(name: str, passthrough: list[str]):
+    return _run_qa_agent(["run", "--repo", name, "--phase", "pr-cycle", "--no-dry-run"] + passthrough)
+
+def _cmd_duster(name: str):
+    return _run_qa_agent(["run", "--repo", name, "--phase", "issue-cycle", "--dry-run"])
+
+def _cmd_doctor(rest: list[str]):
+    args = ["doctor"]
+    if rest and not rest[0].startswith("-"):
+        args.extend(["--repo", rest[0]])
+        rest = rest[1:]
+    return _run_qa_agent(args + rest)
+
+def _cmd_run(name: str, passthrough: list[str]):
+    return _run_qa_agent(["run", "--repo", name, "--phase", "orchestrated", "--no-dry-run"] + passthrough)
+
+def _cmd_secrets(path: str):
+    python = _ensure_python()
+    return subprocess.run([python, str(BLENNY_SECRETS), path]).returncode
+
+def _cmd_health(name: str, passthrough: list[str]):
+    return _run_qa_agent(["health", "--repo", name] + passthrough)
+
+def _cmd_report(name: str, passthrough: list[str]):
+    return _run_qa_agent(["report", "--repo", name, "--format", "pdf"] + passthrough)
+
+def _cmd_preflight(rest: list[str]):
+    return _run_qa_agent(["preflight"] + rest)
+
+def _cmd_heal(rest: list[str]):
+    return _run_qa_agent(["heal"] + rest)
+
+def _cmd_ci(name: str, passthrough: list[str]):
+    return _run_qa_agent(["ci", "--repo", name] + passthrough)
+
+def _cmd_install_hook(name: str, passthrough: list[str]):
+    return _run_qa_agent(["install-hook", "--repo", name] + passthrough)
+
+
+def _cmd_install_cron(name: str, passthrough: list[str]):
+    return _run_qa_agent(["install-cron", "--repo", name] + passthrough)
+
+
+# ── Main ───────────────────────────────────────────────────────
+def main():
+    args = sys.argv[1:]
+
+    # --version / -v
+    if not args or args[0] in ("--version", "-v"):
+        return _cmd_version()
+
+    # --help / -h (without subcommand)
+    if args[0] in ("--help", "-h"):
+        return _cmd_help()
+
+    cmd = args[0]
+    rest = args[1:]
+
+    # help <subcommand>
+    if cmd in ("help",):
+        sub = rest[0] if rest else None
+        return _cmd_help(sub)
+
+    # intercept --help / -h for specific commands
+    if _help_requested(rest):
+        return _cmd_help(cmd)
+
+    # ── Zero-arg commands ──
+    if cmd == "init":
+        return _cmd_init()
+    if cmd in ("install", "setup"):
+        return _cmd_install()
+    if cmd == "update":
+        return _cmd_update()
+
+    # ── Named-repo or path commands (positional) ──
+    if cmd in ("scan", "ink", "duster", "run", "health", "report", "ci", "install-hook", "install-cron"):
+        if not _requires_name(cmd, rest):
+            return 1
+        name = rest[0]
+        passthrough = rest[1:]
+        handlers = {
+            "scan": _cmd_scan,
+            "ink": _cmd_ink,
+            "duster": _cmd_duster,
+            "run": _cmd_run,
+            "health": _cmd_health,
+            "report": _cmd_report,
+            "ci": _cmd_ci,
+            "install-hook": _cmd_install_hook,
+            "install-cron": _cmd_install_cron,
+        }
+        fn = handlers[cmd]
+        if cmd == "duster":
+            return fn(name)
+        return fn(name, passthrough)
+
+    # ── Commands with optional repo name ──
+    if cmd == "status":
+        return _cmd_status(rest)
+    if cmd == "doctor":
+        return _cmd_doctor(rest)
+
+    # ── Named-argument commands (--repo, --mode, etc.) ──
+    if cmd == "onboard":
+        return _cmd_onboard(rest)
+    if cmd == "preflight":
+        return _cmd_preflight(rest)
+    if cmd == "heal":
+        return _cmd_heal(rest)
+
+    # ── Path command ──
+    if cmd == "secrets":
+        if not rest:
+            print("blenny: 'secrets' requires a path", file=sys.stderr)
+            print("Usage: blenny secrets <path>", file=sys.stderr)
+            return 1
+        return _cmd_secrets(rest[0])
+
+    # Unknown command
+    print(f"blenny: unknown command '{cmd}'", file=sys.stderr)
+    print("Run 'blenny help' for available commands.", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,8 +1,8 @@
-# QA Agent Standalone Install
+# Blenny — Standalone Install
 
 ## Goal
 
-Set up `qa-agent` on a machine without relying on OpenClaw runtime features.
+Set up Blenny (codebase `qa-agent`) on a machine without relying on OpenClaw runtime features.
 
 ## Related Documentation
 
@@ -14,21 +14,21 @@ Set up `qa-agent` on a machine without relying on OpenClaw runtime features.
 ## Option A — npm (recommended, once published)
 
 ```bash
-npm install -g qa-agent   # installs the JS wrapper + Python bootstrap
-qa-agent init             # interactive first-run setup
+npm install -g blenny   # installs the JS wrapper + Python bootstrap
+blenny init             # interactive first-run setup
 ```
 
 The npm package includes the Node.js wrapper which auto-bootstraps the Python environment on first run.
 
-> **Note:** Rename `package.json` `name` field before publishing to npm. Use `npm publish --access public` for a public package.
-
 ## Option B — Git clone
 
 ```bash
-git clone <repo-url> qa-agent
-cd qa-agent
+git clone <repo-url> blenny
+cd blenny
 ./qa-agent init    # or: bash scripts/bootstrap.sh
 ```
+
+Install path can also use the legacy `qa-agent` entry point for backward compatibility.
 
 ## Requirements
 
