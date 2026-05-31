@@ -1,0 +1,13 @@
+name: node-backend-safe
+description: Rule pack for Node.js backend/API services
+ecosystem: node
+rules_enabled:
+  - trailing-whitespace
+  - type-explicit-any
+  - type-missing-return
+  - xo-no-warning-comments
+  - test-coverage-branch
+  - test-coverage-line
+rules_disabled: []
+severity_overrides: {}
+quick_win_bias: 0.4

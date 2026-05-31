@@ -1,0 +1,13 @@
+name: python-library-safe
+description: Rule pack for Python libraries
+ecosystem: python
+rules_enabled:
+  - broad-except
+  - trailing-whitespace
+  - hardcoded-tmp-path
+  - perf-pop-front-loop
+  - perf-list-membership-loop
+  - test-gap-missing-file
+rules_disabled: []
+severity_overrides: {}
+quick_win_bias: 0.6

@@ -1,0 +1,24 @@
+plugin_id: rust
+enabled: true
+fix_engine: deterministic
+framework: null
+rule_pack: rust-safe
+discovery:
+  ecosystem: rust
+  max_findings: 40
+baseline_checks:
+  - ["cargo", "test"]
+  - ["cargo", "check"]
+limits:
+  max_files_changed: 3
+  max_loc_diff: 120
+  max_fix_attempts: 2
+  open_issues_cap: 8
+  open_prs_cap: 2
+safety:
+  mode: observe
+  profile: conservative
+meta:
+  template_version: 2
+  ecosystem: rust
+  template_type: crate

@@ -1,0 +1,2 @@
+[console_scripts]
+bluei = bluei.__main__:run

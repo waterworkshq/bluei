@@ -1,0 +1,9 @@
+rule_to_component:
+  md-MD001: documentation
+  md-MD009: lint_quality
+  md-MD013: documentation
+  md-MD022: documentation
+  md-MD041: documentation
+category_inference:
+  markdown: documentation
+  md-: documentation

@@ -1,0 +1,22 @@
+id: notifications-email-no-trim
+rule: notifications-email-no-trim
+language: python
+safety: needs_validation
+description: "Fix email normalization missing .strip() before .lower()"
+
+match:
+  type: rule_exact
+  rule: notifications-email-no-trim
+
+replacement:
+  type: text
+  value: "return value.lower()"
+  replacement: "return value.strip().lower()"
+
+validation:
+  run_baseline: true
+  run_target: true
+
+metadata:
+  version: 1
+  author: bluei-core

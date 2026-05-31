@@ -1,0 +1,24 @@
+plugin_id: go
+enabled: true
+fix_engine: deterministic
+framework: null
+rule_pack: go-safe
+discovery:
+  ecosystem: go
+  max_findings: 40
+baseline_checks:
+  - ["go", "test", "./..."]
+  - ["go", "vet", "./..."]
+limits:
+  max_files_changed: 3
+  max_loc_diff: 120
+  max_fix_attempts: 2
+  open_issues_cap: 8
+  open_prs_cap: 2
+safety:
+  mode: observe
+  profile: conservative
+meta:
+  template_version: 2
+  ecosystem: go
+  template_type: service

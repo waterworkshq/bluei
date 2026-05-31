@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.bak
+.pytest_cache/
+.ruff_cache/
+
+# Runtime state (per-repo, not source)
+repos/
+!templates/repos/
+registry.yaml
+state-archive/
+locks/*.lock
+*.tmp
+
+# Sandbox artifacts
+sandbox-state.json
+sandbox-trial-status.json
+
+# Logs
+logs/
+
+# Node
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# Generated reports
+reports/
+
+# Build
+dist/
+build/
+
+# OS
+.DS_Store
+.claude/
+.opencode/
+phase2/
+.nyc_output/
+coverage/
+.coverage
+htmlcov/
+coverage.xml
+state/
+.serena/
+.compozy/
+.gitnexus
+
+docs/plans/
+notifications.yaml
+
+# AI tool configs (developer-specific)
+AGENTS.md

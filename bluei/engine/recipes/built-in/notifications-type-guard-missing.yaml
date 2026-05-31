@@ -1,0 +1,23 @@
+id: notifications-type-guard-missing
+rule: notifications-type-guard-missing
+language: python
+safety: needs_validation
+description: "Add isinstance type guard to normalize_email function"
+
+match:
+  type: rule_exact
+  rule: notifications-type-guard-missing
+
+replacement:
+  type: regex_substitute
+  pattern: "(def normalize_email\\(value: str\\) -> str:\\n)"
+  replacement: "\\1    if not isinstance(value, str):\\n        raise TypeError(\"value must be a string\")\\n"
+  condition: "if not isinstance(value, str):"
+
+validation:
+  run_baseline: true
+  run_target: true
+
+metadata:
+  version: 1
+  author: bluei-core

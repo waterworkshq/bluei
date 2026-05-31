@@ -1,0 +1,55 @@
+{
+  "name": "bluei",
+  "version": "0.1.0-alpha.1",
+  "description": "bluei — Autonomous repository health. Trust the silence.",
+  "note": "NPM package for bluei. Part of Waterworks HQ.",
+  "bin": {
+    "bluei": "./bin/bluei"
+  },
+  "scripts": {
+    "postinstall": "bin/bluei init || true"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "files": [
+    "bluei/",
+    "scripts/",
+    "!scripts/test-all.sh",
+    "!scripts/purge_migration_*.py",
+    "templates/",
+    "plugins/",
+    "bin/bluei",
+    "bin/bluei.py",
+    "bin/__init__.py",
+    "install.sh",
+    "pyproject.toml",
+    "ruff.toml",
+    "!**/__pycache__/**",
+    "!**/*.pyc",
+    "!**/*.pyo",
+    "CHANGELOG.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "bluei",
+    "qa",
+    "code-review",
+    "github",
+    "automation",
+    "quality-assurance",
+    "autonomous",
+    "waterworkshq",
+    "cleaner"
+  ],
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/waterworkshq/bluei"
+  }
+}

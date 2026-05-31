@@ -1,0 +1,23 @@
+id: inventory-invalid-quantity
+rule: inventory-invalid-quantity
+language: python
+safety: needs_validation
+description: "Add missing quantity validation guard in inventory check"
+
+match:
+  type: rule_exact
+  rule: inventory-invalid-quantity
+
+replacement:
+  type: regex_substitute
+  pattern: "(\\n\\s*if sku not in stock:\\n\\s*return False\\n)"
+  replacement: "\\1    if quantity <= 0:\\n        return False\\n"
+  condition: "if quantity <= 0:"
+
+validation:
+  run_baseline: true
+  run_target: true
+
+metadata:
+  version: 1
+  author: bluei-core

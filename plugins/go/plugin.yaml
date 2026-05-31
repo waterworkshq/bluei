@@ -1,0 +1,79 @@
+id: plugin-go
+name: Go Plugin
+version: 1.0.0
+author: bluei
+
+languages:
+  - go
+
+requires_container: false
+
+discovery:
+  tool: staticcheck
+  tool_args: ["-f=json", "./..."]
+  output_format: json
+  rules:
+    - id: go-S1001
+      category: lint
+      confidence: 0.85
+      autofix: true
+      health_component: lint_quality
+    - id: go-S1002
+      category: lint
+      confidence: 0.82
+      autofix: true
+      health_component: lint_quality
+    - id: go-SA1000
+      category: bug
+      confidence: 0.80
+      autofix: false
+      health_component: bug_quality
+    - id: go-SA2002
+      category: bug
+      confidence: 0.78
+      autofix: false
+      health_component: bug_quality
+    - id: go-URQ1001
+      category: lint
+      confidence: 0.85
+      autofix: true
+      health_component: lint_quality
+    - id: go-ST1005
+      category: lint
+      confidence: 0.75
+      autofix: true
+      health_component: lint_quality
+    - id: go-undeferred-close
+      category: bug
+      confidence: 0.87
+      autofix: true
+      health_component: bug_quality
+    - id: go-missing-goroutine-wait
+      category: bug
+      confidence: 0.82
+      autofix: false
+      health_component: bug_quality
+    - id: go-context-cancel-leak
+      category: bug
+      confidence: 0.85
+      autofix: false
+      health_component: bug_quality
+    - id: go-error-unwrap-panic
+      category: bug
+      confidence: 0.80
+      autofix: false
+      health_component: bug_quality
+    - id: debt-todo-marker
+      category: technical-debt
+      confidence: 0.72
+      autofix: false
+      health_component: technical_debt
+
+validation:
+  baseline_checks:
+    - ["go", "test", "./..."]
+
+detection:
+  files:
+    - go.mod
+    - go.sum

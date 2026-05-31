@@ -1,0 +1,23 @@
+id: docs-missing-rollback
+rule: docs-missing-rollback
+language: "*"
+safety: needs_validation
+description: "Insert rollback section before incident handling heading"
+
+match:
+  type: rule_exact
+  rule: docs-missing-rollback
+
+replacement:
+  type: text
+  value: "## Incident handling"
+  replacement: "## Incident handling\n\n## Rollback\n- Revert the latest bad commit (`git revert <sha>`).\n- Re-run checks: `python3 lint_check.py`, `python3 test_price.py`, `PYTHONPATH=src pytest -q`.\n- If checks recover, push revert and annotate the incident with root cause + follow-up fix.\n"
+  condition: "## Rollback"
+
+validation:
+  run_baseline: false
+  run_target: false
+
+metadata:
+  version: 1
+  author: bluei-core

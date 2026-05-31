@@ -1,0 +1,22 @@
+id: catalog-query-not-normalized
+rule: catalog-query-not-normalized
+language: python
+safety: needs_validation
+description: "Fix string comparison missing normalization"
+
+match:
+  type: rule_exact
+  rule: catalog-query-not-normalized
+
+replacement:
+  type: text
+  value: "if item == query"
+  replacement: "if item.strip().lower() == query.strip().lower()"
+
+validation:
+  run_baseline: true
+  run_target: true
+
+metadata:
+  version: 1
+  author: bluei-core

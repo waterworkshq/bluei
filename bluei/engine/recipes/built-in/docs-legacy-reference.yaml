@@ -1,0 +1,22 @@
+id: docs-legacy-reference
+rule: docs-legacy-reference
+language: "*"
+safety: guaranteed
+description: "Replace legacy module reference with current name"
+
+match:
+  type: rule_exact
+  rule: docs-legacy-reference
+
+replacement:
+  type: text
+  value: "legacy_pricer.py"
+  replacement: "price.py"
+
+validation:
+  run_baseline: false
+  run_target: false
+
+metadata:
+  version: 1
+  author: bluei-core

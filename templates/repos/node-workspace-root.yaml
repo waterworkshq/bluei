@@ -1,0 +1,22 @@
+plugin_id: typescript
+enabled: true
+fix_engine: deterministic
+framework: null
+rule_pack: node-backend-safe
+discovery:
+  ecosystem: node
+  max_findings: 80
+  monorepo: true
+limits:
+  max_files_changed: 5
+  max_loc_diff: 250
+  max_fix_attempts: 3
+  open_issues_cap: 20
+  open_prs_cap: 4
+safety:
+  mode: observe
+  profile: conservative
+meta:
+  template_version: 2
+  ecosystem: node
+  template_type: monorepo

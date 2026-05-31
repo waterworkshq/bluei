@@ -1,0 +1,13 @@
+rule_to_component:
+  shell-SC2086: bug_quality
+  shell-SC2046: bug_quality
+  shell-SC2004: lint_quality
+  shell-SC2068: bug_quality
+  shell-SC2181: lint_quality
+  shell-SC2155: bug_quality
+  shell-SC2164: bug_quality
+  shell-SC2034: lint_quality
+category_inference:
+  shell: lint_quality
+  word: bug_quality
+  quote: bug_quality

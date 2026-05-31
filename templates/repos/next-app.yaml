@@ -1,0 +1,21 @@
+plugin_id: typescript
+enabled: true
+fix_engine: deterministic
+framework: nextjs
+rule_pack: node-frontend-safe
+discovery:
+  ecosystem: node
+  max_findings: 60
+limits:
+  max_files_changed: 4
+  max_loc_diff: 200
+  max_fix_attempts: 3
+  open_issues_cap: 15
+  open_prs_cap: 3
+safety:
+  mode: observe
+  profile: conservative
+meta:
+  template_version: 2
+  ecosystem: node
+  template_type: fullstack

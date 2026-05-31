@@ -1,0 +1,15 @@
+name: node-frontend-safe
+description: Rule pack for frontend React/Next.js apps
+ecosystem: node
+rules_enabled:
+  - trailing-whitespace
+  - type-explicit-any
+  - type-missing-return
+  - xo-max-lines
+  - xo-complexity
+  - xo-no-warning-comments
+rules_disabled:
+  - xo-complexity
+severity_overrides:
+  type-explicit-any: medium
+quick_win_bias: 0.6

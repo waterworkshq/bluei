@@ -1,0 +1,13 @@
+name: node-library-safe
+description: Conservative rule pack for Node.js libraries
+ecosystem: node
+rules_enabled:
+  - trailing-whitespace
+  - xo-no-warning-comments
+  - type-explicit-any
+  - xo-max-lines
+  - xo-complexity
+rules_disabled:
+  - test-coverage-branch
+severity_overrides: {}
+quick_win_bias: 0.5

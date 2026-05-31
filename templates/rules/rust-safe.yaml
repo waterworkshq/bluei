@@ -1,0 +1,8 @@
+name: rust-safe
+description: Rule pack for Rust crates
+ecosystem: rust
+rules_enabled:
+  - debt-todo-marker
+rules_disabled: []
+severity_overrides: {}
+quick_win_bias: 0.3

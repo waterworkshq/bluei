@@ -1,0 +1,22 @@
+id: type-explicit-any
+rule: type-explicit-any
+language: typescript
+safety: needs_validation
+description: "Replace explicit `any` with `unknown` for safer typing"
+
+match:
+  type: rule_exact
+  rule: type-explicit-any
+
+replacement:
+  type: regex_substitute
+  pattern: ":\\s*any\\b"
+  replacement: ": unknown"
+
+validation:
+  run_baseline: true
+  run_target: true
+
+metadata:
+  version: 1
+  author: bluei-core

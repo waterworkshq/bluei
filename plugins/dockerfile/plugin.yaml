@@ -1,0 +1,50 @@
+id: plugin-dockerfile
+name: Dockerfile Plugin
+version: 1.0.0
+author: bluei
+
+languages:
+  - dockerfile
+
+requires_container: false
+
+discovery:
+  tool: hadolint
+  tool_args: ["-f", "json"]
+  output_format: json
+  rules:
+    - id: docker-DL3006
+      category: security
+      confidence: 0.85
+      autofix: false
+      health_component: bug_quality
+    - id: docker-DL3008
+      category: security
+      confidence: 0.80
+      autofix: false
+      health_component: bug_quality
+    - id: docker-DL3002
+      category: security
+      confidence: 0.82
+      autofix: false
+      health_component: bug_quality
+    - id: docker-DL4001
+      category: lint
+      confidence: 0.75
+      autofix: false
+      health_component: lint_quality
+    - id: docker-DL3003
+      category: lint
+      confidence: 0.80
+      autofix: false
+      health_component: lint_quality
+    - id: docker-DL4006
+      category: bug
+      confidence: 0.78
+      autofix: true
+      health_component: bug_quality
+
+detection:
+  files:
+    - Dockerfile
+    - Containerfile

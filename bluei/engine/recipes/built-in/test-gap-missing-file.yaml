@@ -1,0 +1,22 @@
+id: test-gap-missing-file
+rule: test-gap-missing-file
+language: python
+safety: needs_validation
+description: "Generate test file from source module introspection"
+
+match:
+  type: rule_exact
+  rule: test-gap-missing-file
+
+replacement:
+  type: scaffold
+
+validation:
+  run_baseline: false
+  run_target: false
+
+metadata:
+  version: 1
+  author: bluei-core
+  scaffold_type: test_file
+  language: python

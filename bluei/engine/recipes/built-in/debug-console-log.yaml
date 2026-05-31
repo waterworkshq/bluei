@@ -1,0 +1,23 @@
+id: debug-console-log
+rule: debug-console-log
+language: javascript
+safety: needs_validation
+description: "Remove leftover console.log() calls from production code"
+
+match:
+  type: rule_exact
+  rule: debug-console-log
+
+replacement:
+  type: regex_substitute
+  pattern: "[ \\t]*console\\.log\\([^)]*\\);?[ \\t]*\\n"
+  replacement: ""
+  count: 1
+
+validation:
+  run_baseline: true
+  run_target: true
+
+metadata:
+  version: 1
+  author: bluei-core

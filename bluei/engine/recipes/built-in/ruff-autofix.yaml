@@ -1,0 +1,22 @@
+id: ruff-autofix
+rule: "ruff-*"
+language: python
+safety: needs_validation
+description: "Apply ruff auto-fix for supported rules"
+
+match:
+  type: rule_prefix
+  prefix: "ruff-"
+
+replacement:
+  type: command
+  command: ["ruff", "check", "--fix", "--unsafe-fixes", "--preview", "--select={rule_code}", "{file}"]
+
+validation:
+  run_baseline: true
+  run_target: false
+
+metadata:
+  version: 1
+  author: bluei-core
+  wildcard: true

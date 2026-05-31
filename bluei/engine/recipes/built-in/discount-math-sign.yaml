@@ -1,0 +1,22 @@
+id: discount-math-sign
+rule: discount-math-sign
+language: python
+safety: needs_validation
+description: "Fix incorrect addition in discount calculation (should be subtraction)"
+
+match:
+  type: rule_exact
+  rule: discount-math-sign
+
+replacement:
+  type: text
+  value: "return amount + discount"
+  replacement: "return amount - discount"
+
+validation:
+  run_baseline: true
+  run_target: true
+
+metadata:
+  version: 1
+  author: bluei-core

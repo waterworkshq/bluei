@@ -1,0 +1,97 @@
+id: plugin-rust
+name: Rust Plugin
+version: 1.0.0
+author: bluei
+
+languages:
+  - rust
+
+requires_container: false
+
+discovery:
+  tool: cargo
+  tool_args: ["clippy", "--message-format=json", "--", "-W", "clippy::all"]
+  output_format: json
+  rules:
+    - id: clippy-unwrap-used
+      category: bug
+      confidence: 0.85
+      autofix: false
+      severity: medium
+      health_component: bug_quality
+    - id: clippy-result-unwrap
+      category: bug
+      confidence: 0.88
+      autofix: false
+      severity: high
+      health_component: bug_quality
+    - id: clippy-clone-on-copy
+      category: lint
+      confidence: 0.90
+      autofix: true
+      severity: low
+      health_component: lint_quality
+    - id: clippy-needless-range-loop
+      category: perf
+      confidence: 0.87
+      autofix: true
+      severity: low
+      health_component: performance
+    - id: clippy-redundant-clone
+      category: perf
+      confidence: 0.85
+      autofix: true
+      severity: low
+      health_component: performance
+    - id: clippy-dead-code
+      category: lint
+      confidence: 0.82
+      autofix: true
+      severity: low
+      health_component: lint_quality
+    - id: clippy-unused-imports
+      category: lint
+      confidence: 0.88
+      autofix: true
+      severity: low
+      health_component: lint_quality
+    - id: clippy-doc-markdown
+      category: docs
+      confidence: 0.75
+      autofix: true
+      severity: low
+      health_component: documentation
+    - id: clippy-missing-errors-doc
+      category: docs
+      confidence: 0.78
+      autofix: false
+      severity: low
+      health_component: documentation
+    - id: clippy-panic
+      category: bug
+      confidence: 0.80
+      autofix: false
+      severity: medium
+      health_component: bug_quality
+    - id: clippy-expect-used
+      category: lint
+      confidence: 0.72
+      autofix: false
+      severity: low
+      health_component: lint_quality
+    - id: rust-cargo-lock-stale
+      category: lint
+      confidence: 0.70
+      autofix: true
+      severity: low
+      health_component: lint_quality
+
+validation:
+  baseline_checks:
+    - ["cargo", "test"]
+    - ["cargo", "check"]
+
+detection:
+  files:
+    - Cargo.toml
+    - Cargo.lock

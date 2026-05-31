@@ -1,0 +1,17 @@
+rule_to_component:
+  go-S1001: lint_quality
+  go-S1002: lint_quality
+  go-SA1000: bug_quality
+  go-SA2002: bug_quality
+  go-URQ1001: lint_quality
+  go-ST1005: lint_quality
+  go-undeferred-close: bug_quality
+  go-missing-goroutine-wait: bug_quality
+  go-context-cancel-leak: bug_quality
+  go-error-unwrap-panic: bug_quality
+  debt-todo-marker: technical_debt
+category_inference:
+  staticcheck: lint_quality
+  goroutine: bug_quality
+  cancel: bug_quality
+  close: bug_quality

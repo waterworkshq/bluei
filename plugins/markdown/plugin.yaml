@@ -1,0 +1,45 @@
+id: plugin-markdown
+name: Markdown Plugin
+version: 1.0.0
+author: bluei
+
+languages:
+  - markdown
+
+requires_container: false
+
+discovery:
+  tool: markdownlint
+  tool_args: ["--json"]
+  output_format: json
+  rules:
+    - id: md-MD001
+      category: docs
+      confidence: 0.85
+      autofix: true
+      health_component: documentation
+    - id: md-MD009
+      category: lint
+      confidence: 0.90
+      autofix: true
+      health_component: lint_quality
+    - id: md-MD013
+      category: docs
+      confidence: 0.65
+      autofix: false
+      health_component: documentation
+    - id: md-MD022
+      category: docs
+      confidence: 0.78
+      autofix: true
+      health_component: documentation
+    - id: md-MD041
+      category: docs
+      confidence: 0.80
+      autofix: true
+      health_component: documentation
+
+detection:
+  files:
+    - "*.md"
+    - docs/*.md

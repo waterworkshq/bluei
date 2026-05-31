@@ -1,0 +1,22 @@
+id: hardcoded-tmp-path
+rule: hardcoded-tmp-path
+language: python
+safety: needs_validation
+description: "Replace hardcoded /tmp path with proper state directory"
+
+match:
+  type: rule_exact
+  rule: hardcoded-tmp-path
+
+replacement:
+  type: text
+  value: "/tmp/qa-sandbox-state.json"
+  replacement: "/var/lib/qa-sandbox/state.json"
+
+validation:
+  run_baseline: true
+  run_target: true
+
+metadata:
+  version: 1
+  author: bluei-core

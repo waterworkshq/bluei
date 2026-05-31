@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability
+    url: https://github.com/waterworkshq/bluei/security/advisories/new
+    about: Report security vulnerabilities privately — do not open public issues.
+  - name: Question / Discussion
+    url: https://github.com/waterworkshq/bluei/discussions
+    about: Ask questions and discuss bluei usage.

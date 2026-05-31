@@ -1,0 +1,24 @@
+id: docs-quickstart-gap
+rule: docs-quickstart-gap
+language: "*"
+safety: needs_validation
+description: "Replace incomplete quick start section with full commands"
+
+match:
+  type: rule_exact
+  rule: docs-quickstart-gap
+
+replacement:
+  type: regex_substitute
+  pattern: "## Quick start\\n```bash\\n.*?```"
+  replacement: "## Quick start\n```bash\npip install pytest\npython3 lint_check.py\npython3 test_price.py\npytest -q\n```"
+  condition: "pip install pytest"
+
+validation:
+  run_baseline: false
+  run_target: false
+
+metadata:
+  version: 1
+  author: bluei-core
+  regex_dotall: true

@@ -1,0 +1,25 @@
+rule_to_component:
+  type-explicit-any: type_safety
+  type-missing-return: type_safety
+  type-missing-param: type_safety
+  type-untyped-import: type_safety
+  test-coverage-branch: test_coverage
+  test-coverage-function: test_coverage
+  test-coverage-line: test_coverage
+  xo-max-lines: maintainability
+  xo-complexity: maintainability
+  max-lines: maintainability
+  complexity: maintainability
+  no-warning-comments: lint_quality
+  debug-console-log: lint_quality
+
+category_inference:
+  test: test_gaps
+  coverage: test_coverage
+  type: type_safety
+  any: type_safety
+  max-lines: maintainability
+  complexity: maintainability
+  refactor: maintainability
+  comment: lint_quality
+  warning: lint_quality

@@ -1,0 +1,19 @@
+rule_to_component:
+  clippy-unwrap-used: bug_quality
+  clippy-result-unwrap: bug_quality
+  clippy-clone-on-copy: lint_quality
+  clippy-needless-range-loop: performance
+  clippy-redundant-clone: performance
+  clippy-dead-code: lint_quality
+  clippy-unused-imports: lint_quality
+  clippy-doc-markdown: documentation
+  clippy-missing-errors-doc: documentation
+  clippy-panic: bug_quality
+  clippy-expect-used: lint_quality
+  rust-cargo-lock-stale: lint_quality
+category_inference:
+  unwrap: bug_quality
+  panic: bug_quality
+  clone: performance
+  clippy: lint_quality
+  rust: lint_quality

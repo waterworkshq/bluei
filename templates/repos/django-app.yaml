@@ -1,0 +1,23 @@
+plugin_id: python
+enabled: true
+fix_engine: deterministic
+framework: django
+rule_pack: python-api-safe
+discovery:
+  ecosystem: python
+  max_findings: 60
+baseline_checks:
+  - ["python3", "manage.py", "test"]
+limits:
+  max_files_changed: 4
+  max_loc_diff: 200
+  max_fix_attempts: 3
+  open_issues_cap: 15
+  open_prs_cap: 3
+safety:
+  mode: observe
+  profile: conservative
+meta:
+  template_version: 2
+  ecosystem: python
+  template_type: web-framework

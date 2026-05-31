@@ -1,0 +1,11 @@
+rule_to_component:
+  docker-DL3006: bug_quality
+  docker-DL3008: bug_quality
+  docker-DL3002: bug_quality
+  docker-DL4001: lint_quality
+  docker-DL3003: lint_quality
+  docker-DL4006: bug_quality
+category_inference:
+  docker: lint_quality
+  hadolint: lint_quality
+  root: bug_quality

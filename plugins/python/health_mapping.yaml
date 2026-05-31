@@ -1,0 +1,30 @@
+rule_to_component:
+  discount-math-sign: bug_quality
+  catalog-query-not-normalized: bug_quality
+  orders-tax-truncation: bug_quality
+  notifications-email-no-trim: bug_quality
+  notifications-type-guard-missing: bug_quality
+  inventory-invalid-quantity: bug_quality
+  broad-except: lint_quality
+  hardcoded-tmp-path: lint_quality
+  trailing-whitespace: lint_quality
+  debt-todo-marker: technical_debt
+  docs-legacy-reference: documentation
+  docs-missing-rollback: documentation
+  docs-quickstart-gap: documentation
+  doc-gap-uncovered-module: documentation
+  doc-drift-stale-reference: documentation
+  perf-pop-front-loop: performance
+  perf-list-membership-loop: performance
+  test-gap-missing-file: test_gaps
+  test-gap-missing-case: test_gaps
+
+category_inference:
+  discount: bug_quality
+  math: bug_quality
+  query: bug_quality
+  trailing: lint_quality
+  whitespace: lint_quality
+  todo: technical_debt
+  fixme: technical_debt
+  perf: performance

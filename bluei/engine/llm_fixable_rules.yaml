@@ -1,0 +1,68 @@
+# Maps rules that ruff/linters can't autofix but LLM agents can handle.
+# Each entry provides a prompt hint for the fix engine.
+#
+# Routing logic:
+#   safe_to_autofix=True → deterministic autofix (current path)
+#   safe_to_autofix=False + rule in this file → LLM fix engine with prompt_hint
+#   safe_to_autofix=False + rule NOT in this file → needs-human-not-fixable
+
+rules:
+  ruff-b904:
+    description: "raise without cause — add 'from' clause to exception re-raises"
+    prompt_hint: |
+      Fix the bare `raise` statement by adding an appropriate `from` clause:
+      - If re-raising the caught exception: use `raise ... from e` (or the caught variable name)
+      - If intentionally suppressing context: use `raise ... from None`
+      - Preserve the original exception type and message
+      - Do NOT change the exception type or add new exceptions
+    complexity: low
+    languages: [python]
+
+  ruff-s311:
+    description: "stdlib random used in security-sensitive context — replace with secrets"
+    prompt_hint: |
+      Replace `random` module usage with `secrets` module where security matters.
+      Use `secrets.choice()` instead of `random.choice()`, `secrets.randbelow()` instead of `random.randint()`.
+      Only replace in security-sensitive contexts (tokens, passwords, keys, IDs).
+      If the usage is clearly non-security (e.g., shuffling display order), leave it.
+    complexity: low
+    languages: [python]
+
+  ruff-c408:
+    description: "Unnecessary dict() call — rewrite as dict literal {}"
+    prompt_hint: |
+      Replace `dict(...)` calls with dict literals `{}` where possible.
+      Common transformations:
+      - `dict(a=1, b=2)` → `{"a": 1, "b": 2}`
+      - `dict()` → `{}`
+      - `dict([(k, v)])` → `{k: v}`
+
+      CAUTION: Skip Django migration files (*/migrations/*.py) — they use dict()
+      for runtime model field resolution and MUST NOT be rewritten.
+      Skip any case where the dict() call uses **kwargs unpacking that can't be
+      trivially converted.
+    complexity: low
+    languages: [python]
+
+  type-untyped-import:
+    description: "untyped import or missing declaration file in TypeScript"
+    prompt_hint: |
+      Fix the untyped import with the smallest safe change.
+      Prefer, in order:
+      - using an existing typed import path if one already exists in the repo,
+      - adding a local `.d.ts` declaration stub for the imported module,
+      - adding a narrow module declaration instead of broad `any` pollution.
+      Keep the declaration minimal and specific to the imported surface actually used.
+      Do not weaken unrelated type safety just to silence the error.
+    complexity: medium
+    languages: [typescript, javascript]
+
+  test-coverage-line:
+    description: "specific uncovered line or statement in coverage data"
+    prompt_hint: |
+      Add the smallest focused test that executes the uncovered line or statement.
+      Reuse existing test helpers and patterns in the repo.
+      Prefer augmenting an existing nearby test file over creating a brand new large test module.
+      Do not add broad snapshot tests or weak assertions just to flip coverage.
+    complexity: medium
+    languages: [typescript, javascript, python]

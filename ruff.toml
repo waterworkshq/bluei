@@ -1,0 +1,16 @@
+# ruff configuration for bluei
+# Focus on genuine bugs, avoid removing intentional re-exports
+
+target-version = "py311"
+
+[lint]
+select = [
+    "E",     # pycodestyle errors
+    "F",     # pyflakes
+    "W",     # pycodestyle warnings
+]
+ignore = [
+    "E402",  # module-level import not at top (intentional sys.path setup)
+    "E501",  # line too long
+    "F401",  # unused imports — too many intentional re-exports across codebase
+]

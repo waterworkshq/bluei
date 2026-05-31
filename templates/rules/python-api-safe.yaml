@@ -1,0 +1,15 @@
+name: python-api-safe
+description: Rule pack for Python API services (Flask/Django/FastAPI)
+ecosystem: python
+rules_enabled:
+  - broad-except
+  - trailing-whitespace
+  - hardcoded-tmp-path
+  - perf-pop-front-loop
+  - test-gap-missing-file
+  - test-coverage-branch
+rules_disabled:
+  - debt-todo-marker
+severity_overrides:
+  broad-except: high
+quick_win_bias: 0.5

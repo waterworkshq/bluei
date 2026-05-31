@@ -1,0 +1,24 @@
+id: go-empty-interface
+rule: go-empty-interface
+language: go
+safety: needs_validation
+description: "Replace interface{} with any (Go 1.18+ type alias)"
+
+match:
+  type: rule_exact
+  rule: go-empty-interface
+
+replacement:
+  type: regex_substitute
+  pattern: '(?<!["`])interface\{\}'
+  replacement: "any"
+  count: 1
+
+validation:
+  run_baseline: true
+  run_target: true
+
+metadata:
+  version: 1
+  author: bluei-core
+  caveat: "Go 1.18+ only. Pre-1.18 code will break."

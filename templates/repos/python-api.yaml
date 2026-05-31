@@ -1,0 +1,23 @@
+plugin_id: python
+enabled: true
+fix_engine: deterministic
+framework: flask
+rule_pack: python-api-safe
+discovery:
+  ecosystem: python
+  max_findings: 50
+  use_docker: true
+  docker_hint: review container/service name before first live run
+limits:
+  max_files_changed: 3
+  max_loc_diff: 150
+  max_fix_attempts: 2
+  open_issues_cap: 10
+  open_prs_cap: 2
+safety:
+  mode: observe
+  profile: conservative
+meta:
+  template_version: 2
+  ecosystem: python
+  template_type: api

@@ -1,0 +1,61 @@
+id: plugin-shell
+name: Shell Plugin
+version: 1.0.0
+author: bluei
+
+languages:
+  - shell
+
+requires_container: false
+
+discovery:
+  tool: shellcheck
+  tool_args: ["-f", "json"]
+  output_format: json
+  rules:
+    - id: shell-SC2086
+      category: bug
+      confidence: 0.88
+      autofix: true
+      health_component: bug_quality
+    - id: shell-SC2046
+      category: bug
+      confidence: 0.85
+      autofix: false
+      health_component: bug_quality
+    - id: shell-SC2004
+      category: lint
+      confidence: 0.90
+      autofix: true
+      health_component: lint_quality
+    - id: shell-SC2068
+      category: bug
+      confidence: 0.82
+      autofix: false
+      health_component: bug_quality
+    - id: shell-SC2181
+      category: lint
+      confidence: 0.80
+      autofix: true
+      health_component: lint_quality
+    - id: shell-SC2155
+      category: bug
+      confidence: 0.83
+      autofix: true
+      health_component: bug_quality
+    - id: shell-SC2164
+      category: bug
+      confidence: 0.85
+      autofix: true
+      health_component: bug_quality
+    - id: shell-SC2034
+      category: lint
+      confidence: 0.78
+      autofix: false
+      health_component: lint_quality
+
+detection:
+  files:
+    - "*.sh"
+    - scripts/*.sh
+    - bin/*.sh

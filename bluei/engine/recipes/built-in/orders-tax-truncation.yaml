@@ -1,0 +1,22 @@
+id: orders-tax-truncation
+rule: orders-tax-truncation
+language: python
+safety: needs_validation
+description: "Fix tax truncation — replace int() with round() for currency calculations"
+
+match:
+  type: rule_exact
+  rule: orders-tax-truncation
+
+replacement:
+  type: regex_substitute
+  pattern: "int\\(([^)]+\\*[^)]+)\\)"
+  replacement: "round(\\1, 2)"
+
+validation:
+  run_baseline: true
+  run_target: true
+
+metadata:
+  version: 1
+  author: bluei-core

@@ -1,0 +1,23 @@
+id: trailing-whitespace
+rule: trailing-whitespace
+language: "*"
+safety: guaranteed
+description: "Strip trailing whitespace from all lines"
+
+match:
+  type: rule_exact
+  rule: trailing-whitespace
+
+replacement:
+  type: regex_substitute
+  pattern: "(?m)[ \\t]+$"
+  replacement: ""
+  count: 0
+
+validation:
+  run_baseline: false
+  run_target: false
+
+metadata:
+  version: 1
+  author: bluei-core
