@@ -28,4 +28,4 @@ jobs:
       run: ./scripts/bootstrap.sh
 
     - name: Run tests
-      run: PYTHONPATH=. python -m pytest tests/ -q
+      run: PYTHONPATH=. .venv/bin/python -m pytest tests/ -q
