@@ -343,10 +343,7 @@ Key design principles:
 
 | Area | Status | Notes |
 |------|--------|-------|
-| Canonical Python package | Delivered | Runtime code now lives under `bluei.app`, `bluei.engine`, `bluei.review`, and `bluei.campaigns`; legacy shim packages have been removed. |
-| Push notifications | Delivered | Escalations deliver via Slack, email, webhook, and log channels with rate limiting, severity filtering, and `bluei notify` CLI. |
-| Git history hygiene | Next | Purge `reports/ky-report.pdf` from old commits before broader distribution. |
-| Shim retirement plan | Deferred | Remove legacy import shims only after a compatibility window and downstream audit. |
+|Will be populated later|
 
 ---
 

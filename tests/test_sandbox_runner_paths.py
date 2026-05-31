@@ -53,7 +53,7 @@ def test_runner_defaults_no_longer_point_to_pr_automation():
     assert "pr-automation" not in str(DEFAULT_LOG)
     assert "pr-automation" not in str(DEFAULT_DOCS_INDEX)
     assert RUNNER_PATH.name == "cli.py"
-    assert "qa-agent" in str(RUNNER_PATH)
+    assert "bluei" in str(RUNNER_PATH)
 
 
 def test_generated_cycle_commands_use_current_runner_path():

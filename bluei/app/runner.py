@@ -3,15 +3,16 @@
 
 import json
 import logging
-import subprocess
 import os
-import fcntl
+import re
 import shutil
+import subprocess
+import sys
+import fcntl
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import re
 
 from .models import Repo, RepoStatus, Run, generate_id, now_iso
 from .registry import RepoRegistry
@@ -211,7 +212,7 @@ class RunEngine:
         backend = backend or self._resolve_backend(repo, options.fix_engine)
 
         args = [
-            "python3",
+            sys.executable,
             str(self.runner_path),
             "--repo-path",
             config.path,

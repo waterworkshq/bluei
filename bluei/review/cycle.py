@@ -339,7 +339,28 @@ class ReviewCycleEngine:
         return "deterministic"
 
     def _render_backend_command(self, prompt_file: Path) -> str:
-        """Render the shell command for the resolved backend and prompt file."""
+        """Render the shell command for the resolved backend and prompt file.
+
+        Does NOT check binary availability — that's the caller's responsibility
+        at execution time.  If a user has explicitly configured a template for a
+        backend, we honour it even when the binary isn't currently on PATH.
+        """
+        backend = self.repo.config.fix_engine
+        if backend and backend != "auto":
+            if backend == "claude":
+                template = self.repo.config.review_claude_template or (
+                    "claude --dangerously-skip-permissions --print "
+                    '"Read {prompt_file} and address the PR review feedback with the minimal safe change. '
+                    'Run relevant checks, keep the diff small, and exit non-zero on failure."'
+                )
+                return template.format(prompt_file=str(prompt_file))
+            if backend == "opencode":
+                template = self.repo.config.review_opencode_template or (
+                    'opencode run "Read {prompt_file} and address the PR review feedback with the minimal safe change. '
+                    'Run relevant checks, keep the diff small, and exit non-zero on failure."'
+                )
+                return template.format(prompt_file=str(prompt_file))
+        # Fall back to availability-based resolution
         backend = self._resolve_backend()
         if backend == "claude":
             template = self.repo.config.review_claude_template or (

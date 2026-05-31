@@ -644,21 +644,31 @@ class TestProcessBatchSplitWiring:
         mock_fixes,
         mock_handle,
         make_finding,
+        tmp_path,
     ):
         """process_batch calls handle_batch_failure when failure_rate > 50%."""
         mock_create_wt.return_value = True
-        mock_fixes.return_value = (4, 6)  # 4 successes, 6 failures = 60% failure rate
         mock_handle.return_value = []
         batch = make_batch(
             findings=[make_finding(finding_id=f"f{i}") for i in range(10)]
         )
         batch.batch_id = "batch-split-test"
 
+        def _apply_fixes(batch, **kwargs):
+            for i, f in enumerate(batch.findings):
+                batch.fix_results[f.finding_id] = FixResult(
+                    finding_id=f.finding_id,
+                    status="success" if i < 4 else "failed",
+                )
+            return (4, 6)
+
+        mock_fixes.side_effect = _apply_fixes
+
         class FakeArgs:
             dry_run = True
             batch_pr_split_on_failure = True
             max_split_depth = 3
-            worktree_root = Path("/tmp/wt")
+            worktree_root = str(tmp_path / "worktrees")
             claude_cmd_template = None
             max_files_changed = 10
             max_loc_diff = 200

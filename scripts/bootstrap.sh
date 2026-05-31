@@ -38,7 +38,10 @@ fi
 
 source .venv/bin/activate
 uv pip install --quiet pytest
-uv pip install -e . --quiet
+uv pip install -e .
+
+# Verify pyyaml is available (critical dependency)
+python -c "import yaml" 2>/dev/null || uv pip install pyyaml
 
 uv pip install --quiet tree-sitter 2>/dev/null || true
 uv pip install --quiet tree-sitter-typescript tree-sitter-javascript 2>/dev/null || true

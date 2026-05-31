@@ -540,14 +540,11 @@ def run_smoke_test(repo_path: Path, log_file: Path) -> Dict[str, Any]:
             ruff_path = str(expanded)
             break
     if ruff_path is None:
-        try:
-            import subprocess as _sp
+        import shutil as _shutil
 
-            res = _sp.run(["which", "ruff"], capture_output=True, text=True, timeout=5)
-            if res.returncode == 0 and res.stdout.strip():
-                ruff_path = res.stdout.strip()
-        except Exception:
-            _logger.debug("Failed to locate ruff binary")
+        found = _shutil.which("ruff")
+        if found:
+            ruff_path = found
 
     if ruff_path is None:
         checks["linter"] = False
