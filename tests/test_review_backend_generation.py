@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # Module-level isolation helper
 # ---------------------------------------------------------------------------
 
+
 def _isolated_tmp() -> Path:
     """Return a unique isolated temp directory, removing any pre-existing one."""
     base = Path(f"/tmp/qa_test_backend_gen_{uuid.uuid4().hex[:8]}")
@@ -51,6 +52,7 @@ from bluei.app.state import StateManager
 # ---------------------------------------------------------------------------
 # Fixtures / shared data
 # ---------------------------------------------------------------------------
+
 
 def make_repo(tmp_path: Path, review_care_mode=None, **overrides) -> Repo:
     """Create a Repo with the given overrides. Use review_care_mode to set
@@ -138,6 +140,7 @@ BACKEND_CANDIDATES_VALID = [
 # Test: _generate_from_backend with no backend configured
 # ---------------------------------------------------------------------------
 
+
 class TestBackendGenerationNoConfig:
     """When no review backend template is configured, returns empty and
     records a 'skipped' event so caller falls back to local stub."""
@@ -154,7 +157,9 @@ class TestBackendGenerationNoConfig:
 
         assert candidates == []
         events = load_review_events(state, repo.config.name)
-        skip_events = [e for e in events if e.get("event") == "backend-generation skipped"]
+        skip_events = [
+            e for e in events if e.get("event") == "backend-generation skipped"
+        ]
         assert len(skip_events) == 1
         assert skip_events[0].get("reason") == "no_review_backend_configured"
 
@@ -188,13 +193,16 @@ class TestBackendGenerationNoConfig:
 
         assert result.findings_detected == 1
         events = load_review_events(state, repo.config.name)
-        skip_events = [e for e in events if e.get("event") == "backend-generation skipped"]
+        skip_events = [
+            e for e in events if e.get("event") == "backend-generation skipped"
+        ]
         assert len(skip_events) == 1
 
 
 # ---------------------------------------------------------------------------
 # Test: _generate_from_backend with backend configured, valid output
 # ---------------------------------------------------------------------------
+
 
 class TestBackendGenerationValidOutput:
     """When backend is configured and returns valid JSON, candidates are
@@ -215,7 +223,7 @@ class TestBackendGenerationValidOutput:
 
         # Mock shutil.which and subprocess.run in the review module
         with patch("shutil.which", return_value="/usr/bin/claude"):
-            with patch("bluei.review.cycle.subprocess.run") as mock_run:
+            with patch("bluei.review.generation.subprocess.run") as mock_run:
                 mock_run.return_value = MagicMock(
                     returncode=0,
                     stdout=json.dumps(BACKEND_CANDIDATES_VALID),
@@ -230,7 +238,9 @@ class TestBackendGenerationValidOutput:
             assert "path" in c
 
         events = load_review_events(state, repo.config.name)
-        success_events = [e for e in events if e.get("event") == "backend-generation succeeded"]
+        success_events = [
+            e for e in events if e.get("event") == "backend-generation succeeded"
+        ]
         assert len(success_events) == 1
         assert success_events[0].get("candidate_count") == 2
 
@@ -320,7 +330,15 @@ class TestMnemoCandidateSignals:
         engine = make_engine(repo, state)
         engine._mnemo_available = lambda: False
 
-        findings = [{"finding_id": "rf-a-000", "confidence": 0.5, "path": "a", "header": "h", "snippet": ""}]
+        findings = [
+            {
+                "finding_id": "rf-a-000",
+                "confidence": 0.5,
+                "path": "a",
+                "header": "h",
+                "snippet": "",
+            }
+        ]
         result = engine._apply_mnemo_candidate_signals(findings)
         assert result == findings
 
@@ -339,7 +357,7 @@ class TestMnemoCandidateSignals:
         run_id = generate_id("arun")
 
         with patch("shutil.which", return_value="/usr/bin/opencode"):
-            with patch("bluei.review.cycle.subprocess.run") as mock_run:
+            with patch("bluei.review.generation.subprocess.run") as mock_run:
                 mock_run.return_value = MagicMock(
                     returncode=0,
                     stdout=json.dumps({"findings": BACKEND_CANDIDATES_VALID}),
@@ -349,13 +367,16 @@ class TestMnemoCandidateSignals:
 
         assert len(candidates) == 2
         events = load_review_events(state, repo.config.name)
-        success_events = [e for e in events if e.get("event") == "backend-generation succeeded"]
+        success_events = [
+            e for e in events if e.get("event") == "backend-generation succeeded"
+        ]
         assert len(success_events) == 1
 
 
 # ---------------------------------------------------------------------------
 # Test: _generate_from_backend with backend failure
 # ---------------------------------------------------------------------------
+
 
 class TestBackendGenerationFailure:
     """When backend command fails (non-zero exit), returns empty and
@@ -375,7 +396,7 @@ class TestBackendGenerationFailure:
         run_id = generate_id("arun")
 
         with patch("shutil.which", return_value="/usr/bin/claude"):
-            with patch("bluei.review.cycle.subprocess.run") as mock_run:
+            with patch("bluei.review.generation.subprocess.run") as mock_run:
                 mock_run.return_value = MagicMock(
                     returncode=1,
                     stdout="",
@@ -385,10 +406,14 @@ class TestBackendGenerationFailure:
 
         assert candidates == []
         events = load_review_events(state, repo.config.name)
-        failure_events = [e for e in events if e.get("event") == "backend-generation failed"]
+        failure_events = [
+            e for e in events if e.get("event") == "backend-generation failed"
+        ]
         assert len(failure_events) == 1
         assert "claude error" in failure_events[0].get("error", "")
-        assert failure_events[0].get("details", {}).get("fallback") == "local_stub_engaged"
+        assert (
+            failure_events[0].get("details", {}).get("fallback") == "local_stub_engaged"
+        )
 
     def test_cycle_on_backend_failure_falls_back_to_local_stub(self):
         """Full cycle: backend fails → fallback to local stub + failure event."""
@@ -420,7 +445,7 @@ class TestBackendGenerationFailure:
         engine._generate_local_candidates = lambda: list(stub_candidates)
 
         with patch("shutil.which", return_value="/usr/bin/claude"):
-            with patch("bluei.review.cycle.subprocess.run") as mock_run:
+            with patch("bluei.review.generation.subprocess.run") as mock_run:
                 mock_run.return_value = MagicMock(
                     returncode=1,
                     stdout="",
@@ -430,15 +455,20 @@ class TestBackendGenerationFailure:
 
         assert result.findings_detected == 1
         events = load_review_events(state, repo.config.name)
-        failure_events = [e for e in events if e.get("event") == "backend-generation failed"]
+        failure_events = [
+            e for e in events if e.get("event") == "backend-generation failed"
+        ]
         assert len(failure_events) == 1
-        completed_events = [e for e in events if e.get("event") == "autonomous-review-completed"]
+        completed_events = [
+            e for e in events if e.get("event") == "autonomous-review-completed"
+        ]
         assert len(completed_events) == 1
 
 
 # ---------------------------------------------------------------------------
 # Test: _generate_from_backend with invalid output
 # ---------------------------------------------------------------------------
+
 
 class TestBackendGenerationInvalidOutput:
     """When backend returns invalid JSON or unexpected type, returns empty
@@ -458,7 +488,7 @@ class TestBackendGenerationInvalidOutput:
         run_id = generate_id("arun")
 
         with patch("shutil.which", return_value="/usr/bin/claude"):
-            with patch("bluei.review.cycle.subprocess.run") as mock_run:
+            with patch("bluei.review.generation.subprocess.run") as mock_run:
                 mock_run.return_value = MagicMock(
                     returncode=0,
                     stdout="This is not JSON output",
@@ -468,9 +498,13 @@ class TestBackendGenerationInvalidOutput:
 
         assert candidates == []
         events = load_review_events(state, repo.config.name)
-        invalid_events = [e for e in events if e.get("event") == "backend-generation invalid-json"]
+        invalid_events = [
+            e for e in events if e.get("event") == "backend-generation invalid-json"
+        ]
         assert len(invalid_events) == 1
-        assert invalid_events[0].get("details", {}).get("fallback") == "local_stub_engaged"
+        assert (
+            invalid_events[0].get("details", {}).get("fallback") == "local_stub_engaged"
+        )
 
     def test_empty_output_returns_empty_and_logs_event(self):
         tmp = _isolated_tmp()
@@ -486,7 +520,7 @@ class TestBackendGenerationInvalidOutput:
         run_id = generate_id("arun")
 
         with patch("shutil.which", return_value="/usr/bin/claude"):
-            with patch("bluei.review.cycle.subprocess.run") as mock_run:
+            with patch("bluei.review.generation.subprocess.run") as mock_run:
                 mock_run.return_value = MagicMock(
                     returncode=0,
                     stdout="   ",  # whitespace only
@@ -496,7 +530,9 @@ class TestBackendGenerationInvalidOutput:
 
         assert candidates == []
         events = load_review_events(state, repo.config.name)
-        empty_events = [e for e in events if e.get("event") == "backend-generation empty"]
+        empty_events = [
+            e for e in events if e.get("event") == "backend-generation empty"
+        ]
         assert len(empty_events) == 1
 
     def test_unexpected_json_type_returns_empty_and_logs_event(self):
@@ -513,7 +549,7 @@ class TestBackendGenerationInvalidOutput:
         run_id = generate_id("arun")
 
         with patch("shutil.which", return_value="/usr/bin/claude"):
-            with patch("bluei.review.cycle.subprocess.run") as mock_run:
+            with patch("bluei.review.generation.subprocess.run") as mock_run:
                 mock_run.return_value = MagicMock(
                     returncode=0,
                     stdout=json.dumps("just a string"),  # string, not dict/list
@@ -523,7 +559,9 @@ class TestBackendGenerationInvalidOutput:
 
         assert candidates == []
         events = load_review_events(state, repo.config.name)
-        type_events = [e for e in events if e.get("event") == "backend-generation unexpected-type"]
+        type_events = [
+            e for e in events if e.get("event") == "backend-generation unexpected-type"
+        ]
         assert len(type_events) == 1
 
     def test_all_invalid_candidates_returns_empty_and_logs_event(self):
@@ -545,7 +583,7 @@ class TestBackendGenerationInvalidOutput:
         ]
 
         with patch("shutil.which", return_value="/usr/bin/claude"):
-            with patch("bluei.review.cycle.subprocess.run") as mock_run:
+            with patch("bluei.review.generation.subprocess.run") as mock_run:
                 mock_run.return_value = MagicMock(
                     returncode=0,
                     stdout=json.dumps(invalid_candidates),
@@ -555,13 +593,18 @@ class TestBackendGenerationInvalidOutput:
 
         assert candidates == []
         events = load_review_events(state, repo.config.name)
-        no_valid_events = [e for e in events if e.get("event") == "backend-generation no-valid-candidates"]
+        no_valid_events = [
+            e
+            for e in events
+            if e.get("event") == "backend-generation no-valid-candidates"
+        ]
         assert len(no_valid_events) == 1
 
 
 # ---------------------------------------------------------------------------
 # Test: observation mode unchanged
 # ---------------------------------------------------------------------------
+
 
 class TestObservationModeUnchanged:
     """Observation mode does not use backend generation — only autonomous
@@ -582,10 +625,12 @@ class TestObservationModeUnchanged:
         # Spy on _generate_from_backend
         called = False
         original = engine._generate_from_backend
+
         def spy(*args, **kwargs):
             nonlocal called
             called = True
             return original(*args, **kwargs)
+
         engine._generate_from_backend = spy
 
         result = engine.run(dry_run=False)
@@ -599,6 +644,7 @@ class TestObservationModeUnchanged:
 # ---------------------------------------------------------------------------
 # Test: dry_run guard still works
 # ---------------------------------------------------------------------------
+
 
 class TestDryRunGuard:
     """dry_run=True returns immediately without any candidate generation."""
@@ -616,10 +662,12 @@ class TestDryRunGuard:
         # Spy on _generate_from_backend
         called = False
         original = engine._generate_from_backend
+
         def spy(*args, **kwargs):
             nonlocal called
             called = True
             return original(*args, **kwargs)
+
         engine._generate_from_backend = spy
 
         result = engine._run_autonomous_review_cycle(dry_run=True)
@@ -632,6 +680,7 @@ class TestDryRunGuard:
 # ---------------------------------------------------------------------------
 # Test: backend available but deterministic fallback when not claude/opencode
 # ---------------------------------------------------------------------------
+
 
 class TestBackendResolution:
     """When fix_engine is 'deterministic', backend generation is skipped."""
@@ -652,7 +701,9 @@ class TestBackendResolution:
 
         assert candidates == []
         events = load_review_events(state, repo.config.name)
-        skip_events = [e for e in events if e.get("event") == "backend-generation skipped"]
+        skip_events = [
+            e for e in events if e.get("event") == "backend-generation skipped"
+        ]
         assert len(skip_events) == 1
         assert "deterministic" in skip_events[0].get("reason", "")
 
