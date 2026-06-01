@@ -93,7 +93,7 @@ def _make_full_args(**overrides):
 
 
 class TestSymbolImports:
-    """Verify all externally-consumed symbols remain importable from cli.py."""
+    """Verify all key symbols are importable from their canonical locations."""
 
     def test_import_main(self):
         from bluei.engine.cli import main
@@ -101,27 +101,27 @@ class TestSymbolImports:
         assert callable(main)
 
     def test_import_load_batch_rules(self):
-        from bluei.engine.cli import _load_batch_rules_for_args
+        from bluei.engine.commands.helpers import _load_batch_rules_for_args
 
         assert callable(_load_batch_rules_for_args)
 
     def test_import_update_status_artifact(self):
-        from bluei.engine.cli import update_status_artifact
+        from bluei.engine.commands.helpers import update_status_artifact
 
         assert callable(update_status_artifact)
 
     def test_import_compute_health_score(self):
-        from bluei.engine.cli import _compute_health_score
+        from bluei.engine.commands.helpers import _compute_health_score
 
         assert callable(_compute_health_score)
 
     def test_import_hydrate_worktree_deps(self):
-        from bluei.engine.cli import _hydrate_worktree_dependencies
+        from bluei.engine.commands.helpers import _hydrate_worktree_dependencies
 
         assert callable(_hydrate_worktree_dependencies)
 
     def test_import_reconcile_issue_pr_link(self):
-        from bluei.engine.cli import _reconcile_issue_pr_link
+        from bluei.engine.commands.helpers import _reconcile_issue_pr_link
 
         assert callable(_reconcile_issue_pr_link)
 
@@ -141,7 +141,7 @@ class TestComputeHealthScore:
     """Pin _compute_health_score behavior."""
 
     def test_all_zeros_is_100(self):
-        from bluei.engine.cli import _compute_health_score
+        from bluei.engine.commands.helpers import _compute_health_score
 
         score = _compute_health_score(
             raw_open_issues=0, live_open_prs=0, issues_list=[]
@@ -149,7 +149,7 @@ class TestComputeHealthScore:
         assert score == 100
 
     def test_issues_reduce_score(self):
-        from bluei.engine.cli import _compute_health_score
+        from bluei.engine.commands.helpers import _compute_health_score
 
         score = _compute_health_score(
             raw_open_issues=5, live_open_prs=0, issues_list=[]
@@ -157,7 +157,7 @@ class TestComputeHealthScore:
         assert score == 75  # 100 - 5*5
 
     def test_prs_reduce_score(self):
-        from bluei.engine.cli import _compute_health_score
+        from bluei.engine.commands.helpers import _compute_health_score
 
         score = _compute_health_score(
             raw_open_issues=0, live_open_prs=3, issues_list=[]
@@ -165,7 +165,7 @@ class TestComputeHealthScore:
         assert score == 70  # 100 - 3*10
 
     def test_terminal_issues_reduce_score(self):
-        from bluei.engine.cli import _compute_health_score
+        from bluei.engine.commands.helpers import _compute_health_score
 
         issues = [
             {"status": "resolved_merged"},
@@ -182,7 +182,7 @@ class TestComputeHealthScore:
         assert 0 <= score <= 100
 
     def test_score_floors_at_zero(self):
-        from bluei.engine.cli import _compute_health_score
+        from bluei.engine.commands.helpers import _compute_health_score
 
         score = _compute_health_score(
             raw_open_issues=100, live_open_prs=100, issues_list=[]
@@ -190,7 +190,7 @@ class TestComputeHealthScore:
         assert score == 0
 
     def test_combined_penalties(self):
-        from bluei.engine.cli import _compute_health_score
+        from bluei.engine.commands.helpers import _compute_health_score
 
         score = _compute_health_score(
             raw_open_issues=5, live_open_prs=3, issues_list=[]
@@ -202,13 +202,13 @@ class TestLoadReviewState:
     """Pin _load_review_state behavior."""
 
     def test_missing_file_returns_empty(self):
-        from bluei.engine.cli import _load_review_state
+        from bluei.engine.commands.helpers import _load_review_state
 
         result = _load_review_state(Path("/nonexistent/review_state.json"))
         assert result == {}
 
     def test_valid_json_returns_dict(self, tmp_path):
-        from bluei.engine.cli import _load_review_state
+        from bluei.engine.commands.helpers import _load_review_state
 
         f = tmp_path / "review_state.json"
         f.write_text('{"prs": {"1": {"status": "ok"}}}')
@@ -216,7 +216,7 @@ class TestLoadReviewState:
         assert result == {"prs": {"1": {"status": "ok"}}}
 
     def test_invalid_json_returns_empty(self, tmp_path):
-        from bluei.engine.cli import _load_review_state
+        from bluei.engine.commands.helpers import _load_review_state
 
         f = tmp_path / "review_state.json"
         f.write_text("not json{{{")
@@ -224,7 +224,7 @@ class TestLoadReviewState:
         assert result == {}
 
     def test_non_dict_json_returns_empty(self, tmp_path):
-        from bluei.engine.cli import _load_review_state
+        from bluei.engine.commands.helpers import _load_review_state
 
         f = tmp_path / "review_state.json"
         f.write_text("[1, 2, 3]")
@@ -236,21 +236,21 @@ class TestAutonomousReviewGatePasses:
     """Pin _autonomous_review_gate_passes behavior."""
 
     def test_missing_pr_returns_false(self):
-        from bluei.engine.cli import _autonomous_review_gate_passes
+        from bluei.engine.commands.helpers import _autonomous_review_gate_passes
 
         ok, reason = _autonomous_review_gate_passes({}, 42)
         assert ok is False
         assert "missing" in reason
 
     def test_not_merge_ready_returns_false(self):
-        from bluei.engine.cli import _autonomous_review_gate_passes
+        from bluei.engine.commands.helpers import _autonomous_review_gate_passes
 
         state = {"prs": {"42": {"last_action": "pending"}}}
         ok, reason = _autonomous_review_gate_passes(state, 42)
         assert ok is False
 
     def test_merge_ready_passes(self):
-        from bluei.engine.cli import _autonomous_review_gate_passes
+        from bluei.engine.commands.helpers import _autonomous_review_gate_passes
 
         state = {
             "prs": {
@@ -274,14 +274,14 @@ class TestLoadBatchRulesForArgs:
     """Pin _load_batch_rules_for_args behavior."""
 
     def test_disabled_returns_empty(self):
-        from bluei.engine.cli import _load_batch_rules_for_args
+        from bluei.engine.commands.helpers import _load_batch_rules_for_args
 
         args = argparse.Namespace(batch_pr_enabled=False, batch_pr_rules=None)
         result = _load_batch_rules_for_args(args)
         assert result == []
 
     def test_fallback_returns_hardcoded_rules(self):
-        from bluei.engine.cli import _load_batch_rules_for_args
+        from bluei.engine.commands.helpers import _load_batch_rules_for_args
 
         args = argparse.Namespace(batch_pr_enabled=True, batch_pr_rules=None)
         result = _load_batch_rules_for_args(args)
@@ -296,7 +296,7 @@ class TestBuildRefactorQueueSnapshot:
     """Pin _build_refactor_queue_snapshot behavior."""
 
     def test_returns_dict_with_expected_keys(self):
-        from bluei.engine.cli import _build_refactor_queue_snapshot
+        from bluei.engine.commands.helpers import _build_refactor_queue_snapshot
 
         result = _build_refactor_queue_snapshot()
         assert isinstance(result, dict)
@@ -311,7 +311,7 @@ class TestBuildRefactorQueueSnapshot:
             assert key in result
 
     def test_values_are_ints(self):
-        from bluei.engine.cli import _build_refactor_queue_snapshot
+        from bluei.engine.commands.helpers import _build_refactor_queue_snapshot
 
         result = _build_refactor_queue_snapshot()
         for key, val in result.items():
@@ -322,7 +322,7 @@ class TestUpdateStatusArtifact:
     """Pin update_status_artifact behavior."""
 
     def test_creates_status_json(self, tmp_path):
-        from bluei.engine.cli import update_status_artifact
+        from bluei.engine.commands.helpers import update_status_artifact
 
         status_file = tmp_path / "status.json"
         issues_file = tmp_path / "issues.json"
@@ -362,7 +362,7 @@ class TestUpdateStatusArtifact:
         assert "staleness" in data
 
     def test_overwrites_existing_status(self, tmp_path):
-        from bluei.engine.cli import update_status_artifact
+        from bluei.engine.commands.helpers import update_status_artifact
 
         status_file = tmp_path / "status.json"
         issues_file = tmp_path / "issues.json"
@@ -426,13 +426,13 @@ class TestGetLlmFixableRules:
     """Pin _get_llm_fixable_rules behavior."""
 
     def test_returns_dict(self):
-        from bluei.engine.cli import _get_llm_fixable_rules
+        from bluei.engine.commands.helpers import _get_llm_fixable_rules
 
         result = _get_llm_fixable_rules()
         assert isinstance(result, dict)
 
     def test_caches_result(self):
-        from bluei.engine.cli import _get_llm_fixable_rules
+        from bluei.engine.commands.helpers import _get_llm_fixable_rules
 
         r1 = _get_llm_fixable_rules()
         r2 = _get_llm_fixable_rules()
@@ -451,37 +451,31 @@ class TestBackwardCompatIdentity:
     """
 
     def test_update_status_artifact_is_same_as_helpers(self):
-        from bluei.engine.cli import update_status_artifact
-        from bluei.engine.commands.helpers import update_status_artifact as helpers_usa
+        from bluei.engine.commands.helpers import update_status_artifact
+        from bluei.engine.cli import update_status_artifact as cli_usa
 
-        assert update_status_artifact is helpers_usa
+        assert update_status_artifact is cli_usa
 
     def test_compute_health_score_is_same_as_helpers(self):
-        from bluei.engine.cli import _compute_health_score
-        from bluei.engine.commands.helpers import _compute_health_score as helpers_chs
+        from bluei.engine.commands.helpers import _compute_health_score
+        from bluei.engine.cli import _compute_health_score as cli_chs
 
-        assert _compute_health_score is helpers_chs
+        assert _compute_health_score is cli_chs
 
     def test_load_batch_rules_is_same_as_helpers(self):
-        from bluei.engine.cli import _load_batch_rules_for_args
-        from bluei.engine.commands.helpers import (
-            _load_batch_rules_for_args as helpers_lbr,
-        )
+        from bluei.engine.commands.helpers import _load_batch_rules_for_args
+        from bluei.engine.cli import _load_batch_rules_for_args as cli_lbr
 
-        assert _load_batch_rules_for_args is helpers_lbr
+        assert _load_batch_rules_for_args is cli_lbr
 
     def test_hydrate_worktree_deps_is_same_as_helpers(self):
-        from bluei.engine.cli import _hydrate_worktree_dependencies
-        from bluei.engine.commands.helpers import (
-            _hydrate_worktree_dependencies as helpers_hwd,
-        )
+        from bluei.engine.commands.helpers import _hydrate_worktree_dependencies
+        from bluei.engine.cli import _hydrate_worktree_dependencies as cli_hwd
 
-        assert _hydrate_worktree_dependencies is helpers_hwd
+        assert _hydrate_worktree_dependencies is cli_hwd
 
     def test_reconcile_issue_pr_link_is_same_as_helpers(self):
-        from bluei.engine.cli import _reconcile_issue_pr_link
-        from bluei.engine.commands.helpers import (
-            _reconcile_issue_pr_link as helpers_ripl,
-        )
+        from bluei.engine.commands.helpers import _reconcile_issue_pr_link
+        from bluei.engine.cli import _reconcile_issue_pr_link as cli_ripl
 
-        assert _reconcile_issue_pr_link is helpers_ripl
+        assert _reconcile_issue_pr_link is cli_ripl

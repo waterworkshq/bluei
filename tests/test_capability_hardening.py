@@ -5,7 +5,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from bluei.engine import gh, linters
-from bluei.engine.cli import _hydrate_worktree_dependencies, _reconcile_issue_pr_link
+from bluei.engine.commands.helpers import (
+    _hydrate_worktree_dependencies,
+    _reconcile_issue_pr_link,
+)
 from bluei.engine.lifecycle import choose_validation_baseline, _normalize_check_output
 from bluei.engine.orchestrator import count_failed_fix_attempts
 

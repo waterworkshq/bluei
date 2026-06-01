@@ -560,7 +560,7 @@ class TestProcessBatch:
 class TestBatchDisabledFallback:
     def test_no_batch_rules_when_disabled(self):
         """When batch_pr_enabled=False, _load_batch_rules_for_args returns empty list."""
-        from bluei.engine.cli import _load_batch_rules_for_args
+        from bluei.engine.commands.helpers import _load_batch_rules_for_args
 
         args = MagicMock()
         args.batch_pr_enabled = False

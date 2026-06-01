@@ -1,8 +1,8 @@
-"""Tests for _compute_health_score() in cli.py — pure function, no dependencies."""
+"""Tests for _compute_health_score() — pure function, no dependencies."""
 
 from typing import Any, Dict, List
 
-from bluei.engine.cli import _compute_health_score
+from bluei.engine.commands.helpers import _compute_health_score
 
 
 def _make_issue(status: str = "open") -> Dict[str, Any]:
@@ -17,12 +17,15 @@ class TestHealthScorePerfect:
     """100 — everything clean."""
 
     def test_zero_issues_zero_prs(self):
-        score = _compute_health_score(raw_open_issues=0, live_open_prs=0, issues_list=[])
+        score = _compute_health_score(
+            raw_open_issues=0, live_open_prs=0, issues_list=[]
+        )
         assert score == 100
 
     def test_no_issues_no_terminal(self):
         score = _compute_health_score(
-            raw_open_issues=0, live_open_prs=0,
+            raw_open_issues=0,
+            live_open_prs=0,
             issues_list=_make_issues("closed", "completed"),
         )
         assert score == 100
@@ -34,7 +37,8 @@ class TestHealthScoreDeductions:
     def test_open_issues_deduct_5_each(self):
         # 3 open issues = -15
         score = _compute_health_score(
-            raw_open_issues=3, live_open_prs=0,
+            raw_open_issues=3,
+            live_open_prs=0,
             issues_list=_make_issues("open", "open", "open"),
         )
         assert score == 85
@@ -42,14 +46,17 @@ class TestHealthScoreDeductions:
     def test_open_prs_deduct_10_each(self):
         # 2 open PRs = -20
         score = _compute_health_score(
-            raw_open_issues=0, live_open_prs=2, issues_list=[],
+            raw_open_issues=0,
+            live_open_prs=2,
+            issues_list=[],
         )
         assert score == 80
 
     def test_terminal_issues_deduct_3_each(self):
         # 4 terminal issues = -12
         score = _compute_health_score(
-            raw_open_issues=0, live_open_prs=0,
+            raw_open_issues=0,
+            live_open_prs=0,
             issues_list=_make_issues(
                 "needs-human-max-retries-exceeded",
                 "blocked_untracked_path",
@@ -62,9 +69,12 @@ class TestHealthScoreDeductions:
     def test_combined_deductions(self):
         # 3 open issues = -15, 1 open PR = -10, 2 terminal = -6
         score = _compute_health_score(
-            raw_open_issues=3, live_open_prs=1,
+            raw_open_issues=3,
+            live_open_prs=1,
             issues_list=_make_issues(
-                "open", "open", "open",
+                "open",
+                "open",
+                "open",
                 "needs-human-max-retries-exceeded",
                 "blocked_untracked_path",
             ),
@@ -77,16 +87,22 @@ class TestHealthScoreBounds:
 
     def test_floor_at_zero(self):
         score = _compute_health_score(
-            raw_open_issues=50, live_open_prs=50, issues_list=[],
+            raw_open_issues=50,
+            live_open_prs=50,
+            issues_list=[],
         )
         assert score == 0  # clamped
 
     def test_ceiling_at_100(self):
-        score = _compute_health_score(raw_open_issues=0, live_open_prs=0, issues_list=[])
+        score = _compute_health_score(
+            raw_open_issues=0, live_open_prs=0, issues_list=[]
+        )
         assert score == 100
 
     def test_negative_deduction_clamped(self):
         score = _compute_health_score(
-            raw_open_issues=100, live_open_prs=100, issues_list=[],
+            raw_open_issues=100,
+            live_open_prs=100,
+            issues_list=[],
         )
         assert score == 0

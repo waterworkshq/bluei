@@ -389,7 +389,7 @@ def test_create_refactor_plan():
 
 def test_update_status_artifact_includes_refactor_queue_counts():
     """status.json surfaces refactor queue counts in current_counts and latest_run_metrics."""
-    from bluei.engine.cli import update_status_artifact
+    from bluei.engine.commands.helpers import update_status_artifact
     from bluei.engine.refactor_queue import RefactorQueue, QueueStatus
 
     with tempfile.TemporaryDirectory() as tmpdir:
