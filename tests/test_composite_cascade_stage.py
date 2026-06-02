@@ -151,7 +151,7 @@ class TestCompositePatternCascadeStageAttemptSuccess:
             rule="ruff-b904", path="src/main.py", snippet="raise Error"
         )
 
-        with patch("bluei.engine.lifecycle.verify_fix_closed", return_value=True):
+        with patch("bluei.engine.validation.verify_fix_closed", return_value=True):
             result = stage.attempt(finding, worktree, ctx)
 
         assert result.success is True
@@ -190,7 +190,7 @@ class TestCompositePatternCascadeStageAttemptSuccess:
             rule="ruff-b904", path="src/main.py", snippet="raise Error"
         )
 
-        with patch("bluei.engine.lifecycle.verify_fix_closed", return_value=True):
+        with patch("bluei.engine.validation.verify_fix_closed", return_value=True):
             stage.attempt(finding, worktree, ctx)
 
         comp_store = CompositePatternStore(tmp_path / "composite_patterns.jsonl")
@@ -239,7 +239,7 @@ class TestCompositePatternCascadeStageAttemptSuccess:
             rule="import-rename", path="src/a.py", snippet="import old_mod"
         )
 
-        with patch("bluei.engine.lifecycle.verify_fix_closed", return_value=True):
+        with patch("bluei.engine.validation.verify_fix_closed", return_value=True):
             result = stage.attempt(finding, worktree, ctx)
 
         assert result.success is True
@@ -302,7 +302,7 @@ class TestCompositePatternCascadeStageAttemptFailure:
             rule="ruff-b904", path="src/main.py", snippet="raise Error"
         )
 
-        with patch("bluei.engine.lifecycle.verify_fix_closed", return_value=False):
+        with patch("bluei.engine.validation.verify_fix_closed", return_value=False):
             result = stage.attempt(finding, worktree, ctx)
 
         assert result.success is False
@@ -366,7 +366,7 @@ class TestCompositePatternCascadeStageAttemptFailure:
             rule="ruff-b904", path="src/main.py", snippet="raise Error"
         )
 
-        with patch("bluei.engine.lifecycle.verify_fix_closed", return_value=False):
+        with patch("bluei.engine.validation.verify_fix_closed", return_value=False):
             result = stage.attempt(finding, worktree, ctx)
 
         assert result.success is False
@@ -403,7 +403,7 @@ class TestCompositePatternCascadeStageAttemptFailure:
             rule="ruff-b904", path="src/main.py", snippet="raise Error"
         )
 
-        with patch("bluei.engine.lifecycle.verify_fix_closed", return_value=False):
+        with patch("bluei.engine.validation.verify_fix_closed", return_value=False):
             result = stage.attempt(finding, worktree, ctx)
 
         assert result.success is False
@@ -505,7 +505,7 @@ class TestCompositePatternCascadeStageInCascade:
             rule="ruff-b904", path="src/main.py", snippet="raise Error"
         )
 
-        with patch("bluei.engine.lifecycle.verify_fix_closed", return_value=True):
+        with patch("bluei.engine.validation.verify_fix_closed", return_value=True):
             result = cascade.execute(finding, worktree, ctx)
 
         assert result.success is True
@@ -561,7 +561,7 @@ class TestCompositePatternCascadeStageInCascade:
             rule="ruff-b904", path="src/main.py", snippet="raise Error"
         )
 
-        with patch("bluei.engine.lifecycle.verify_fix_closed", return_value=False):
+        with patch("bluei.engine.validation.verify_fix_closed", return_value=False):
             result = cascade.execute(finding, worktree, ctx)
 
         assert result.success is False

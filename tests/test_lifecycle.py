@@ -15,23 +15,21 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from bluei.engine.fix_tiers import FixTier
+from bluei.engine.git_ops import git_commit_all, git_push_branch, diff_stats
 from bluei.engine.lifecycle import (
-    STALE_LOCK_HOURS,
     apply_autofix,
     apply_cascade_fix,
     apply_claude_fix,
+    process_refactor_queue,
+    route_to_human_review,
+)
+from bluei.engine.review_helpers import classify_review_feedback, review_loop_allowed
+from bluei.engine.startup import STALE_LOCK_HOURS, run_startup_self_healing
+from bluei.engine.validation import (
     build_target_checks,
     choose_validation_baseline,
-    classify_review_feedback,
-    diff_stats,
-    git_commit_all,
-    git_push_branch,
-    process_refactor_queue,
-    review_loop_allowed,
-    route_to_human_review,
     run_named_checks,
     run_smoke_test,
-    run_startup_self_healing,
     run_validation_gate,
     verify_fix_closed,
 )
@@ -426,28 +424,28 @@ class TestApplyCascadeFix:
 
 
 class TestGitCommitAll:
-    @patch("bluei.engine.lifecycle.run_capture")
+    @patch("bluei.engine.git_ops.run_capture")
     def test_commit_succeeds(self, mock_rc, tmp_path):
         mock_rc.side_effect = [(0, ""), (1, "diff"), (0, "[main abc] done")]
         log = tmp_path / "log.txt"
         log.write_text("")
         assert git_commit_all(tmp_path, "fix", log, dry_run=False) == "committed"
 
-    @patch("bluei.engine.lifecycle.run_capture")
+    @patch("bluei.engine.git_ops.run_capture")
     def test_no_changes(self, mock_rc, tmp_path):
         mock_rc.side_effect = [(0, ""), (0, "")]
         log = tmp_path / "log.txt"
         log.write_text("")
         assert git_commit_all(tmp_path, "fix", log, dry_run=False) == "no_changes"
 
-    @patch("bluei.engine.lifecycle.run_capture")
+    @patch("bluei.engine.git_ops.run_capture")
     def test_error_on_add_failure(self, mock_rc, tmp_path):
         mock_rc.return_value = (1, "error")
         log = tmp_path / "log.txt"
         log.write_text("")
         assert git_commit_all(tmp_path, "fix", log, dry_run=False) == "error"
 
-    @patch("bluei.engine.lifecycle.run_capture")
+    @patch("bluei.engine.git_ops.run_capture")
     def test_dry_run_skips_commit(self, mock_rc, tmp_path):
         mock_rc.side_effect = [(0, ""), (1, "diff")]
         log = tmp_path / "log.txt"
@@ -457,14 +455,14 @@ class TestGitCommitAll:
 
 
 class TestGitPushBranch:
-    @patch("bluei.engine.lifecycle.run_capture")
+    @patch("bluei.engine.git_ops.run_capture")
     def test_success(self, mock_rc, tmp_path):
         mock_rc.return_value = (0, "pushed")
         log = tmp_path / "log.txt"
         log.write_text("")
         assert git_push_branch(tmp_path, "main", log, dry_run=False) is True
 
-    @patch("bluei.engine.lifecycle.run_capture")
+    @patch("bluei.engine.git_ops.run_capture")
     def test_failure(self, mock_rc, tmp_path):
         mock_rc.return_value = (1, "push failed")
         log = tmp_path / "log.txt"
@@ -479,19 +477,19 @@ class TestGitPushBranch:
 
 
 class TestDiffStats:
-    @patch("bluei.engine.lifecycle.run_capture")
+    @patch("bluei.engine.git_ops.run_capture")
     def test_parses_numstat(self, mock_rc, tmp_path):
         mock_rc.return_value = (0, "10\t5\tfile1.py\n3\t2\tfile2.py\n")
         assert diff_stats(tmp_path) == (2, 20)
 
-    @patch("bluei.engine.lifecycle.run_capture")
+    @patch("bluei.engine.git_ops.run_capture")
     def test_binary_and_malformed_handled(self, mock_rc, tmp_path):
         mock_rc.return_value = (0, "-\t-\timage.png\nbadline\n5\t3\tfile.py\n")
         files, loc = diff_stats(tmp_path)
         assert files == 2  # binary + valid (malformed skipped)
         assert loc == 8
 
-    @patch("bluei.engine.lifecycle.run_capture")
+    @patch("bluei.engine.git_ops.run_capture")
     def test_returns_zero_on_error(self, mock_rc, tmp_path):
         mock_rc.return_value = (1, "error")
         assert diff_stats(tmp_path) == (0, 0)
@@ -509,7 +507,7 @@ class TestRunValidationGate:
             is True
         )
 
-    @patch("bluei.engine.lifecycle.run_named_checks")
+    @patch("bluei.engine.validation.run_named_checks")
     def test_regression_detected(self, mock_rnc, tmp_path):
         mock_rnc.side_effect = [
             {"lint": {"rc": 0, "fingerprint": ""}},
@@ -524,7 +522,7 @@ class TestRunValidationGate:
         assert result["passed"] is False
         assert "lint" in result["regressions"]
 
-    @patch("bluei.engine.lifecycle.run_named_checks")
+    @patch("bluei.engine.validation.run_named_checks")
     def test_target_failure_blocks(self, mock_rnc, tmp_path):
         mock_rnc.return_value = {"target": {"rc": 1, "fingerprint": "abc"}}
         log = tmp_path / "log.txt"
@@ -558,7 +556,7 @@ class TestRunValidationGate:
 
 
 class TestRunNamedChecks:
-    @patch("bluei.engine.lifecycle.run_capture")
+    @patch("bluei.engine.validation.run_capture")
     def test_results_have_rc_and_fingerprint(self, mock_rc, tmp_path):
         mock_rc.return_value = (1, "error output")
         log = tmp_path / "log.txt"
@@ -567,7 +565,7 @@ class TestRunNamedChecks:
         assert result["lint"]["rc"] == 1
         assert result["lint"]["fingerprint"] != ""
 
-    @patch("bluei.engine.lifecycle.run_capture")
+    @patch("bluei.engine.validation.run_capture")
     def test_output_logged(self, mock_rc, tmp_path):
         mock_rc.return_value = (0, "some output text")
         log = tmp_path / "log.txt"
@@ -611,7 +609,7 @@ class TestBuildTargetChecks:
 
 
 class TestRunSmokeTest:
-    @patch("bluei.engine.lifecycle.run_capture")
+    @patch("bluei.engine.validation.run_capture")
     def test_clean_repo_passes(self, mock_rc, tmp_path, git_repo, git_commit_all):
         repo = git_repo
         (repo / "src").mkdir()
@@ -634,7 +632,7 @@ class TestRunSmokeTest:
         assert result["passed"] is True
         assert result["checks"]["worktree"] is True
 
-    @patch("bluei.engine.lifecycle.run_capture")
+    @patch("bluei.engine.validation.run_capture")
     def test_dirty_worktree_fails(self, mock_rc, tmp_path, git_repo, git_commit_all):
         repo = git_repo
         (repo / "dirty.txt").write_text("uncommitted")
@@ -651,7 +649,7 @@ class TestRunSmokeTest:
         mock_rc.side_effect = side_effect
         assert run_smoke_test(repo, log)["checks"]["worktree"] is False
 
-    @patch("bluei.engine.lifecycle.run_capture")
+    @patch("bluei.engine.validation.run_capture")
     def test_missing_repo_fails(self, mock_rc, tmp_path):
         mock_rc.return_value = (1, "fatal: not a git repository")
         log = tmp_path / "log.txt"
@@ -663,13 +661,13 @@ class TestRunSmokeTest:
 
 
 class TestVerifyFixClosed:
-    @patch("bluei.engine.lifecycle.discover_findings", return_value=[])
+    @patch("bluei.engine.validation.discover_findings", return_value=[])
     def test_true_when_gone(self, mock_disc, tmp_path, make_finding):
         log = tmp_path / "log.txt"
         log.write_text("")
         assert verify_fix_closed(tmp_path, make_finding(), log) is True
 
-    @patch("bluei.engine.lifecycle.discover_findings")
+    @patch("bluei.engine.validation.discover_findings")
     def test_false_when_persists(self, mock_disc, tmp_path, make_finding):
         mock_disc.return_value = [make_finding()]
         log = tmp_path / "log.txt"
@@ -710,10 +708,10 @@ class TestRouteToHumanReview:
 
 
 class TestRunStartupSelfHealing:
-    @patch("bluei.engine.lifecycle.run_capture", return_value=(0, ""))
-    @patch("bluei.engine.lifecycle._parse_worktree_list_porcelain", return_value=[])
-    @patch("bluei.engine.lifecycle.repair_state", return_value=False)
-    @patch("bluei.engine.lifecycle.load_batches", return_value=[])
+    @patch("bluei.engine.startup.run_capture", return_value=(0, ""))
+    @patch("bluei.engine.startup._parse_worktree_list_porcelain", return_value=[])
+    @patch("bluei.engine.startup.repair_state", return_value=False)
+    @patch("bluei.engine.startup.load_batches", return_value=[])
     def test_removes_stale_locks(
         self, mock_batches, mock_repair, mock_parse, mock_rc, tmp_path
     ):
@@ -726,17 +724,17 @@ class TestRunStartupSelfHealing:
         log = tmp_path / "log.txt"
         log.write_text("")
         with (
-            patch("bluei.engine.lifecycle.datetime", datetime, create=True),
-            patch("bluei.engine.lifecycle.timezone", timezone, create=True),
+            patch("bluei.engine.startup.datetime", datetime, create=True),
+            patch("bluei.engine.startup.timezone", timezone, create=True),
         ):
             result = run_startup_self_healing(tmp_path, log, locks_dir=locks_dir)
         assert result["stale_locks_removed"] == 1
         assert not old_lock.exists()
 
-    @patch("bluei.engine.lifecycle.run_capture", return_value=(0, ""))
-    @patch("bluei.engine.lifecycle._parse_worktree_list_porcelain", return_value=[])
-    @patch("bluei.engine.lifecycle.repair_state", return_value=False)
-    @patch("bluei.engine.lifecycle.load_batches", return_value=[])
+    @patch("bluei.engine.startup.run_capture", return_value=(0, ""))
+    @patch("bluei.engine.startup._parse_worktree_list_porcelain", return_value=[])
+    @patch("bluei.engine.startup.repair_state", return_value=False)
+    @patch("bluei.engine.startup.load_batches", return_value=[])
     def test_preserves_fresh_locks(
         self, mock_batches, mock_repair, mock_parse, mock_rc, tmp_path
     ):
@@ -747,17 +745,17 @@ class TestRunStartupSelfHealing:
         log = tmp_path / "log.txt"
         log.write_text("")
         with (
-            patch("bluei.engine.lifecycle.datetime", datetime, create=True),
-            patch("bluei.engine.lifecycle.timezone", timezone, create=True),
+            patch("bluei.engine.startup.datetime", datetime, create=True),
+            patch("bluei.engine.startup.timezone", timezone, create=True),
         ):
             result = run_startup_self_healing(tmp_path, log, locks_dir=locks_dir)
         assert result["stale_locks_removed"] == 0
         assert fresh_lock.exists()
 
-    @patch("bluei.engine.lifecycle.run_capture", return_value=(0, ""))
-    @patch("bluei.engine.lifecycle._parse_worktree_list_porcelain", return_value=[])
-    @patch("bluei.engine.lifecycle.repair_state", return_value=False)
-    @patch("bluei.engine.lifecycle.load_batches", return_value=[])
+    @patch("bluei.engine.startup.run_capture", return_value=(0, ""))
+    @patch("bluei.engine.startup._parse_worktree_list_porcelain", return_value=[])
+    @patch("bluei.engine.startup.repair_state", return_value=False)
+    @patch("bluei.engine.startup.load_batches", return_value=[])
     def test_dry_run_preserves_files(
         self, mock_batches, mock_repair, mock_parse, mock_rc, tmp_path
     ):
@@ -768,8 +766,8 @@ class TestRunStartupSelfHealing:
         old_time = time.time() - (STALE_LOCK_HOURS + 1) * 3600
         os.utime(old_lock, (old_time, old_time))
         with (
-            patch("bluei.engine.lifecycle.datetime", datetime, create=True),
-            patch("bluei.engine.lifecycle.timezone", timezone, create=True),
+            patch("bluei.engine.startup.datetime", datetime, create=True),
+            patch("bluei.engine.startup.timezone", timezone, create=True),
         ):
             result = run_startup_self_healing(
                 tmp_path, locks_dir=locks_dir, dry_run=True
@@ -777,10 +775,10 @@ class TestRunStartupSelfHealing:
         assert result["stale_locks_removed"] == 1
         assert old_lock.exists()
 
-    @patch("bluei.engine.lifecycle.run_capture", return_value=(1, "error"))
-    @patch("bluei.engine.lifecycle._parse_worktree_list_porcelain", return_value=[])
-    @patch("bluei.engine.lifecycle.repair_state", return_value=False)
-    @patch("bluei.engine.lifecycle.load_batches", return_value=[])
+    @patch("bluei.engine.startup.run_capture", return_value=(1, "error"))
+    @patch("bluei.engine.startup._parse_worktree_list_porcelain", return_value=[])
+    @patch("bluei.engine.startup.repair_state", return_value=False)
+    @patch("bluei.engine.startup.load_batches", return_value=[])
     def test_worktree_prune_failure_logged(
         self, mock_batches, mock_repair, mock_parse, mock_rc, tmp_path
     ):
@@ -790,10 +788,10 @@ class TestRunStartupSelfHealing:
         assert result["worktrees_pruned"] is False
         assert any("worktree-prune" in e for e in result["errors"])
 
-    @patch("bluei.engine.lifecycle.run_capture", return_value=(0, ""))
-    @patch("bluei.engine.lifecycle._parse_worktree_list_porcelain", return_value=[])
-    @patch("bluei.engine.lifecycle.repair_state", return_value=True)
-    @patch("bluei.engine.lifecycle.load_batches", return_value=[])
+    @patch("bluei.engine.startup.run_capture", return_value=(0, ""))
+    @patch("bluei.engine.startup._parse_worktree_list_porcelain", return_value=[])
+    @patch("bluei.engine.startup.repair_state", return_value=True)
+    @patch("bluei.engine.startup.load_batches", return_value=[])
     @patch("bluei.engine.constants.DEFAULT_STATE")
     def test_state_repair_triggered(
         self, mock_ds, mock_batches, mock_repair, mock_parse, mock_rc, tmp_path
@@ -820,7 +818,7 @@ class TestProcessRefactorQueue:
     @patch(
         "bluei.engine.lifecycle.apply_claude_fix", return_value=(0, "fixed", "/tmp/p")
     )
-    @patch("bluei.engine.lifecycle.run_validation_gate", return_value={"passed": True})
+    @patch("bluei.engine.validation.run_validation_gate", return_value={"passed": True})
     @patch("bluei.engine.lifecycle.RefactorQueue")
     def test_success_completes_item(self, mock_rq_cls, mock_vg, mock_claude, tmp_path):
         mock_queue = MagicMock()
@@ -921,3 +919,61 @@ class TestReviewLoopAllowed:
     def test_blocked(self, author, tags):
         ok, reason = review_loop_allowed(author, tags, "bluei-bot", "auto-review")
         assert ok is False
+
+
+class TestLifecycleCacheReset:
+    """Pin _reset_lifecycle_cache behavior."""
+
+    def test_reset_clears_mnemo_clients(self):
+        from bluei.engine.lifecycle import _mnemo_clients, _reset_lifecycle_cache
+
+        _mnemo_clients["test_key"] = MagicMock()
+        _reset_lifecycle_cache()
+        assert len(_mnemo_clients) == 0
+
+    def test_reset_clears_cached_stores(self):
+        from bluei.engine.lifecycle import _cached_stores, _reset_lifecycle_cache
+
+        _cached_stores["test_key"] = object()
+        _reset_lifecycle_cache()
+        assert len(_cached_stores) == 0
+
+    def test_get_recipe_engine_constructs_once(self):
+        from bluei.engine.lifecycle import (
+            _get_recipe_engine,
+            _reset_lifecycle_cache,
+        )
+
+        _reset_lifecycle_cache()
+        engine1 = _get_recipe_engine()
+        engine2 = _get_recipe_engine()
+        assert engine1 is engine2
+        _reset_lifecycle_cache()
+
+    def test_get_tiered_validator_constructs_once(self):
+        from bluei.engine.lifecycle import (
+            _get_tiered_validator,
+            _reset_lifecycle_cache,
+        )
+
+        _reset_lifecycle_cache()
+        v1 = _get_tiered_validator()
+        v2 = _get_tiered_validator()
+        assert v1 is v2
+        _reset_lifecycle_cache()
+
+    def test_reset_allows_reconstruction(self):
+        from bluei.engine.lifecycle import (
+            _get_recipe_engine,
+            _get_tiered_validator,
+            _reset_lifecycle_cache,
+        )
+
+        _reset_lifecycle_cache()
+        engine1 = _get_recipe_engine()
+        validator1 = _get_tiered_validator()
+        _reset_lifecycle_cache()
+        engine2 = _get_recipe_engine()
+        validator2 = _get_tiered_validator()
+        assert engine1 is not engine2
+        assert validator1 is not validator2

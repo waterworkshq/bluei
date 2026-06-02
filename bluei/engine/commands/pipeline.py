@@ -1052,14 +1052,14 @@ def run_pr_cycle_phase(
         route_findings_with_intent,
         set_issue_status,
     )
+    from bluei.engine.git_ops import diff_stats, git_commit_all, git_push_branch
     from bluei.engine.lifecycle import (
         apply_autofix,
         apply_claude_fix,
+    )
+    from bluei.engine.validation import (
         build_target_checks,
         choose_validation_baseline,
-        diff_stats,
-        git_commit_all,
-        git_push_branch,
         run_named_checks,
         run_validation_gate,
         verify_fix_closed,

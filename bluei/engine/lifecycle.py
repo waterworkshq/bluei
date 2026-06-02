@@ -5,12 +5,10 @@ Three fix strategies are tried in cascade order: recipe → cascade → LLM.
 Safety gates block destructive operations; failed validations auto-rollback.
 """
 
-import hashlib
 import logging
 import re
 import shlex
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -37,18 +35,11 @@ from bluei.engine.state import (
     load_finding_record,
     update_finding_record,
     increment_fix_attempt,
-    repair_state,
-    load_batches,
 )
-from bluei.engine.linters import discover_python_linter_findings
-from bluei.engine.orchestrator import discover_findings
 from bluei.engine.prompts import render_claude_fix_prompt
 from bluei.engine.refactor_queue import RefactorQueue, QueueStatus
 from bluei.engine.constants import (
     DEFAULT_CLAUDE_CMD_TEMPLATE,
-    DEFAULT_DOCS_INDEX,
-    DEFAULT_WORKTREE_ROOT,
-    DEFAULT_BATCH_STATE,
     CLAUDE_REQUIRED_RULES,
     BASELINE_VALIDATION_CHECKS,
     MAX_LINES_REFACTOR_LIMIT,
@@ -69,9 +60,34 @@ from bluei.engine.fix_tiers import (
 
 _logger = logging.getLogger(__name__)
 
-# Module-level singletons: recipe engine (builtins + staged) and tiered validator
-_recipe_engine = RecipeEngine([builtin_recipe_dir(), staged_recipe_dir()])
-_tiered_validator = TieredValidator()
+# Module-level singletons: lazy-initialized to avoid import-time side effects
+# All mutable module state is declared here for auditability.
+_recipe_engine: Optional[RecipeEngine] = None
+_tiered_validator: Optional[TieredValidator] = None
+_mnemo_clients: Dict[str, MnemoClient] = {}
+_cached_stores: Dict[str, Any] = {}
+
+
+def _get_recipe_engine() -> RecipeEngine:
+    global _recipe_engine
+    if _recipe_engine is None:
+        _recipe_engine = RecipeEngine([builtin_recipe_dir(), staged_recipe_dir()])
+    return _recipe_engine
+
+
+def _get_tiered_validator() -> TieredValidator:
+    global _tiered_validator
+    if _tiered_validator is None:
+        _tiered_validator = TieredValidator()
+    return _tiered_validator
+
+
+def _reset_lifecycle_cache() -> None:
+    global _recipe_engine, _tiered_validator
+    _recipe_engine = None
+    _tiered_validator = None
+    _mnemo_clients.clear()
+    _cached_stores.clear()
 
 
 def _is_pattern_sharing_enabled(workspace: Path) -> bool:
@@ -153,7 +169,7 @@ def _extract_fix_pattern(
                                     staged_recipe_dir(),
                                 )
                                 try:
-                                    _recipe_engine.reload()
+                                    _get_recipe_engine().reload()
                                 except Exception:
                                     _logger.debug(
                                         "Pattern extract hook failed (top-level)"
@@ -361,249 +377,6 @@ def route_to_human_review(
         return ""
 
 
-def run_validation_gate(
-    repo_path: Path,
-    worktree_path: Path,
-    checks: Optional[Dict[str, List[str]]],
-    baseline_results: Optional[Dict[str, Dict[str, Any]]] = None,
-    post_fix_results: Optional[Dict[str, Dict[str, Any]]] = None,
-    target_results: Optional[Dict[str, Dict[str, Any]]] = None,
-    allow_unchanged_baseline_failures: bool = True,
-    log_file: Optional[Path] = None,
-) -> Dict[str, Any]:
-    """Run baseline + post-fix + target checks and return structured result.
-
-    Args:
-        repo_path: Repository root path.
-        worktree_path: Worktree path.
-        checks: Dict of check-name → command list. If None, runs no checks.
-        baseline_results: Optional pre-computed baseline results.
-        post_fix_results: Optional pre-computed post-fix results.
-        target_results: Optional pre-computed target results.
-        allow_unchanged_baseline_failures: If True, baseline check failures
-            that are unchanged post-fix are not treated as regressions.
-        log_file: Optional log file path.
-
-    Returns:
-        Dict with keys:
-            - passed: bool
-            - message: str (empty on success)
-            - regressions: List[str] (names of checks that regressed)
-            - target_failures: List[str] (names of target checks that failed)
-    """
-    result: Dict[str, Any] = {
-        "passed": True,
-        "message": "",
-        "regressions": [],
-        "target_failures": [],
-        "baseline_results": {},
-        "post_results": {},
-    }
-
-    if checks is None:
-        checks = {}
-
-    phase_prefix = "validation"
-    if log_file is None:
-        log_file = Path("/dev/null")
-
-    # Run baseline checks (or reuse pre-computed results)
-    if baseline_results is not None:
-        result["baseline_results"] = baseline_results
-    else:
-        result["baseline_results"] = run_named_checks(
-            repo_path=repo_path,
-            checks=checks,
-            log_file=log_file,
-            phase=f"{phase_prefix}-baseline",
-        )
-
-    # Run post-fix checks (or reuse pre-computed results)
-    if post_fix_results is not None:
-        result["post_results"] = post_fix_results
-    else:
-        result["post_results"] = run_named_checks(
-            repo_path=repo_path,
-            checks=checks,
-            log_file=log_file,
-            phase=f"{phase_prefix}-postfix",
-        )
-
-    # Run target checks (or reuse pre-computed results)
-    if target_results is not None:
-        pass
-    elif checks:
-        target_results = run_named_checks(
-            repo_path=repo_path,
-            checks=checks,
-            log_file=log_file,
-            phase=f"{phase_prefix}-target",
-        )
-    else:
-        target_results = {}
-
-    # Evaluate regressions: a check that passed at baseline but failed post-fix is a regression
-    for name, baseline in result["baseline_results"].items():
-        post = result["post_results"].get(name, {"rc": 1, "fingerprint": "missing"})
-        baseline_rc = int(baseline.get("rc", 1))
-        post_rc = int(post.get("rc", 1))
-        if baseline_rc == 0 and post_rc != 0:
-            result["regressions"].append(name)
-
-    target_failures = [n for n, r in target_results.items() if int(r.get("rc", 1)) != 0]
-    if target_failures:
-        result["target_failures"] = target_failures
-
-    if result["regressions"]:
-        result["passed"] = False
-        result["message"] = f"regression in: {', '.join(result['regressions'])}"
-        _append_text(log_file, f"validation-gate: FAIL {result['message']}")
-        return result
-
-    if result["target_failures"]:
-        result["passed"] = False
-        result["message"] = (
-            f"target checks failed: {', '.join(result['target_failures'])}"
-        )
-        _append_text(log_file, f"validation-gate: FAIL {result['message']}")
-        return result
-
-    result["message"] = "all checks passed"
-    _append_text(log_file, "validation-gate: PASS")
-    return result
-
-
-def run_smoke_test(repo_path: Path, log_file: Path) -> Dict[str, Any]:
-    """Run a cheap pre-flight smoke test on a registered repo.
-
-    Args:
-        repo_path: Path to the repository to smoke-test.
-        log_file: Path to the run log.
-
-    Returns:
-        Dict with keys:
-            passed: bool  (True only if all checks pass)
-            checks: dict of {name: bool}
-            duration_ms: int  (total wall-clock time)
-            errors: List[str]  (one per failed check)
-    """
-    import time
-
-    errors: list[str] = []
-    checks: dict[str, bool] = {
-        "git": False,
-        "worktree": False,
-        "linter": False,
-    }
-    t0 = time.monotonic()
-
-    # --- Check 1: repo path exists and is a git repository ---
-    t_git = time.monotonic()
-    if not repo_path.exists():
-        errors.append(f"repo path does not exist: {repo_path}")
-    elif not (repo_path / ".git").exists() and not repo_path.is_dir():
-        errors.append(f"not a directory or missing .git: {repo_path}")
-    else:
-        rc, out = run_capture(["git", "rev-parse", "--git-dir"], cwd=repo_path)
-        if rc == 0:
-            checks["git"] = True
-        else:
-            errors.append(f"git rev-parse failed rc={rc} out={out[:200]}")
-    _append_text(
-        log_file,
-        f"smoke-test: git-check passed={checks['git']} duration_ms={int((time.monotonic() - t_git) * 1000)}",
-    )
-
-    # --- Check 2: worktree is clean ---
-    t_wt = time.monotonic()
-    rc, out = run_capture(["git", "status", "--porcelain"], cwd=repo_path)
-    if rc == 0:
-        if not out.strip():
-            checks["worktree"] = True
-        else:
-            dirty_count = len([l for l in out.splitlines() if l.strip()])
-            errors.append(f"worktree is dirty: {dirty_count} uncommitted change(s)")
-    else:
-        errors.append(f"git status --porcelain failed rc={rc} out={out[:200]}")
-    _append_text(
-        log_file,
-        f"smoke-test: worktree-check passed={checks['worktree']} duration_ms={int((time.monotonic() - t_wt) * 1000)}",
-    )
-
-    # --- Check 3: linter (ruff) is available and can analyze a .py file ---
-    t_li = time.monotonic()
-    # Discover ruff using the same strategy as discover_python_linter_findings
-    ruff_path: str | None = None
-    for candidate in ["ruff", "~/.local/bin/ruff"]:
-        expanded = Path(candidate).expanduser()
-        if expanded.exists():
-            ruff_path = str(expanded)
-            break
-    if ruff_path is None:
-        import shutil as _shutil
-
-        found = _shutil.which("ruff")
-        if found:
-            ruff_path = found
-
-    if ruff_path is None:
-        checks["linter"] = False
-        errors.append("ruff not found \u2014 cannot run linter check")
-    else:
-        # Find a single .py file to lint quickly
-        py_files = list(repo_path.rglob("*.py"))
-        if not py_files:
-            checks["linter"] = True  # no Python files = trivially OK
-        else:
-            # Lint just one small file for a quick check
-            target = py_files[0]
-            rc, out = run_capture(
-                [
-                    ruff_path,
-                    "check",
-                    str(target),
-                    "--select=B,E,W,F,S,C4",
-                    "--output-format=concise",
-                ],
-                cwd=repo_path,
-            )
-            # rc=0 means no issues, rc=1 means issues found but linter works
-            if rc in (0, 1):
-                checks["linter"] = True
-            else:
-                errors.append(f"ruff check failed rc={rc} out={out[:200]}")
-    _append_text(
-        log_file,
-        f"smoke-test: linter-check passed={checks['linter']} duration_ms={int((time.monotonic() - t_li) * 1000)}",
-    )
-
-    t1 = time.monotonic()
-    duration_ms = int((t1 - t0) * 1000)
-    passed = all(checks.values())
-
-    result: Dict[str, Any] = {
-        "passed": passed,
-        "checks": checks,
-        "duration_ms": duration_ms,
-        "errors": errors,
-    }
-
-    _append_text(
-        log_file,
-        f"smoke-test: result passed={passed} duration_ms={duration_ms} "
-        f"git={checks['git']} worktree={checks['worktree']} linter={checks['linter']}",
-    )
-    if errors:
-        for err in errors:
-            _append_text(log_file, f"smoke-test: error {err}")
-
-    return result
-
-
-# Phase 3: mnemo client (lazy-initialized per repo, best-effort only)
-_mnemo_clients: Dict[str, MnemoClient] = {}
-
-
 def _get_mnemo_client(
     repo_path: Path, log_file: Optional[Path] = None
 ) -> Optional[MnemoClient]:
@@ -650,44 +423,6 @@ def _should_use_mnemo(
     return False, "trivial-first-pass-quick-win"
 
 
-def verify_fix_closed(
-    worktree_path: Path,
-    finding: Finding,
-    log_file: Path,
-    docs_index_file: Path = DEFAULT_DOCS_INDEX,
-) -> bool:
-    """Re-scan the worktree and confirm the finding no longer fires.
-
-    Args:
-        worktree_path: Path to the worktree to re-scan.
-        finding: The Finding that should be resolved.
-        log_file: Path to the run log.
-        docs_index_file: Path to the docs index used by the discovery engine.
-
-    Returns:
-        True if the finding is gone (fix closed), False if it still fires.
-    """
-    rescanned = discover_findings(worktree_path, docs_index_file=docs_index_file)
-    still_firing = [
-        f
-        for f in rescanned
-        if (
-            f.finding_id == finding.finding_id
-            or (
-                f.rule == finding.rule
-                and f.path == finding.path
-                and int(f.line) == int(finding.line)
-            )
-        )
-    ]
-    _append_text(
-        log_file,
-        f"verification: finding_id={finding.finding_id} rule={finding.rule} "
-        f"path={finding.path} line={finding.line} still_firing={len(still_firing)}",
-    )
-    return len(still_firing) == 0
-
-
 def _tier_validate(
     tier: FixTier,
     worktree_path: Path,
@@ -707,7 +442,9 @@ def _tier_validate(
     Returns:
         True if validation passed, False if rolled back or routed to human review.
     """
-    result = _tiered_validator.validate(tier, worktree_path, finding, log_file=log_file)
+    result = _get_tiered_validator().validate(
+        tier, worktree_path, finding, log_file=log_file
+    )
     if not result.passed:
         # Auto-rollback: revert the changed file since validation failed
         rc, _ = run_capture(["git", "checkout", "--", finding.path], cwd=worktree_path)
@@ -809,9 +546,11 @@ def apply_autofix(
 
     # --- Phase 1: Try recipe engine for declarative YAML recipes ---
     file_text = file_path.read_text(encoding="utf-8") if file_path.exists() else ""
-    recipe = _recipe_engine.match(finding.rule, "python", file_text=file_text)
+    recipe = _get_recipe_engine().match(finding.rule, "python", file_text=file_text)
     if recipe:
-        result = _recipe_engine.apply(recipe, file_path, worktree_path, finding=finding)
+        result = _get_recipe_engine().apply(
+            recipe, file_path, worktree_path, finding=finding
+        )
         if result.success:
             _append_text(
                 log_file,
@@ -938,9 +677,6 @@ def apply_autofix(
     return True
 
 
-_cached_stores: Dict[str, Any] = {}
-
-
 def _get_or_create_store(pattern_store_path: Path) -> Optional["FixPatternStore"]:
     key = str(pattern_store_path)
     cached = _cached_stores.get(key)
@@ -1011,7 +747,7 @@ def apply_cascade_fix(
         logging.debug("shared pattern library creation failed")
         pass
 
-    recipe_engine = _recipe_engine
+    recipe_engine = _get_recipe_engine()
 
     replay_threshold_overrides: Dict[str, float] = {}
 
@@ -1069,197 +805,6 @@ def apply_cascade_fix(
         return rc == 0
 
     return False
-
-
-def git_commit_all(repo_path: Path, message: str, log_file: Path, dry_run: bool) -> str:
-    """Stage all changes and commit with the given message.
-
-    Args:
-        repo_path: Path to the git repository.
-        message: Commit message.
-        log_file: Path to the run log.
-        dry_run: If True, log the would-be commit without executing it.
-
-    Returns:
-        'committed', 'no_changes', or 'error'.
-    """
-    rc, _ = run_capture(["git", "add", "-A"], cwd=repo_path)
-    if rc != 0:
-        _append_text(log_file, "error: git add failed")
-        return "error"
-
-    rc, _ = run_capture(["git", "diff", "--cached", "--quiet"], cwd=repo_path)
-    if rc == 0:
-        _append_text(log_file, "autofix: no staged changes to commit")
-        return "no_changes"
-    if rc not in (0, 1):
-        _append_text(log_file, f"error: git diff --cached --quiet failed rc={rc}")
-        return "error"
-
-    if dry_run:
-        _append_text(log_file, f'dry-run-live: would git commit message="{message}"')
-        return "committed"
-
-    rc, out = run_capture(["git", "commit", "-m", message], cwd=repo_path)
-    if rc != 0:
-        _append_text(log_file, f"error: git commit failed output={out[:300]}")
-        return "error"
-    return "committed"
-
-
-def git_push_branch(
-    repo_path: Path, branch: str, log_file: Path, dry_run: bool
-) -> bool:
-    """Push the given branch to origin.
-
-    Args:
-        repo_path: Path to the git repository.
-        branch: Branch name to push.
-        log_file: Path to the run log.
-        dry_run: If True, log the would-be push without executing it.
-
-    Returns:
-        True if push succeeded (or dry-run), False on failure.
-    """
-    if dry_run:
-        _append_text(log_file, f"dry-run-live: would git push -u origin {branch}")
-        return True
-    rc, out = run_capture(["git", "push", "-u", "origin", branch], cwd=repo_path)
-    if rc != 0:
-        _append_text(
-            log_file, f"error: git push failed branch={branch} output={out[:300]}"
-        )
-        return False
-    return True
-
-
-def diff_stats(repo_path: Path) -> Tuple[int, int]:
-    """Return (files_changed, total_loc_diff) from the working tree diff.
-
-    Args:
-        repo_path: Path to the git repository.
-
-    Returns:
-        Tuple of (files_changed, lines_added_plus_deleted). (0, 0) on error.
-    """
-    rc, out = run_capture(["git", "diff", "--numstat"], cwd=repo_path)
-    if rc != 0:
-        return 0, 0
-    files_changed = 0
-    loc_diff = 0
-    for line in out.splitlines():
-        parts = line.split("\t")
-        if len(parts) < 3:
-            continue
-        add_s, del_s = parts[0], parts[1]
-        if add_s != "-" and del_s != "-":
-            try:
-                loc_diff += int(add_s) + int(del_s)
-            except ValueError:
-                _logger.debug("Failed to parse diff stat line")
-        files_changed += 1
-    return files_changed, loc_diff
-
-
-def _normalize_check_output(out: str, cwd: Path) -> str:
-    """Normalize check output for fingerprinting: strip CWD, line numbers, and noise."""
-    normalized = out.replace(str(cwd), "<CWD>")
-    normalized = re.sub(r"/qa-sandbox-v2-[^/]+", "/<WORKTREE>", normalized)
-    normalized = re.sub(r"line\s+\d+", "line <N>", normalized)
-
-    filtered_lines: List[str] = []
-    for raw_line in normalized.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        if re.match(r"^[✔✓]", line):
-            continue
-        if re.match(r"^\d+\s+warnings?$", line, re.IGNORECASE):
-            continue
-        if re.match(r"^\d+(?:\.\d+)?s$", line, re.IGNORECASE):
-            continue
-        filtered_lines.append(line)
-
-    normalized = "\n".join(filtered_lines)
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-    return normalized[:2000]
-
-
-def run_named_checks(
-    repo_path: Path,
-    checks: Dict[str, List[str]],
-    log_file: Path,
-    phase: str,
-) -> Dict[str, Dict[str, Any]]:
-    """Execute a dict of named check commands and return structured results.
-
-    Args:
-        repo_path: Working directory for command execution.
-        checks: Mapping of check name → command (as a list of strings).
-        log_file: Path to the run log.
-        phase: Label for log lines (e.g. ``"validation-baseline"``).
-
-    Returns:
-        Dict of check name → ``{"rc", "cmd", "output", "fingerprint"}``.
-    """
-    results: Dict[str, Dict[str, Any]] = {}
-    for name, cmd in checks.items():
-        rc, out = run_capture(cmd, cwd=repo_path)
-        normalized = _normalize_check_output(out, repo_path)
-        fingerprint = (
-            hashlib.sha256(normalized.encode("utf-8")).hexdigest() if rc != 0 else ""
-        )
-        results[name] = {
-            "rc": rc,
-            "cmd": cmd,
-            "output": out,
-            "fingerprint": fingerprint,
-        }
-        _append_text(log_file, f"{phase}: check={name} rc={rc} cmd={' '.join(cmd)}")
-        if out:
-            _append_text(log_file, f"{phase}-output[{name}]: {out[:500]}")
-    return results
-
-
-def build_target_checks(finding: Finding) -> Dict[str, List[str]]:
-    """Build rule-specific target checks that must pass after a fix is applied.
-
-    Args:
-        finding: The Finding being fixed.
-
-    Returns:
-        Dict of check name → command. Empty dict if no target checks apply.
-    """
-    if finding.rule == "docs-legacy-reference":
-        return {
-            "target_docs_legacy_reference": [
-                "python3",
-                "-c",
-                (
-                    f'from pathlib import Path; text = Path("{finding.path}").read_text(encoding="utf-8"); '
-                    'raise SystemExit(0 if "legacy_pricer.py" not in text else 1)'
-                ),
-            ]
-        }
-
-    if (
-        finding.rule == "test-gap-missing-case"
-        and finding.path == "tests/test_orders.py"
-    ):
-        return {
-            "target_test_gap_orders_case": [
-                "python3",
-                "-c",
-                (
-                    'from pathlib import Path; text = Path("tests/test_orders.py").read_text(encoding="utf-8").lower(); '
-                    'raise SystemExit(0 if ("invalid" in text and "coupon" in text) else 1)'
-                ),
-            ]
-        }
-
-    # Default: no target-specific checks for rules not listed above.
-    # Must return {} (not None) — render_claude_fix_prompt() calls .items() on target_checks.
-    return {}
 
 
 def process_refactor_queue(
@@ -1327,6 +872,8 @@ def process_refactor_queue(
                 finding = Finding.from_dict(item.finding_dict)
 
                 # Get the target checks for this rule
+                from bluei.engine.validation import build_target_checks
+
                 target_checks = build_target_checks(finding)
 
                 # Apply the fix via Claude fix engine
@@ -1342,6 +889,8 @@ def process_refactor_queue(
                 )
 
                 if rc == 0:
+                    from bluei.engine.validation import run_validation_gate
+
                     validation = run_validation_gate(
                         repo_path=repo_path,
                         worktree_path=wt,
@@ -1375,310 +924,5 @@ def process_refactor_queue(
         worktree_path=None,
     )
     result["pending"] = [item.work_id for item in pending_items]
-
-    return result
-
-
-def choose_validation_baseline(
-    repo_baseline_results: Dict[str, Dict[str, Any]],
-    worktree_baseline_results: Dict[str, Dict[str, Any]],
-    log_file: Path,
-) -> Dict[str, Dict[str, Any]]:
-    """Choose between repo-level and worktree-level baseline results."""
-    if worktree_baseline_results:
-        first_val = next(iter(worktree_baseline_results.values()), None)
-        if first_val is not None and first_val.get("rc") is not None:
-            _append_text(
-                log_file, "validation-baseline: using worktree-specific baseline"
-            )
-            return worktree_baseline_results
-    _append_text(log_file, "validation-baseline: using repo-level baseline")
-    return repo_baseline_results
-
-
-def classify_review_feedback(feedback: str) -> str:
-    """Classify review feedback as either 'needs-human' or 'actionable'."""
-    text = feedback.lower()
-    conceptual_markers = [
-        "architecture",
-        "product decision",
-        "design change",
-        "conceptual",
-        "rethink",
-    ]
-    for marker in conceptual_markers:
-        if marker in text:
-            return "needs-human"
-    return "actionable"
-
-
-def review_loop_allowed(
-    pr_author: str,
-    pr_tags: List[str],
-    bot_author: str,
-    explicit_tag: str,
-) -> Tuple[bool, str]:
-    """Decide whether a review loop is permitted for a PR."""
-    author_ok = pr_author == bot_author
-    tag_ok = explicit_tag and explicit_tag in pr_tags
-    if author_ok or tag_ok:
-        return True, "review-loop-policy-pass"
-    return False, "review-loop-policy-block: non-bot PR without explicit tag"
-
-
-# --- Wave 1, Item 3: Stale lock/worktree self-healing ---
-# --- Wave 2.4: Reboot-resilient state enhancements ---
-
-STALE_LOCK_HOURS = 4  # Locks older than this are considered stale
-STALE_WORKTREE_DAYS = 7  # Worktree directories older than this may be cleaned
-
-
-def _parse_worktree_list_porcelain(repo_path: Path) -> List[Dict[str, str]]:
-    """Parse `git worktree list --porcelain` and return a list of dicts.
-
-    Each dict has keys:
-        - worktree: str (absolute path)
-        - head: str (commit sha or empty)
-        - branch: str (ref name, or 'detached' if detached HEAD)
-        - bare: bool (True if this is the bare repo)
-
-    Returns an empty list on error.
-    """
-    try:
-        rc, output = run_capture(
-            ["git", "worktree", "list", "--porcelain"],
-            cwd=repo_path,
-        )
-        if rc != 0 or not output:
-            return []
-    except Exception:
-        return []
-
-    worktrees: List[Dict[str, str]] = []
-    current: Dict[str, str] = {}
-    for line in output.splitlines():
-        line = line.strip()
-        if not line:
-            if current and "worktree" in current:
-                worktrees.append(current)
-            current = {}
-            continue
-        parts = line.split(" ", 1)
-        key = parts[0]
-        value = parts[1] if len(parts) > 1 else ""
-        if key == "worktree":
-            current["worktree"] = value
-        elif key == "HEAD":
-            current["head"] = value
-        elif key == "branch":
-            current["branch"] = value
-        elif key == "detached":
-            current["branch"] = "detached"
-        elif key == "bare":
-            current["bare"] = "true"
-    if current and "worktree" in current:
-        worktrees.append(current)
-    return worktrees
-
-
-def run_startup_self_healing(
-    repo_path: Path,
-    log_file: Optional[Path] = None,
-    locks_dir: Optional[Path] = None,
-    dry_run: bool = False,
-) -> Dict[str, Any]:
-    """Run self-healing on startup: clean stale locks, prune orphaned worktrees.
-
-    Args:
-        repo_path: Path to the git repository.
-        log_file: Optional log file path.
-        locks_dir: Optional path to lock files directory.
-        dry_run: If True, only report what would be cleaned.
-
-    Returns:
-        Dict with keys:
-            - stale_locks_removed: int
-            - worktrees_pruned: bool
-            - errors: List[str]
-    """
-    result: Dict[str, Any] = {
-        "stale_locks_removed": 0,
-        "worktrees_pruned": False,
-        "errors": [],
-    }
-
-    # 1. Clean stale lock files
-    if locks_dir is not None and locks_dir.exists():
-        try:
-            now = datetime.now(timezone.utc)
-            for lock_file in locks_dir.iterdir():
-                if not lock_file.is_file():
-                    continue
-                try:
-                    mtime = datetime.fromtimestamp(
-                        lock_file.stat().st_mtime, tz=timezone.utc
-                    )
-                    age_hours = (now - mtime).total_seconds() / 3600
-                    if age_hours >= STALE_LOCK_HOURS:
-                        if not dry_run:
-                            lock_file.unlink()
-                        result["stale_locks_removed"] += 1
-                        if log_file:
-                            _append_text(
-                                log_file,
-                                f"self-heal: removed stale lock {lock_file.name} "
-                                f"age={age_hours:.1f}h",
-                            )
-                except (OSError, ValueError) as e:
-                    result["errors"].append(f"lock-check:{lock_file.name}:{e}")
-        except Exception as e:
-            result["errors"].append(f"locks-dir:{e}")
-
-    # 2. Prune orphaned git worktrees
-    try:
-        rc, output = run_capture(
-            ["git", "worktree", "prune", "--verbose"],
-            cwd=repo_path,
-        )
-        if rc == 0:
-            result["worktrees_pruned"] = True
-            if log_file:
-                _append_text(log_file, "self-heal: git worktree prune completed")
-        else:
-            result["errors"].append(f"worktree-prune:rc={rc}")
-    except Exception as e:
-        result["errors"].append(f"worktree-prune:{e}")
-
-    # 3. Orphaned worktree detection via git worktree list --porcelain
-    orphaned_wt_count = 0
-    try:
-        listed_worktrees = _parse_worktree_list_porcelain(repo_path)
-        listed_paths = {
-            Path(w["worktree"]).resolve() for w in listed_worktrees if "worktree" in w
-        }
-
-        # Check directories under known worktree root for orphaned worktrees
-        from bluei.engine.constants import DEFAULT_WORKTREE_ROOT
-
-        if DEFAULT_WORKTREE_ROOT.exists():
-            for wt_dir in DEFAULT_WORKTREE_ROOT.iterdir():
-                if not wt_dir.is_dir():
-                    continue
-                resolved = wt_dir.resolve()
-                if resolved in listed_paths:
-                    continue
-                if resolved == repo_path.resolve():
-                    continue
-
-                dotgit = resolved / ".git"
-                if dotgit.exists():
-                    if not dry_run:
-                        run_no_capture(["rm", "-rf", str(resolved)], cwd=repo_path)
-                    orphaned_wt_count += 1
-                    if log_file:
-                        _append_text(
-                            log_file,
-                            f"self-heal: removed orphaned worktree dir {wt_dir.name}",
-                        )
-
-        # Listed worktrees whose directories no longer exist on disk
-        for wt in listed_worktrees:
-            wt_path = Path(wt.get("worktree", "")).resolve()
-            if wt_path == repo_path.resolve():
-                continue
-            if not wt_path.exists():
-                branch_ref = wt.get("branch", "")
-                if branch_ref and branch_ref != "detached":
-                    branch_name = branch_ref.replace("refs/heads/", "", 1)
-                    if not dry_run:
-                        run_no_capture(
-                            ["git", "branch", "-D", branch_name], cwd=repo_path
-                        )
-                if log_file:
-                    _append_text(
-                        log_file,
-                        f"self-heal: cleaned missing worktree reference {wt_path}",
-                    )
-    except Exception as e:
-        result["errors"].append(f"worktree-list-porcelain:{e}")
-
-    if orphaned_wt_count > 0:
-        if log_file:
-            _append_text(
-                log_file,
-                f"self-heal: removed {orphaned_wt_count} orphaned worktree dir(s)",
-            )
-
-    # 4. Repair corrupted/missing state.json
-    try:
-        from bluei.engine.constants import DEFAULT_STATE
-
-        state_path = (
-            repo_path / "state.json" if not DEFAULT_STATE.exists() else DEFAULT_STATE
-        )
-        if state_path.exists():
-            was_repaired = repair_state(state_path)
-            if was_repaired:
-                if log_file:
-                    _append_text(
-                        log_file,
-                        f"self-heal: repaired corrupted state.json at {state_path}",
-                    )
-    except Exception as e:
-        result["errors"].append(f"state-repair:{e}")
-        if log_file:
-            _append_text(log_file, f"self-heal: state repair failed ({e})")
-
-    # 5. Clean stale batch state (batches.jsonl records with no corresponding worktree)
-    stale_batch_count = 0
-    try:
-        from bluei.engine.constants import DEFAULT_BATCH_STATE
-
-        if DEFAULT_BATCH_STATE.exists():
-            batches = load_batches(DEFAULT_BATCH_STATE)
-            active_batches: list[dict[str, Any]] = []
-            for batch in batches:
-                batch_branch = batch.get("branch", "")
-                batch_wt_path = batch.get("worktree_path", "")
-                if batch_branch:
-                    # Check if the branch still exists
-                    rc_check, _ = run_capture(
-                        ["git", "rev-parse", "--verify", f"refs/heads/{batch_branch}"],
-                        cwd=repo_path,
-                    )
-                    if rc_check != 0:
-                        stale_batch_count += 1
-                        if log_file:
-                            _append_text(
-                                log_file,
-                                f"self-heal: stale batch record batch_id={batch.get('batch_id', '?')} branch={batch_branch}",
-                            )
-                        continue
-                if batch_wt_path:
-                    wt_p = Path(batch_wt_path)
-                    if not wt_p.exists():
-                        stale_batch_count += 1
-                        if log_file:
-                            _append_text(
-                                log_file,
-                                f"self-heal: stale batch record batch_id={batch.get('batch_id', '?')} worktree={batch_wt_path}",
-                            )
-                        continue
-                active_batches.append(batch)
-
-            if stale_batch_count > 0:
-                if not dry_run:
-                    with open(DEFAULT_BATCH_STATE, "w", encoding="utf-8") as f:
-                        for batch in active_batches:
-                            import json
-
-                            f.write(json.dumps(batch, sort_keys=True) + "\n")
-                if log_file:
-                    _append_text(
-                        log_file,
-                        f"self-heal: removed {stale_batch_count} stale batch record(s) from {DEFAULT_BATCH_STATE.name}",
-                    )
-    except Exception as e:
-        result["errors"].append(f"batch-state-clean:{e}")
 
     return result

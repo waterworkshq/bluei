@@ -269,9 +269,9 @@ def classify_finding(
 
     # Recipe-aware routing: if a recipe exists, route to SIMPLE_FIX
     try:
-        from bluei.engine.lifecycle import _recipe_engine
+        from bluei.engine.lifecycle import _get_recipe_engine
 
-        if _recipe_engine.has_recipe(rule):
+        if _get_recipe_engine().has_recipe(rule):
             finding.refactor_class = RefactorClass.SIMPLE_FIX.value
             return RefactorClass.SIMPLE_FIX
     except Exception:

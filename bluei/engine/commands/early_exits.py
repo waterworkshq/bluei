@@ -86,7 +86,7 @@ def run_smoke_test_command(
     if args.run_phase != "smoke-test" and not getattr(args, "smoke_test", False):
         return None
 
-    from bluei.engine.lifecycle import run_smoke_test
+    from bluei.engine.validation import run_smoke_test
 
     _append_text(log_file, f"smoke-test: starting repo_path={repo_path}")
     result = run_smoke_test(repo_path=repo_path, log_file=log_file)

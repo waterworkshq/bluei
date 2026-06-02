@@ -9,7 +9,7 @@ from bluei.engine.commands.helpers import (
     _hydrate_worktree_dependencies,
     _reconcile_issue_pr_link,
 )
-from bluei.engine.lifecycle import choose_validation_baseline, _normalize_check_output
+from bluei.engine.validation import choose_validation_baseline, _normalize_check_output
 from bluei.engine.orchestrator import count_failed_fix_attempts
 
 
@@ -243,7 +243,7 @@ def test_normalize_check_output_ignores_passing_test_noise(tmp_path):
 def test_verify_fix_closed_treats_legacy_complexity_issue_as_closed_when_only_xo_rule_exists(
     monkeypatch, tmp_path
 ):
-    from bluei.engine.lifecycle import verify_fix_closed
+    from bluei.engine.validation import verify_fix_closed
     from bluei.engine.models import Finding
 
     finding = Finding(
@@ -259,7 +259,7 @@ def test_verify_fix_closed_treats_legacy_complexity_issue_as_closed_when_only_xo
     )
 
     monkeypatch.setattr(
-        "bluei.engine.lifecycle.discover_findings",
+        "bluei.engine.validation.discover_findings",
         lambda *args, **kwargs: [
             Finding(
                 finding_id="new-xo-id",

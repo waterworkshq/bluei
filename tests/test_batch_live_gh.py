@@ -95,8 +95,8 @@ def _live_patches():
         patch("bluei.engine.batch_pr._create_worktree", return_value=True),
         patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps"),
         patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
-        patch("bluei.engine.lifecycle.git_commit_all", return_value="committed"),
-        patch("bluei.engine.lifecycle.git_push_branch", return_value=True),
+        patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
+        patch("bluei.engine.git_ops.git_push_branch", return_value=True),
         patch("bluei.engine.utils.run_no_capture"),
         patch("bluei.engine.state._append_text"),
     ]

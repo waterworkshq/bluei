@@ -93,21 +93,20 @@ from bluei.engine.orchestrator import (
     check_consecutive_fix_failures,
     check_finding_escalation_before_fix,
 )
+from bluei.engine.git_ops import git_commit_all, git_push_branch, diff_stats
 from bluei.engine.lifecycle import (
-    verify_fix_closed,
     apply_autofix,
-    git_commit_all,
-    git_push_branch,
+    apply_claude_fix,
+    process_refactor_queue,
+)
+from bluei.engine.review_helpers import classify_review_feedback, review_loop_allowed
+from bluei.engine.startup import run_startup_self_healing
+from bluei.engine.validation import (
+    verify_fix_closed,
     run_named_checks,
     build_target_checks,
-    apply_claude_fix,
     run_validation_gate,
     choose_validation_baseline,
-    classify_review_feedback,
-    review_loop_allowed,
-    diff_stats,
-    process_refactor_queue,
-    run_startup_self_healing,
     run_smoke_test,
 )
 from bluei.engine.prompts import (

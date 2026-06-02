@@ -143,7 +143,7 @@ class TestVerifyFindingClosed:
         f = _mf(make_finding)
         log = tmp_path / "log.txt"
         with patch(
-            "bluei.engine.lifecycle.verify_fix_closed", side_effect=RuntimeError("boom")
+            "bluei.engine.validation.verify_fix_closed", side_effect=RuntimeError("boom")
         ):
             assert verify_finding_closed(tmp_path, f, log) is False
 
@@ -152,7 +152,7 @@ class TestVerifyFindingClosed:
 
         f = _mf(make_finding)
         log = tmp_path / "log.txt"
-        with patch("bluei.engine.lifecycle.verify_fix_closed", return_value=True):
+        with patch("bluei.engine.validation.verify_fix_closed", return_value=True):
             assert verify_finding_closed(tmp_path, f, log) is True
 
 
@@ -321,7 +321,7 @@ class TestApplySingleFixClaude:
                 "bluei.engine.constants.load_llm_fixable_rules",
                 return_value=["complex-rule"],
             ),
-            patch("bluei.engine.lifecycle.build_target_checks", return_value=[]),
+            patch("bluei.engine.validation.build_target_checks", return_value=[]),
             patch(
                 "bluei.engine.lifecycle.apply_claude_fix",
                 return_value=(0, "done", None),
@@ -350,7 +350,7 @@ class TestApplySingleFixClaude:
                 "bluei.engine.constants.load_llm_fixable_rules",
                 return_value=["complex-rule"],
             ),
-            patch("bluei.engine.lifecycle.build_target_checks", return_value=[]),
+            patch("bluei.engine.validation.build_target_checks", return_value=[]),
             patch(
                 "bluei.engine.lifecycle.apply_claude_fix",
                 return_value=(
@@ -380,7 +380,7 @@ class TestApplySingleFixClaude:
                 "bluei.engine.constants.load_llm_fixable_rules",
                 return_value=["complex-rule"],
             ),
-            patch("bluei.engine.lifecycle.build_target_checks", return_value=[]),
+            patch("bluei.engine.validation.build_target_checks", return_value=[]),
             patch(
                 "bluei.engine.lifecycle.apply_claude_fix",
                 return_value=(1, "nope", None),
@@ -403,7 +403,7 @@ class TestApplySingleFixClaude:
                 "bluei.engine.constants.load_llm_fixable_rules",
                 return_value=["complex-rule"],
             ),
-            patch("bluei.engine.lifecycle.build_target_checks", return_value=[]),
+            patch("bluei.engine.validation.build_target_checks", return_value=[]),
             patch(
                 "bluei.engine.lifecycle.apply_claude_fix",
                 return_value=(0, "applied fix", None),
@@ -605,7 +605,7 @@ class TestCommitPartialBatch:
 
         with (
             patch("bluei.engine.utils.run_no_capture"),
-            patch("bluei.engine.lifecycle.git_commit_all", return_value="no_changes"),
+            patch("bluei.engine.git_ops.git_commit_all", return_value="no_changes"),
         ):
             assert commit_partial_batch([f], batch, log) is False
 
@@ -620,8 +620,8 @@ class TestCommitPartialBatch:
 
         with (
             patch("bluei.engine.utils.run_no_capture"),
-            patch("bluei.engine.lifecycle.git_commit_all", return_value="committed"),
-            patch("bluei.engine.lifecycle.git_push_branch", return_value=False),
+            patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
+            patch("bluei.engine.git_ops.git_push_branch", return_value=False),
         ):
             assert commit_partial_batch([f], batch, log) is False
 
@@ -636,8 +636,8 @@ class TestCommitPartialBatch:
 
         with (
             patch("bluei.engine.utils.run_no_capture"),
-            patch("bluei.engine.lifecycle.git_commit_all", return_value="committed"),
-            patch("bluei.engine.lifecycle.git_push_branch", return_value=True),
+            patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
+            patch("bluei.engine.git_ops.git_push_branch", return_value=True),
         ):
             assert commit_partial_batch([f], batch, log) is True
 
@@ -909,7 +909,7 @@ class TestProcessBatch:
             patch("bluei.engine.batch_pr._create_worktree", return_value=True),
             patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps"),
             patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
-            patch("bluei.engine.lifecycle.git_commit_all", return_value="no_changes"),
+            patch("bluei.engine.git_ops.git_commit_all", return_value="no_changes"),
             patch("bluei.engine.utils.run_no_capture"),
         ):
             ok, detail = process_batch(batch, tmp_path, args, log)
@@ -930,8 +930,8 @@ class TestProcessBatch:
             patch("bluei.engine.batch_pr._create_worktree", return_value=True),
             patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps"),
             patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
-            patch("bluei.engine.lifecycle.git_commit_all", return_value="committed"),
-            patch("bluei.engine.lifecycle.git_push_branch", return_value=False),
+            patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
+            patch("bluei.engine.git_ops.git_push_branch", return_value=False),
             patch("bluei.engine.utils.run_no_capture"),
         ):
             ok, detail = process_batch(batch, tmp_path, args, log)
@@ -952,8 +952,8 @@ class TestProcessBatch:
             patch("bluei.engine.batch_pr._create_worktree", return_value=True),
             patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps"),
             patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
-            patch("bluei.engine.lifecycle.git_commit_all", return_value="committed"),
-            patch("bluei.engine.lifecycle.git_push_branch", return_value=True),
+            patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
+            patch("bluei.engine.git_ops.git_push_branch", return_value=True),
             patch("bluei.engine.utils.run_no_capture"),
         ):
             ok, detail = process_batch(batch, tmp_path, args, log)
@@ -974,8 +974,8 @@ class TestProcessBatch:
             patch("bluei.engine.batch_pr._create_worktree", return_value=True),
             patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps"),
             patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
-            patch("bluei.engine.lifecycle.git_commit_all", return_value="committed"),
-            patch("bluei.engine.lifecycle.git_push_branch", return_value=True),
+            patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
+            patch("bluei.engine.git_ops.git_push_branch", return_value=True),
             patch(
                 "bluei.engine.gh.get_origin_url", return_value="https://github.com/o/r"
             ),
@@ -1005,8 +1005,8 @@ class TestProcessBatch:
             patch("bluei.engine.batch_pr._create_worktree", return_value=True),
             patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps"),
             patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
-            patch("bluei.engine.lifecycle.git_commit_all", return_value="committed"),
-            patch("bluei.engine.lifecycle.git_push_branch", return_value=True),
+            patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
+            patch("bluei.engine.git_ops.git_push_branch", return_value=True),
             patch(
                 "bluei.engine.gh.get_origin_url", return_value="https://github.com/o/r"
             ),

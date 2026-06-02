@@ -399,10 +399,10 @@ def verify_finding_closed(
 ) -> bool:
     """Re-run the specific linter rule for one finding and check it's resolved.
 
-    Uses the existing verify_fix_closed from lifecycle when possible,
+    Uses the existing verify_fix_closed from the validation module when possible,
     falling back to file-level pattern matching for batch-internal use.
     """
-    from bluei.engine.lifecycle import verify_fix_closed as _verify_fix_closed
+    from bluei.engine.validation import verify_fix_closed as _verify_fix_closed
 
     try:
         return _verify_fix_closed(worktree_path, finding, log_file)
@@ -486,9 +486,9 @@ def _apply_single_fix(
     """
     from bluei.engine.lifecycle import (
         apply_autofix,
-        build_target_checks,
         apply_claude_fix,
     )
+    from bluei.engine.validation import build_target_checks
     from bluei.engine.constants import (
         BASELINE_VALIDATION_CHECKS,
         CLAUDE_REQUIRED_RULES,
@@ -864,7 +864,7 @@ def commit_partial_batch(
 
     Returns True if partial PR was created successfully.
     """
-    from bluei.engine.lifecycle import git_commit_all, git_push_branch
+    from bluei.engine.git_ops import git_commit_all, git_push_branch
     from bluei.engine.state import _append_text
 
     if not successful_findings:
@@ -1269,7 +1269,7 @@ def process_batch(
     For solo batches, returns (False, 'solo-delegated') so the caller
     can route to the existing single-finding path.
     """
-    from bluei.engine.lifecycle import git_commit_all, git_push_branch
+    from bluei.engine.git_ops import git_commit_all, git_push_branch
     from bluei.engine.state import _append_text, save_batch_record
     from bluei.engine.constants import DEFAULT_BATCH_STATE, DEFAULT_WORKTREE_ROOT
 

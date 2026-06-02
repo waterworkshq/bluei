@@ -480,10 +480,10 @@ class TestCommitPartialBatch:
         with (
             patch("bluei.engine.utils.run_no_capture") as mock_add,
             patch(
-                "bluei.engine.lifecycle.git_commit_all", return_value="committed"
+                "bluei.engine.git_ops.git_commit_all", return_value="committed"
             ) as mock_commit,
             patch(
-                "bluei.engine.lifecycle.git_push_branch", return_value=True
+                "bluei.engine.git_ops.git_push_branch", return_value=True
             ) as mock_push,
         ):
             ok = commit_partial_batch(findings, batch, log_file)

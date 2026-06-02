@@ -11,7 +11,9 @@ from bluei.engine.constants import (
     DEFAULT_DOCS_INDEX,
     RUNNER_PATH,
 )
-from bluei.engine.lifecycle import apply_claude_fix, git_commit_all, verify_fix_closed
+from bluei.engine.git_ops import git_commit_all
+from bluei.engine.lifecycle import apply_claude_fix
+from bluei.engine.validation import verify_fix_closed
 from bluei.engine.models import Finding
 from bluei.engine.orchestrator import (
     build_issue_cycle_command,

@@ -25,6 +25,7 @@ class FixTier(enum.IntEnum):
     T0 = guaranteed safe (syntax check only), T4 = structural change
     requiring human review.
     """
+
     T0_GUARANTEED = 0
     T1_IDEMPOTENT = 1
     T2_VALIDATED = 2
@@ -55,11 +56,21 @@ TIER_OVERRIDES: Dict[str, FixTier] = {
 
 # File patterns that are too risky for automated fixes.
 CRITICAL_FILE_PATTERNS = (
-    "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
-    "poetry.lock", "uv.lock", "Cargo.lock",
-    ".env", ".env.local", ".env.production",
-    "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
-    ".github/workflows/", ".gitlab-ci.yml", "Jenkinsfile",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "uv.lock",
+    "Cargo.lock",
+    ".env",
+    ".env.local",
+    ".env.production",
+    "Dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    ".github/workflows/",
+    ".gitlab-ci.yml",
+    "Jenkinsfile",
     "Makefile",
 )
 
@@ -159,7 +170,9 @@ def check_tier_escalation(
     activity = state.get("finding_activity", {})
     failures = 0
     for entry in activity.values():
-        if entry.get("rule") == rule and entry.get("action", "").startswith("fix-failed"):
+        if entry.get("rule") == rule and entry.get("action", "").startswith(
+            "fix-failed"
+        ):
             failures += 1
     if failures >= threshold:
         return FixTier(current_tier + 1)
@@ -213,20 +226,51 @@ class TieredValidator:
         if tier == FixTier.T0_GUARANTEED:
             result = self._validate_t0(worktree_path, finding, log_file)
         elif tier == FixTier.T1_IDEMPOTENT:
-            result = self._validate_t1(repo_path or worktree_path, worktree_path, checks, baseline_results, log_file)
+            result = self._validate_t1(
+                repo_path or worktree_path,
+                worktree_path,
+                checks,
+                baseline_results,
+                log_file,
+            )
         elif tier == FixTier.T2_VALIDATED:
-            result = self._validate_t2(repo_path or worktree_path, worktree_path, checks, baseline_results, log_file)
+            result = self._validate_t2(
+                repo_path or worktree_path,
+                worktree_path,
+                checks,
+                baseline_results,
+                log_file,
+            )
         elif tier == FixTier.T3_CONTEXTUAL:
-            result = self._validate_t3(repo_path or worktree_path, worktree_path, checks, baseline_results, finding, log_file)
+            result = self._validate_t3(
+                repo_path or worktree_path,
+                worktree_path,
+                checks,
+                baseline_results,
+                finding,
+                log_file,
+            )
         elif tier == FixTier.T4_STRUCTURAL:
-            result = self._validate_t4(repo_path or worktree_path, worktree_path, checks, baseline_results, finding, log_file)
+            result = self._validate_t4(
+                repo_path or worktree_path,
+                worktree_path,
+                checks,
+                baseline_results,
+                finding,
+                log_file,
+            )
         else:
-            result = TieredValidationResult(passed=False, tier=tier, message=f"unknown tier: {tier}")
+            result = TieredValidationResult(
+                passed=False, tier=tier, message=f"unknown tier: {tier}"
+            )
 
         elapsed = int((time.monotonic() - t0) * 1000)
         result.tier = tier
         result.latency_ms = elapsed
-        _append_text(log_file, f"tier-validation: tier={tier.name} passed={result.passed} latency_ms={elapsed}")
+        _append_text(
+            log_file,
+            f"tier-validation: tier={tier.name} passed={result.passed} latency_ms={elapsed}",
+        )
         return result
 
     def _validate_t0(
@@ -269,7 +313,12 @@ class TieredValidator:
                     message=f"compile check failed: {exc}",
                 )
 
-        if path.endswith(".ts") or path.endswith(".tsx") or path.endswith(".js") or path.endswith(".jsx"):
+        if (
+            path.endswith(".ts")
+            or path.endswith(".tsx")
+            or path.endswith(".js")
+            or path.endswith(".jsx")
+        ):
             pass
 
         if path.endswith(".go") or path.endswith(".rs"):
@@ -300,13 +349,16 @@ class TieredValidator:
         if not checks:
             return TieredValidationResult(passed=True, message="t1 no checks to run")
 
-        from bluei.engine.lifecycle import run_named_checks
+        from bluei.engine.validation import run_named_checks
 
         if baseline_results is not None:
             current_results = baseline_results
         else:
             current_results = run_named_checks(
-                repo_path=repo_path, checks=checks, log_file=log_file, phase="validation-t1-baseline"
+                repo_path=repo_path,
+                checks=checks,
+                log_file=log_file,
+                phase="validation-t1-baseline",
             )
 
         for name, check_result in current_results.items():
@@ -340,7 +392,7 @@ class TieredValidator:
         Returns:
             TieredValidationResult including regressions and target failures.
         """
-        from bluei.engine.lifecycle import run_validation_gate
+        from bluei.engine.validation import run_validation_gate
 
         result = run_validation_gate(
             repo_path=repo_path,
@@ -378,7 +430,9 @@ class TieredValidator:
         Returns:
             TieredValidationResult with diff review outcome.
         """
-        t2_result = self._validate_t2(repo_path, worktree_path, checks, baseline_results, log_file)
+        t2_result = self._validate_t2(
+            repo_path, worktree_path, checks, baseline_results, log_file
+        )
         if not t2_result.passed:
             return t2_result
 
@@ -389,7 +443,9 @@ class TieredValidator:
                 message=f"diff review failed: {diff_msg}",
             )
 
-        return TieredValidationResult(passed=True, message="t3 validated + diff review passed")
+        return TieredValidationResult(
+            passed=True, message="t3 validated + diff review passed"
+        )
 
     def _validate_t4(
         self,
@@ -413,7 +469,9 @@ class TieredValidator:
         Returns:
             TieredValidationResult with ``requires_human_review=True``.
         """
-        t3_result = self._validate_t3(repo_path, worktree_path, checks, baseline_results, finding, log_file)
+        t3_result = self._validate_t3(
+            repo_path, worktree_path, checks, baseline_results, finding, log_file
+        )
         t3_result.requires_human_review = True
         return t3_result
 
@@ -475,9 +533,15 @@ def _auto_diff_review(worktree_path: Path, finding: Any) -> tuple[bool, str]:
                     additions = int(parts[0]) if parts[0] != "-" else 0
                     deletions = int(parts[1]) if parts[1] != "-" else 0
                     if additions > T3_MAX_ADDITIONS:
-                        return False, f"too many additions: {additions} (max {T3_MAX_ADDITIONS})"
+                        return (
+                            False,
+                            f"too many additions: {additions} (max {T3_MAX_ADDITIONS})",
+                        )
                     if deletions > T3_MAX_DELETIONS:
-                        return False, f"too many deletions: {deletions} (max {T3_MAX_DELETIONS})"
+                        return (
+                            False,
+                            f"too many deletions: {deletions} (max {T3_MAX_DELETIONS})",
+                        )
                 except ValueError:
                     _logger.debug("Failed to parse diff stat line")
 

@@ -261,7 +261,7 @@ class LinterFixStage(CascadeStage):
             cmd = [a for a in cmd if a != "--unsafe-fixes"]
         rc, output = run_capture(cmd, cwd=worktree, timeout=60)
 
-        from bluei.engine.lifecycle import verify_fix_closed
+        from bluei.engine.validation import verify_fix_closed
         resolved = verify_fix_closed(worktree, finding, context.log_file)
 
         latency = int((time.monotonic() - t0) * 1000)
@@ -522,7 +522,7 @@ class ASTTransformCascadeStage(CascadeStage):
             result = self._transformer.apply(source, match, transform)
             if result.success:
                 file_path.write_text(result.source, encoding="utf-8")
-                from bluei.engine.lifecycle import verify_fix_closed
+                from bluei.engine.validation import verify_fix_closed
                 resolved = verify_fix_closed(worktree, finding, context.log_file)
                 latency = int((time.monotonic() - t0) * 1000)
                 return CascadeResult(
@@ -613,7 +613,7 @@ class CompositePatternCascadeStage(CascadeStage):
             )
             latency = int((time.monotonic() - t0) * 1000)
             if success:
-                from bluei.engine.lifecycle import verify_fix_closed
+                from bluei.engine.validation import verify_fix_closed
                 resolved = verify_fix_closed(worktree, finding, context.log_file)
                 comp_store.record_result(pattern.pattern_id, resolved)
                 return CascadeResult(

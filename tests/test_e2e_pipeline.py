@@ -485,9 +485,9 @@ class TestDeterministicOnlyMode:
     def test_deterministic_only_with_succeeding_stage_via_cascade(
         self, make_finding, git_repo, git_commit_all, tmp_path
     ):
-        from bluei.engine.lifecycle import _cached_stores
+        from bluei.engine.lifecycle import _reset_lifecycle_cache
 
-        _cached_stores.clear()
+        _reset_lifecycle_cache()
 
         repo, py_file = _setup_repo_with_unused_import(git_repo, git_commit_all)
         log_file = tmp_path / "run.log"

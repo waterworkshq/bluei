@@ -413,14 +413,14 @@ class TestLinkIssuesToBatchPR:
 
 
 class TestVerifyFindingClosed:
-    @patch("bluei.engine.lifecycle.verify_fix_closed", return_value=True)
+    @patch("bluei.engine.validation.verify_fix_closed", return_value=True)
     def test_returns_true_when_closed(self, mock_vfc, make_finding):
         """verify_finding_closed returns True when lifecycle verify passes."""
         finding = make_finding()
         result = verify_finding_closed(Path("/tmp/wt"), finding, Path("/tmp/log"))
         assert result is True
 
-    @patch("bluei.engine.lifecycle.verify_fix_closed", side_effect=Exception("boom"))
+    @patch("bluei.engine.validation.verify_fix_closed", side_effect=Exception("boom"))
     def test_returns_false_on_exception(self, mock_vfc, make_finding):
         """verify_finding_closed returns False on exception."""
         finding = make_finding()
@@ -447,8 +447,8 @@ class TestProcessBatch:
         log_file = Path("/tmp/test.log")
 
         with (
-            patch("bluei.engine.lifecycle.git_commit_all", return_value="committed"),
-            patch("bluei.engine.lifecycle.git_push_branch", return_value=True),
+            patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
+            patch("bluei.engine.git_ops.git_push_branch", return_value=True),
             patch("bluei.engine.utils.run_no_capture"),
         ):
             success, detail = process_batch(batch, Path("/tmp/repo"), args, log_file)
@@ -518,8 +518,8 @@ class TestProcessBatch:
         log_file = Path("/tmp/test.log")
 
         with (
-            patch("bluei.engine.lifecycle.git_commit_all", return_value="committed"),
-            patch("bluei.engine.lifecycle.git_push_branch", return_value=True),
+            patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
+            patch("bluei.engine.git_ops.git_push_branch", return_value=True),
             patch("bluei.engine.utils.run_no_capture"),
         ):
             success, detail = process_batch(batch, Path("/tmp/repo"), args, log_file)
@@ -542,8 +542,8 @@ class TestProcessBatch:
         log_file = Path("/tmp/test.log")
 
         with (
-            patch("bluei.engine.lifecycle.git_commit_all", return_value="committed"),
-            patch("bluei.engine.lifecycle.git_push_branch", return_value=True),
+            patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
+            patch("bluei.engine.git_ops.git_push_branch", return_value=True),
             patch("bluei.engine.utils.run_no_capture"),
         ):
             process_batch(batch, Path("/tmp/repo"), args, log_file)
@@ -658,8 +658,8 @@ class TestB7PRCreationFailureSetsBatchFailed:
         "bluei.engine.gh.get_origin_url",
         return_value="https://github.com/owner/repo.git",
     )
-    @patch("bluei.engine.lifecycle.git_push_branch", return_value=True)
-    @patch("bluei.engine.lifecycle.git_commit_all", return_value="committed")
+    @patch("bluei.engine.git_ops.git_push_branch", return_value=True)
+    @patch("bluei.engine.git_ops.git_commit_all", return_value="committed")
     @patch("bluei.engine.utils.run_no_capture")
     def test_runtime_error_sets_batch_failed(
         self,
@@ -710,9 +710,9 @@ class TestB9BranchNameUniqueness:
             batch = make_batch_group(n_findings=2, rule="ruff-c408")
             with (
                 patch(
-                    "bluei.engine.lifecycle.git_commit_all", return_value="committed"
+                    "bluei.engine.git_ops.git_commit_all", return_value="committed"
                 ),
-                patch("bluei.engine.lifecycle.git_push_branch", return_value=True),
+                patch("bluei.engine.git_ops.git_push_branch", return_value=True),
                 patch("bluei.engine.utils.run_no_capture"),
             ):
                 process_batch(batch, Path("/tmp/repo"), args, log_file)

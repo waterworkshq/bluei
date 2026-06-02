@@ -367,9 +367,9 @@ class TestTieredValidatorT2:
             "regressions": [],
             "target_failures": [],
         }
-        mock_lifecycle = MagicMock()
-        mock_lifecycle.run_validation_gate.return_value = gate_result
-        with patch.dict("sys.modules", {"bluei.engine.lifecycle": mock_lifecycle}):
+        mock_validation = MagicMock()
+        mock_validation.run_validation_gate.return_value = gate_result
+        with patch.dict("sys.modules", {"bluei.engine.validation": mock_validation}):
             result = v.validate(
                 FixTier.T2_VALIDATED,
                 tmp_path,

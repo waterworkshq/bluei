@@ -4,17 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from bluei.engine.lifecycle import (
-    apply_autofix,
+from bluei.engine.git_ops import git_commit_all, git_push_branch, diff_stats
+from bluei.engine.lifecycle import apply_autofix
+from bluei.engine.startup import run_startup_self_healing
+from bluei.engine.validation import (
     verify_fix_closed,
     build_target_checks,
-    git_commit_all,
-    git_push_branch,
-    run_startup_self_healing,
     run_smoke_test,
     run_named_checks,
     choose_validation_baseline,
-    diff_stats,
 )
 
 
