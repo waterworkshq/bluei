@@ -1,3 +1,4 @@
+import logging
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -6,14 +7,16 @@ import pytest
 
 from bluei.engine.models import Finding
 
+logger = logging.getLogger(__name__)
+
 
 def pytest_runtest_setup(item):
     try:
         from bluei.engine.pattern_replay import _clear_pattern_cache
 
         _clear_pattern_cache()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("pattern cache clear failed: %s", exc)
 
 
 @pytest.fixture

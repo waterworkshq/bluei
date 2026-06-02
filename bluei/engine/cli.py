@@ -6,161 +6,46 @@ issues → fixes → PRs → merge.  Writes ``status.json`` per run.
 Exit codes: 0 success, 1 smoke-test fail, 2 abort, 4 needs-human.
 """
 
-import argparse
-import json
 import logging
-import os
 import sys
-from collections import Counter
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Any, Dict, List, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from bluei.engine.models import now_iso, age_seconds, Finding, parse_iso, FixEngine
+from bluei.engine.models import now_iso, Finding, FixEngine
 from bluei.engine.utils import (
-    sanitize_command_template,
-    run_capture,
-    run_no_capture,
-    branch_suffix,
     append_lesson,
     assert_safe_repo,
-    is_path_tracked,
 )
 from bluei.engine.state import (
     load_state,
-    save_state,
     load_issues,
-    save_issues,
     _append_text,
-    guard_open_issues,
-    guard_open_prs,
-    record_reconciliation_event,
     reconcile_open_workload,
-    mark_finding_activity,
-    filter_findings_by_cooldown,
-    append_findings,
-    load_finding_record,
-    update_finding_record,
-    increment_fix_attempt,
-    count_actionable_issues,
-    NON_ACTIONABLE_ISSUE_STATUSES,
 )
 from bluei.engine.cost_tracker import CostTracker
 from bluei.engine.gh import (
     get_origin_url,
     parse_github_repo,
     repo_is_sandbox,
-    find_existing_github_issue,
-    find_existing_github_pr,
-    gh_issue_comment,
-    gh_issue_close,
-    gh_pr_comment,
-    finding_from_issue_record,
-    fetch_open_prs_for_merge,
-    evaluate_pr_check_health,
-    evaluate_pr_reviews,
-    evaluate_pr_mergeability,
-    merge_failure_requires_pr_fix,
-    merge_pr,
-    create_or_update_github_issue,
-    create_or_update_github_pr,
-    fetch_github_live_counts,
-)
-from bluei.engine.rebase_sweep import sweep_rebase
-from bluei.engine.orchestrator import (
-    build_active_cycle_command,
-    build_issue_cycle_command,
-    build_pr_cycle_command,
-    build_merge_cycle_command,
-    build_orchestrated_cycle_command,
-    build_refactor_cycle_command,
-    build_reconcile_only_command,
-    build_docs_index_refresh_command,
-    build_verification_only_command,
-    discover_findings,
-    create_issues_for_findings,
-    choose_safe_autofix_items,
-    route_findings_with_intent,
-    find_issue_for_finding,
-    ensure_issue_for_finding,
-    append_issue_history,
-    set_issue_status,
-    count_failed_fix_attempts,
-    check_consecutive_fix_failures,
-    check_finding_escalation_before_fix,
-)
-from bluei.engine.git_ops import git_commit_all, git_push_branch, diff_stats
-from bluei.engine.lifecycle import (
-    apply_autofix,
-    apply_claude_fix,
-    process_refactor_queue,
 )
 from bluei.engine.review_helpers import classify_review_feedback, review_loop_allowed
 from bluei.engine.startup import run_startup_self_healing
-from bluei.engine.validation import (
-    verify_fix_closed,
-    run_named_checks,
-    build_target_checks,
-    run_validation_gate,
-    choose_validation_baseline,
-    run_smoke_test,
-)
-from bluei.engine.prompts import (
-    render_test_coverage_prompt,
-    render_type_safety_prompt,
-    render_complexity_refactor_prompt,
-    render_maxlines_refactor_prompt,
-    render_claude_fix_prompt,
-)
 from bluei.engine.mnemo_client import is_mnemo_available
-from bluei.engine.pattern_replay import try_replay
 from bluei.engine.pattern_store import FixPatternStore
-from bluei.engine.reforge import RefactorClass, classify_finding
-from bluei.engine.git_utils import get_branch, refresh_docs_index, load_docs_index
+from bluei.engine.git_utils import refresh_docs_index
 from bluei.engine.constants import (
-    DEFAULT_STATE,
-    DEFAULT_LOG,
     DEFAULT_FINDINGS,
-    DEFAULT_STATUS,
-    DEFAULT_REPO,
-    DETECTOR_CATALOG,
-    WORKSPACE,
-    AGENT_ROOT,
     DEFAULT_ISSUES,
-    DEFAULT_WORKTREE_ROOT,
     DEFAULT_DOCS_INDEX,
     DEFAULT_LESSONS_LOG,
-    BASELINE_VALIDATION_CHECKS,
-    RULE_TARGET_CHECKS,
-    CLAUDE_REQUIRED_RULES,
-    DEFAULT_FIX_ENGINE,
-    DEFAULT_CLAUDE_CMD_TEMPLATE,
-    QA_FIX_PROMPT_FILENAME,
-    DEFAULT_FINDING_COOLDOWN_SECONDS,
-    DEFAULT_STALENESS_THRESHOLD_SECONDS,
-    DEFAULT_BATCH_RULES_PATH,
-    DEFAULT_BATCH_STATE,
-    load_llm_fixable_rules,
 )
 
 logger = logging.getLogger(__name__)
 
-from bluei.engine.commands.helpers import (  # noqa: E402
-    _build_refactor_queue_snapshot,
-    _compute_health_score,
-    _autonomous_review_gate_passes,
-    _get_llm_fixable_rules,
-    _hydrate_worktree_dependencies,
-    _load_batch_rules_for_args,
-    _load_review_state,
-    _reconcile_issue_pr_link,
-    _triage_pr_back_to_fix_cycle,
-    update_status_artifact,
-)
 from bluei.engine.commands.parse_args import (  # noqa: E402
     normalize_run_phase,
     parse_args,

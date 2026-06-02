@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "core"))
+sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from bluei.engine.migrate_context import (
     reclassify_findings,

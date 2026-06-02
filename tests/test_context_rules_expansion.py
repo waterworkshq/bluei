@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "core"))
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from bluei.engine.constants import CONTEXT_RULES

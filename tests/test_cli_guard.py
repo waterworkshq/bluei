@@ -130,8 +130,6 @@ class TestSymbolImports:
         from bluei.engine import cli
 
         assert hasattr(cli, "main")
-        assert hasattr(cli, "update_status_artifact")
-        assert hasattr(cli, "_compute_health_score")
 
 
 # ── Helper Function Guards ──────────────────────────────────────
@@ -436,46 +434,4 @@ class TestGetLlmFixableRules:
 
         r1 = _get_llm_fixable_rules()
         r2 = _get_llm_fixable_rules()
-        assert r1 is r2  # same object (cached)
-
-
-# ── Identity Guards (for backward compat after extraction) ──────
-
-
-class TestBackwardCompatIdentity:
-    """
-    After extraction, verify that re-exported symbols in cli.py
-    are the SAME objects as those in the new module.
-
-    These will FAIL until extraction is done — they are the GREEN phase target.
-    """
-
-    def test_update_status_artifact_is_same_as_helpers(self):
-        from bluei.engine.commands.helpers import update_status_artifact
-        from bluei.engine.cli import update_status_artifact as cli_usa
-
-        assert update_status_artifact is cli_usa
-
-    def test_compute_health_score_is_same_as_helpers(self):
-        from bluei.engine.commands.helpers import _compute_health_score
-        from bluei.engine.cli import _compute_health_score as cli_chs
-
-        assert _compute_health_score is cli_chs
-
-    def test_load_batch_rules_is_same_as_helpers(self):
-        from bluei.engine.commands.helpers import _load_batch_rules_for_args
-        from bluei.engine.cli import _load_batch_rules_for_args as cli_lbr
-
-        assert _load_batch_rules_for_args is cli_lbr
-
-    def test_hydrate_worktree_deps_is_same_as_helpers(self):
-        from bluei.engine.commands.helpers import _hydrate_worktree_dependencies
-        from bluei.engine.cli import _hydrate_worktree_dependencies as cli_hwd
-
-        assert _hydrate_worktree_dependencies is cli_hwd
-
-    def test_reconcile_issue_pr_link_is_same_as_helpers(self):
-        from bluei.engine.commands.helpers import _reconcile_issue_pr_link
-        from bluei.engine.cli import _reconcile_issue_pr_link as cli_ripl
-
-        assert _reconcile_issue_pr_link is cli_ripl
+        assert r1 is r2

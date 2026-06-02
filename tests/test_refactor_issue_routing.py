@@ -5,7 +5,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "core"))
+sys.path.insert(0, str(Path(__file__).parents[1]))
 
 
 def test_structural_refactor_issue_becomes_non_actionable_review_item(make_finding):

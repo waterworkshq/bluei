@@ -7,7 +7,6 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / "core"))
 
 from bluei.engine.models import Finding
 

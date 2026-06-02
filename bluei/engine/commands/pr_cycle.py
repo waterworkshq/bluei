@@ -1,0 +1,993 @@
+"""PR cycle phase: queue candidates, apply fixes, create PRs."""
+
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from bluei.engine.models import Finding, FixEngine, now_iso
+from bluei.engine.state import (
+    NON_ACTIONABLE_ISSUE_STATUSES,
+    _append_text,
+    guard_open_prs,
+    increment_fix_attempt,
+    mark_finding_activity,
+)
+from bluei.engine.gh import (
+    create_or_update_github_issue,
+    create_or_update_github_pr,
+    find_existing_github_pr,
+    finding_from_issue_record,
+    gh_issue_close,
+    gh_issue_comment,
+    gh_pr_comment,
+)
+from bluei.engine.orchestrator import (
+    check_finding_escalation_before_fix,
+    classify_finding,
+    count_failed_fix_attempts,
+    route_findings_with_intent,
+    set_issue_status,
+)
+from bluei.engine.git_ops import diff_stats, git_commit_all, git_push_branch
+from bluei.engine.lifecycle import (
+    apply_autofix,
+    apply_claude_fix,
+)
+from bluei.engine.validation import (
+    build_target_checks,
+    choose_validation_baseline,
+    run_named_checks,
+    run_validation_gate,
+    verify_fix_closed,
+)
+from bluei.engine.utils import (
+    branch_suffix,
+    is_path_tracked,
+    run_capture,
+    run_no_capture,
+)
+from bluei.engine.reforge import RefactorClass
+from bluei.engine.git_utils import get_branch
+from bluei.engine.pattern_replay import try_replay
+from bluei.engine.constants import (
+    BASELINE_VALIDATION_CHECKS,
+    CLAUDE_REQUIRED_RULES,
+    DEFAULT_BATCH_STATE,
+)
+from bluei.engine.commands.helpers import (
+    _get_llm_fixable_rules,
+    _hydrate_worktree_dependencies,
+    _load_batch_rules_for_args,
+    _reconcile_issue_pr_link,
+)
+
+
+def run_pr_cycle_phase(
+    *,
+    repo_path: Path,
+    findings_file: Path,
+    log_file: Path,
+    worktree_root: Path,
+    gh_repo_slug: str,
+    review_state_file: Path,
+    docs_index_file: Path,
+    lessons_file: Path,
+    args: Any,
+    state: Dict[str, Any],
+    issues_data: Dict[str, Any],
+    eligible_findings: List[Any],
+    findings: List[Any],
+    PER_REPO_BASELINE_CHECKS: Dict[str, List[str]],
+    cost_tracker: Any,
+    pattern_store: Any,
+    created_prs: int,
+    open_prs: int,
+    fix_attempts: int,
+    fixes_verified: int,
+    fixes_failed_verification: int,
+    issues_escalated_max_retries: int,
+    claude_invocations: int,
+    deterministic_invocations: int,
+    blocked_reasons: List[str],
+) -> Dict[str, Any]:
+    """Run the PR cycle: queue candidates, apply fixes, create PRs."""
+
+    queue_candidates: List[Tuple[Dict[str, Any], Finding]] = []
+    for issue in issues_data.get("issues", []):
+        if issue.get("status") in ("resolved_merged",):
+            continue
+        issue_github = (
+            issue.get("github", {}) if isinstance(issue.get("github"), dict) else {}
+        )
+        if issue_github.get("pr_number") or issue_github.get("pr_url"):
+            if not args.live_github_actions:
+                continue
+            if _reconcile_issue_pr_link(
+                issue=issue,
+                repo_slug=gh_repo_slug,
+                repo_path=repo_path,
+                log_file=log_file,
+            ):
+                continue
+        finding = finding_from_issue_record(issue)
+        if finding is None:
+            continue
+        if issue.get("status") in NON_ACTIONABLE_ISSUE_STATUSES:
+            continue
+
+        if args.live_github_actions and not is_path_tracked(repo_path, finding.path):
+            set_issue_status(
+                issue,
+                "blocked_untracked_path",
+                f"path not tracked in git HEAD: {finding.path}",
+            )
+            continue
+        finding_class = classify_finding(finding)
+        if finding_class == RefactorClass.REFACTOR_CLASS:
+            routed = route_findings_with_intent(
+                [finding],
+                confidence_threshold=args.issue_confidence_threshold,
+                findings_file=findings_file,
+                worktree_path=repo_path,
+                log_file=log_file,
+            )
+            refactor_item = (routed.get("refactor_queue") or [{}])[0]
+            refactor_meta = issue.setdefault("refactor", {})
+            if refactor_item.get("queued_work_id"):
+                refactor_meta["queue_work_id"] = refactor_item["queued_work_id"]
+            if refactor_item.get("refactor_work") is not None:
+                refactor_meta["phase"] = refactor_item["refactor_work"].phase.value
+            refactor_meta["review_reason"] = refactor_item.get("reason", "planning")
+            if issue.get("status") != "needs-human-refactor-review":
+                set_issue_status(
+                    issue,
+                    "needs-human-refactor-review",
+                    refactor_item.get("reason", "planning"),
+                )
+            _append_text(
+                log_file,
+                f"pr-cycle: routed structural refactor issue={issue.get('issue_id')} finding_id={finding.finding_id} to refactor review lane",
+            )
+            continue
+
+        if not finding.safe_to_autofix:
+            llm_rules = _get_llm_fixable_rules()
+            if finding.rule in llm_rules:
+                pass
+            elif classify_finding(finding) == RefactorClass.CONTEXTUAL_FIX:
+                pass
+            else:
+                if issue.get("status") != "needs-human-not-fixable":
+                    set_issue_status(
+                        issue,
+                        "needs-human-not-fixable",
+                        f"rule {finding.rule} is not autofixable and not LLM-fixable",
+                    )
+                    _append_text(
+                        log_file,
+                        f"skip: issue={issue.get('issue_id')} rule={finding.rule} "
+                        f"not autofixable and not in LLM_FIXABLE_RULES",
+                    )
+                continue
+        if finding.confidence < args.issue_confidence_threshold:
+            continue
+
+        _consec_escalated = check_finding_escalation_before_fix(
+            issue=issue,
+            issues_data=issues_data,
+            consecutive_threshold=args.max_fix_attempts_per_issue,
+            escalation_config=None,
+            log_file=log_file,
+        )
+        if _consec_escalated:
+            if issue.get("status") != "needs-human-max-retries-exceeded":
+                _failed = count_failed_fix_attempts(issue)
+                set_issue_status(
+                    issue,
+                    "needs-human-max-retries-exceeded",
+                    f"escalated: {_failed} consecutive fix failures (threshold: {args.max_fix_attempts_per_issue})",
+                )
+                issues_escalated_max_retries += 1
+            continue
+
+        failed_attempts = count_failed_fix_attempts(issue)
+        if failed_attempts >= args.max_fix_attempts_per_issue:
+            if issue.get("status") != "needs-human-max-retries-exceeded":
+                set_issue_status(
+                    issue,
+                    "needs-human-max-retries-exceeded",
+                    f"exceeded max fix attempts ({failed_attempts}/{args.max_fix_attempts_per_issue})",
+                )
+                issues_escalated_max_retries += 1
+                _append_text(
+                    log_file,
+                    f"escalation: issue={issue.get('issue_id')} finding_id={finding.finding_id} "
+                    f"exceeded max_fix_attempts_per_issue ({failed_attempts}/{args.max_fix_attempts_per_issue}) "
+                    f"-> marking as needs-human-max-retries-exceeded",
+                )
+            continue
+
+        queue_candidates.append((issue, finding))
+
+    if not queue_candidates:
+        _append_text(log_file, "pr-cycle: no eligible issue-queue items for autofix")
+
+    baseline_results: Dict[str, Dict[str, Any]] = {}
+    if queue_candidates:
+        baseline_results = run_named_checks(
+            repo_path=repo_path,
+            checks=PER_REPO_BASELINE_CHECKS,
+            log_file=log_file,
+            phase="baseline-main",
+        )
+        baseline_failures = [
+            name
+            for name, result in baseline_results.items()
+            if int(result.get("rc", 1)) != 0
+        ]
+        if baseline_failures:
+            _append_text(
+                log_file,
+                f"baseline-main: failing_checks={','.join(baseline_failures)}",
+            )
+        else:
+            _append_text(log_file, "baseline-main: all checks passing")
+
+    current_branch = get_branch(repo_path)
+    if current_branch == "main" and not args.allow_main_commit:
+        _append_text(
+            log_file,
+            "safety: main branch direct commit blocked; using isolated worktree branch",
+        )
+
+    if getattr(args, "batch_pr_enabled", False) and queue_candidates:
+        from bluei.engine.batch_pr import (
+            group_findings_for_batch,
+            process_batch as _process_batch,
+        )
+        from bluei.engine.state import save_batch_record as _save_batch_record
+
+        _batch_rules = _load_batch_rules_for_args(args)
+        _batch_groups = group_findings_for_batch(queue_candidates, _batch_rules)
+        _append_text(
+            log_file,
+            f"batch-cycle: {len(_batch_groups)} batch groups from {len(queue_candidates)} candidates",
+        )
+
+        _solo_items = []
+        for _bg in _batch_groups:
+            if _bg.is_solo:
+                _solo_items.append((_bg.issues[0], _bg.findings[0]))
+            else:
+                if created_prs >= args.max_prs_per_run:
+                    break
+                ok, reason = guard_open_prs(open_prs, args.open_prs_cap)
+                _append_text(log_file, reason)
+                if not ok:
+                    blocked_reasons.append(reason)
+                    break
+                _success, _detail = _process_batch(
+                    batch=_bg,
+                    repo_path=repo_path,
+                    args=args,
+                    log_file=log_file,
+                )
+                if _success:
+                    created_prs += 1
+                    open_prs += 1
+                    _bsf = Path(
+                        getattr(args, "batch_state_file", str(DEFAULT_BATCH_STATE))
+                    )
+                    _save_batch_record(_bsf, _bg.to_record())
+                    _append_text(log_file, f"batch-cycle: {_bg.batch_id} -> {_detail}")
+                else:
+                    _append_text(
+                        log_file, f"batch-cycle: {_bg.batch_id} failed: {_detail}"
+                    )
+
+        _iteration_items = _solo_items
+    else:
+        _iteration_items = queue_candidates
+
+    for idx, (issue, finding) in enumerate(_iteration_items, start=1):
+        if created_prs >= args.max_prs_per_run:
+            break
+
+        ok, reason = guard_open_prs(open_prs, args.open_prs_cap)
+        _append_text(log_file, reason)
+        if not ok:
+            blocked_reasons.append(reason)
+            break
+
+        issue_github = issue.setdefault("github", {})
+        issue_number: Optional[int] = issue_github.get("issue_number")
+        issue_url: str = str(issue_github.get("issue_url") or "")
+
+        if args.live_github_actions and issue_number is None:
+            gh_issue = create_or_update_github_issue(
+                repo_slug=gh_repo_slug,
+                finding=finding,
+                dry_run=args.dry_run,
+                log_file=log_file,
+                cwd=repo_path,
+            )
+            issue_number = (
+                gh_issue.get("number")
+                if gh_issue.get("number") is not None
+                else issue_number
+            )
+            issue_url = str(gh_issue.get("url") or issue_url)
+            if issue_number is not None:
+                issue_github["issue_number"] = issue_number
+            if issue_url:
+                issue_github["issue_url"] = issue_url
+
+        existing_pr_for_repair: Optional[Dict[str, Any]] = None
+        if args.live_github_actions:
+            existing_pr = find_existing_github_pr(
+                gh_repo_slug, finding.finding_id, cwd=repo_path
+            )
+            if existing_pr and str(existing_pr.get("state") or "").upper() == "OPEN":
+                pr_number = int(existing_pr["number"])
+                pr_url = str(existing_pr.get("url") or "")
+                issue_github["pr_number"] = pr_number
+                issue_github["pr_url"] = pr_url
+                issue_github["branch"] = str(
+                    existing_pr.get("headRefName") or issue_github.get("branch") or ""
+                )
+                if issue.get("status") == "pr_merge_conflict":
+                    existing_pr_for_repair = existing_pr
+                    _append_text(
+                        log_file,
+                        f"pr-cycle: resuming existing PR #{pr_number} for merge-conflict repair",
+                    )
+                else:
+                    if issue_number is not None and not args.dry_run:
+                        gh_issue_comment(
+                            gh_repo_slug,
+                            issue_number,
+                            f"Existing PR already open for this finding: {pr_url}",
+                            cwd=repo_path,
+                        )
+                    set_issue_status(
+                        issue,
+                        "pr_opened",
+                        "existing live PR already present for finding",
+                    )
+                    mark_finding_activity(
+                        state=state,
+                        finding_ids=[finding.finding_id],
+                        action="pr-open-existing",
+                    )
+                    continue
+            elif existing_pr:
+                _append_text(
+                    log_file,
+                    f"pr-cycle: ignoring closed linked PR #{existing_pr.get('number')} for finding={finding.finding_id}",
+                )
+
+        ts = datetime.now().strftime("%Y%m%d%H%M%S")
+        finding_suffix = finding.finding_id[:8]
+        if args.live_github_actions:
+            worktree_branch = str(
+                (existing_pr_for_repair or {}).get("headRefName")
+                or issue_github.get("branch")
+                or f"qa/live-{branch_suffix(finding.rule)}-{finding_suffix}"
+            )
+        else:
+            worktree_branch = f"bluei/{ts}-{idx}"
+        worktree_path = worktree_root.resolve() / f"bluei-{ts}-{idx}-{finding_suffix}"
+
+        run_no_capture(["git", "worktree", "prune"], cwd=repo_path)
+        if worktree_path.exists():
+            run_no_capture(["rm", "-rf", str(worktree_path)], cwd=repo_path)
+
+        add_rc, add_out = run_capture(
+            ["git", "worktree", "add", "-B", worktree_branch, str(worktree_path)],
+            cwd=repo_path,
+        )
+        if add_rc != 0:
+            blocked_reasons.append("failed-to-create-worktree")
+            _append_text(
+                log_file,
+                f"error: failed to create worktree output={(add_out or '<empty>')[:300]}",
+            )
+            break
+
+        _hydrate_worktree_dependencies(
+            repo_path=repo_path, worktree_path=worktree_path, log_file=log_file
+        )
+
+        run_status = "unknown"
+        try:
+            fix_attempts += 1
+            set_issue_status(issue, "fix_attempted", "starting sandbox autofix attempt")
+
+            worktree_baseline_results = run_named_checks(
+                repo_path=worktree_path,
+                checks=PER_REPO_BASELINE_CHECKS,
+                log_file=log_file,
+                phase="worktree-baseline",
+            )
+
+            target_checks = build_target_checks(finding)
+
+            replay_succeeded = False
+            replay_pattern_hint: Optional[str] = None
+
+            if pattern_store is not None:
+                replayed, replay_pid = try_replay(
+                    worktree_path=worktree_path,
+                    finding=finding,
+                    store=pattern_store,
+                    baseline_checks=PER_REPO_BASELINE_CHECKS,
+                    log_file=log_file,
+                )
+                if replayed:
+                    replay_succeeded = True
+                    _append_text(
+                        log_file,
+                        f"pattern-replay-savings: pattern_id={replay_pid} rule={finding.rule}",
+                    )
+                    saved = cost_tracker.estimate_invocation_cost(
+                        "claude-sonnet-4",
+                        input_tokens=4000,
+                        output_tokens=2000,
+                    )
+                    cost_tracker.record_pattern_replay_savings(
+                        model="claude-sonnet-4",
+                        saved_cost=saved,
+                        pattern_id=replay_pid or "",
+                        rule=finding.rule,
+                    )
+                elif replay_pid is not None:
+                    from bluei.engine.pattern_replay import format_pattern_hint
+
+                    pattern = pattern_store.get_pattern(replay_pid)
+                    if pattern is not None:
+                        replay_pattern_hint = format_pattern_hint(pattern)
+
+            if not replay_succeeded:
+                if getattr(finding, "refactor_class", "") == "cascade_fix":
+                    from bluei.engine.lifecycle import apply_cascade_fix
+
+                    applied = apply_cascade_fix(
+                        worktree_path,
+                        finding,
+                        log_file,
+                        pattern_store_path=Path(args.pattern_store_path)
+                        if args.pattern_store_path
+                        else None,
+                        deterministic_only=args.deterministic_only,
+                    )
+                    if applied:
+                        run_status = "fix-applied:cascade"
+                        deterministic_invocations += 1
+                        _append_text(
+                            log_file,
+                            f"cascade-fix: succeeded finding_id={finding.finding_id} rule={finding.rule}",
+                        )
+                    else:
+                        run_status = "fix-noop:cascade-exhausted"
+                        fixes_failed_verification += 1
+                        _append_text(
+                            log_file,
+                            f"cascade-fix: exhausted finding_id={finding.finding_id} rule={finding.rule}",
+                        )
+                        if finding.finding_id:
+                            increment_fix_attempt(
+                                finding.finding_id,
+                                findings_file,
+                                f"cascade exhausted rule={finding.rule}",
+                            )
+                        continue
+                else:
+                    llm_rules = _get_llm_fixable_rules()
+                    is_llm_fixable = (
+                        not finding.safe_to_autofix and finding.rule in llm_rules
+                    )
+                    use_claude_engine = (
+                        args.fix_engine == FixEngine.CLAUDE.value
+                        or finding.rule in CLAUDE_REQUIRED_RULES
+                        or is_llm_fixable
+                    )
+                    if use_claude_engine:
+                        claude_invocations += 1
+                    else:
+                        deterministic_invocations += 1
+                    extra_prompt = (
+                        llm_rules.get(finding.rule, {}).get("prompt_hint")
+                        if is_llm_fixable
+                        else None
+                    )
+                    learned_patterns = replay_pattern_hint
+
+                    if use_claude_engine and cost_tracker.exceeded_limit():
+                        _append_text(
+                            log_file,
+                            f"cost-limit: skipping claude fix for {finding.finding_id} "
+                            f"({finding.rule}) — hard limit (${cost_tracker.cycle_total():.2f}) reached",
+                        )
+                        run_status = "fix-skipped:cost-limit-reached"
+                        set_issue_status(issue, "fix_skipped", run_status)
+                        fixes_failed_verification += 1
+                        continue
+
+                    if use_claude_engine:
+                        rc, claude_output, prompt_file = apply_claude_fix(
+                            worktree_path=worktree_path,
+                            finding=finding,
+                            baseline_checks=BASELINE_VALIDATION_CHECKS,
+                            target_checks=target_checks,
+                            claude_cmd_template=args.claude_cmd_template,
+                            max_files_changed=args.max_files_changed,
+                            max_loc_diff=args.max_loc_diff,
+                            log_file=log_file,
+                            findings_file=findings_file,
+                            lessons_file=lessons_file,
+                            repo_path=repo_path,
+                            extra_prompt=extra_prompt,
+                            pattern_store_path=Path(args.pattern_store_path)
+                            if args.pattern_store_path
+                            else None,
+                            learned_patterns=learned_patterns,
+                        )
+                        model_name = "claude-sonnet-4"
+                        cost_tracker.record_invocation(
+                            model=model_name,
+                            input_tokens=3000,
+                            output_tokens=300,
+                        )
+                        if rc != 0:
+                            run_status = "fix-failed-verification:claude-command-failed"
+                            set_issue_status(
+                                issue, "fix_failed_verification", run_status
+                            )
+                            fixes_failed_verification += 1
+                            if (
+                                args.live_github_actions
+                                and issue_number is not None
+                                and not args.dry_run
+                            ):
+                                gh_issue_comment(
+                                    gh_repo_slug,
+                                    issue_number,
+                                    (
+                                        "Claude autofix command failed "
+                                        f"(rc={rc}) for {finding.rule} in {finding.path}:{finding.line}. "
+                                        f"Prompt: {prompt_file}. Output: {(claude_output or '<empty>')[:300]}"
+                                    ),
+                                    cwd=repo_path,
+                                )
+                            current_entry = state.get("finding_activity", {}).get(
+                                finding.finding_id, {}
+                            )
+                            current_failures = current_entry.get("failure_count", 0)
+                            mark_finding_activity(
+                                state=state,
+                                finding_ids=[finding.finding_id],
+                                action="fix-failed-verification",
+                                failure_count=current_failures + 1,
+                                last_error=f"claude rc={rc}",
+                            )
+                            continue
+                    else:
+                        applied = apply_autofix(
+                            worktree_path,
+                            finding,
+                            log_file,
+                            pattern_store_path=Path(args.pattern_store_path)
+                            if args.pattern_store_path
+                            else None,
+                        )
+                        if not applied:
+                            from bluei.engine.context_fix import (
+                                apply_contextual_fix,
+                                record_context_failure,
+                            )
+
+                            _append_text(
+                                log_file,
+                                f"contextual-fix: attempting for rule={finding.rule} path={finding.path}",
+                            )
+                            applied = apply_contextual_fix(
+                                repo_path=repo_path,
+                                finding=finding,
+                                log_file=log_file,
+                                worktree_path=worktree_path,
+                            )
+                            if not applied:
+                                from bluei.engine.context_fix import (
+                                    update_context_rule_on_repeated_failure,
+                                )
+                                from bluei.engine.reforge import (
+                                    get_context_rule,
+                                    match_context as _match_context,
+                                )
+
+                                failures_path = (
+                                    Path(args.workspace or ".")
+                                    / "state"
+                                    / "context_failures.jsonl"
+                                )
+                                ctx_rule = get_context_rule(finding.rule)
+                                matched_ctx = (
+                                    _match_context(finding.path, ctx_rule)
+                                    if ctx_rule
+                                    else None
+                                )
+                                fw = matched_ctx.framework if matched_ctx else ""
+                                strategy = (
+                                    matched_ctx.fix_strategy
+                                    if matched_ctx
+                                    else "contextual"
+                                )
+                                record_context_failure(
+                                    failures_path,
+                                    finding.rule,
+                                    finding.path,
+                                    fw,
+                                    strategy,
+                                )
+                                if ctx_rule and matched_ctx:
+                                    mutated = update_context_rule_on_repeated_failure(
+                                        finding.rule, fw, failures_path
+                                    )
+                                    if mutated:
+                                        _append_text(
+                                            log_file,
+                                            f"context-learning: rule={finding.rule} context={fw} auto-updated to skip",
+                                        )
+                        if not applied:
+                            run_status = "fix-noop"
+                            set_issue_status(
+                                issue,
+                                "fix_failed_verification",
+                                "autofix could not modify target pattern",
+                            )
+                            fixes_failed_verification += 1
+                            if finding.finding_id:
+                                increment_fix_attempt(
+                                    finding.finding_id,
+                                    findings_file,
+                                    f"autofix no-op for rule={finding.rule}",
+                                )
+                            if (
+                                args.live_github_actions
+                                and issue_number is not None
+                                and not args.dry_run
+                            ):
+                                gh_issue_comment(
+                                    gh_repo_slug,
+                                    issue_number,
+                                    f"Autofix could not update pattern for {finding.rule} in {finding.path}:{finding.line}.",
+                                    cwd=repo_path,
+                                )
+                            current_entry = state.get("finding_activity", {}).get(
+                                finding.finding_id, {}
+                            )
+                            current_failures = current_entry.get("failure_count", 0)
+                            mark_finding_activity(
+                                state=state,
+                                finding_ids=[finding.finding_id],
+                                action="fix-failed-verification",
+                                failure_count=current_failures + 1,
+                                last_error=f"autofix no-op rule={finding.rule}",
+                            )
+                            continue
+
+            files_changed, loc_diff = diff_stats(worktree_path)
+            _append_text(
+                log_file,
+                f"fix-scope-stats: files_changed={files_changed} loc_diff={loc_diff}",
+            )
+
+            if files_changed == 0 and loc_diff == 0:
+                verified_without_changes = verify_fix_closed(
+                    worktree_path,
+                    finding,
+                    log_file,
+                    docs_index_file=docs_index_file,
+                )
+                if verified_without_changes:
+                    set_issue_status(
+                        issue,
+                        "resolved_verified",
+                        "finding already closed on branch; no code change needed",
+                    )
+                    fixes_verified += 1
+                    if (
+                        args.live_github_actions
+                        and issue_number is not None
+                        and not args.dry_run
+                    ):
+                        gh_issue_comment(
+                            gh_repo_slug,
+                            issue_number,
+                            "Finding no longer reproduces on the current branch. Closing without a new PR.",
+                            cwd=repo_path,
+                        )
+                        gh_issue_close(
+                            gh_repo_slug,
+                            issue_number,
+                            "Resolved by existing branch state; no additional change required.",
+                            cwd=repo_path,
+                        )
+                    mark_finding_activity(
+                        state=state,
+                        finding_ids=[finding.finding_id],
+                        action="resolved-noop-verified",
+                    )
+                    continue
+
+            if files_changed > args.max_files_changed or loc_diff > args.max_loc_diff:
+                run_status = "needs-human-scope-limit-exceeded"
+                blocked_reasons.append(run_status)
+                set_issue_status(issue, "fix_failed_verification", run_status)
+                fixes_failed_verification += 1
+                if (
+                    args.live_github_actions
+                    and issue_number is not None
+                    and not args.dry_run
+                ):
+                    gh_issue_comment(
+                        gh_repo_slug,
+                        issue_number,
+                        f"Fix exceeded scope limits (files={files_changed}, loc={loc_diff}); needs human follow-up.",
+                        cwd=repo_path,
+                    )
+                break
+
+            post_fix_results = run_named_checks(
+                repo_path=worktree_path,
+                checks=PER_REPO_BASELINE_CHECKS,
+                log_file=log_file,
+                phase="post-fix",
+            )
+            target_results = (
+                run_named_checks(
+                    repo_path=worktree_path,
+                    checks=target_checks,
+                    log_file=log_file,
+                    phase="target-check",
+                )
+                if target_checks
+                else {}
+            )
+
+            validation_result = run_validation_gate(
+                repo_path=worktree_path,
+                worktree_path=worktree_path,
+                checks={},
+                baseline_results=choose_validation_baseline(
+                    repo_baseline_results=baseline_results,
+                    worktree_baseline_results=worktree_baseline_results,
+                    log_file=log_file,
+                ),
+                post_fix_results=post_fix_results,
+                target_results=target_results,
+                allow_unchanged_baseline_failures=args.allow_unchanged_baseline_failures,
+                log_file=log_file,
+            )
+            checks_ok = validation_result.get("passed", False)
+            validation_reason = validation_result.get("message", "")
+            if not checks_ok:
+                run_status = f"needs-human-validation-failed:{validation_reason}"
+                blocked_reasons.append(run_status)
+                set_issue_status(issue, "fix_failed_verification", run_status)
+                fixes_failed_verification += 1
+                if (
+                    args.live_github_actions
+                    and issue_number is not None
+                    and not args.dry_run
+                ):
+                    gh_issue_comment(
+                        gh_repo_slug,
+                        issue_number,
+                        f"Validation gate failed after autofix ({validation_reason}); keeping issue open for manual intervention.",
+                        cwd=repo_path,
+                    )
+                break
+
+            verified = verify_fix_closed(
+                worktree_path, finding, log_file, docs_index_file=docs_index_file
+            )
+            if not verified:
+                run_status = "fix-failed-verification"
+                set_issue_status(
+                    issue,
+                    "fix_failed_verification",
+                    "detector still firing after fix + validation",
+                )
+                fixes_failed_verification += 1
+                if (
+                    args.live_github_actions
+                    and issue_number is not None
+                    and not args.dry_run
+                ):
+                    gh_issue_comment(
+                        gh_repo_slug,
+                        issue_number,
+                        "Post-fix verification failed: detector still firing.",
+                        cwd=repo_path,
+                    )
+                current_entry = state.get("finding_activity", {}).get(
+                    finding.finding_id, {}
+                )
+                current_failures = current_entry.get("failure_count", 0)
+                mark_finding_activity(
+                    state=state,
+                    finding_ids=[finding.finding_id],
+                    action="fix-failed-verification",
+                    failure_count=current_failures + 1,
+                    last_error="detector still firing after fix",
+                )
+                continue
+
+            set_issue_status(
+                issue,
+                "resolved_verified",
+                "detector no longer firing after fix + validation",
+            )
+            fixes_verified += 1
+
+            pr_number: Optional[int] = None
+            pr_url = ""
+            if args.live_github_actions:
+                commit_message = (
+                    f"fix(bluei): {finding.rule} [{finding.finding_id[:8]}]"
+                )
+                commit_result = git_commit_all(
+                    worktree_path,
+                    commit_message,
+                    log_file=log_file,
+                    dry_run=args.dry_run,
+                )
+                if commit_result == "no_changes":
+                    run_status = "resolved-verified-noop"
+                    set_issue_status(
+                        issue,
+                        "resolved_verified",
+                        "detector no longer firing and no repo diff remained to commit",
+                    )
+                    mark_finding_activity(
+                        state=state,
+                        finding_ids=[finding.finding_id],
+                        action="resolved-verified-noop",
+                        failure_count=0,
+                        last_error=None,
+                    )
+                    if (
+                        args.live_github_actions
+                        and issue_number is not None
+                        and not args.dry_run
+                    ):
+                        gh_issue_comment(
+                            gh_repo_slug,
+                            issue_number,
+                            "Post-fix verification passed and the effective fix was already present, so no new commit/PR was needed.",
+                            cwd=repo_path,
+                        )
+                    continue
+                if commit_result != "committed":
+                    run_status = "needs-human-commit-failed"
+                    blocked_reasons.append(run_status)
+                    set_issue_status(issue, "fix_failed_verification", run_status)
+                    fixes_failed_verification += 1
+                    break
+
+                pushed = git_push_branch(
+                    worktree_path,
+                    worktree_branch,
+                    log_file=log_file,
+                    dry_run=args.dry_run,
+                )
+                if not pushed:
+                    run_status = "needs-human-push-failed"
+                    blocked_reasons.append(run_status)
+                    set_issue_status(issue, "fix_failed_verification", run_status)
+                    fixes_failed_verification += 1
+                    break
+
+                pr_result = create_or_update_github_pr(
+                    repo_slug=gh_repo_slug,
+                    finding=finding,
+                    branch=worktree_branch,
+                    issue_number=issue_number,
+                    dry_run=args.dry_run,
+                    log_file=log_file,
+                    cwd=worktree_path,
+                )
+                pr_number = (
+                    pr_result.get("number")
+                    if pr_result.get("number") is not None
+                    else None
+                )
+                pr_url = str(pr_result.get("url") or "")
+                if pr_number is not None:
+                    issue_github["pr_number"] = pr_number
+                if pr_url:
+                    issue_github["pr_url"] = pr_url
+                issue_github["branch"] = worktree_branch
+
+                if issue_number is not None and not args.dry_run:
+                    gh_issue_comment(
+                        gh_repo_slug,
+                        issue_number,
+                        f"Post-fix verification passed. PR: {pr_url or '(pending URL)'}",
+                        cwd=repo_path,
+                    )
+                if pr_number is not None and not args.dry_run:
+                    gh_pr_comment(
+                        gh_repo_slug,
+                        pr_number,
+                        f"Automated verification passed for finding {finding.finding_id}.",
+                        cwd=repo_path,
+                    )
+            else:
+                pr_url = ""
+
+            if pr_number is not None or not args.live_github_actions:
+                set_issue_status(
+                    issue, "pr_opened", "autofix PR created from issue queue"
+                )
+
+            entry = {
+                "type": "pr",
+                "repo": str(repo_path),
+                "branch": worktree_branch,
+                "dry_run": args.dry_run,
+                "live_github_actions": bool(args.live_github_actions),
+                "created_at": now_iso(),
+                "linked_issue_ids": [issue.get("id") or issue["issue_id"]],
+                "linked_finding_ids": [finding.finding_id],
+                "github_issue_url": issue_url,
+                "github_issue_number": issue_number,
+                "github_pr_url": pr_url,
+                "github_pr_number": pr_number,
+                "note": "live GitHub PR workflow complete after fix+verify"
+                if args.live_github_actions
+                else "simulated local PR creation after e2e fix+verification gate",
+            }
+            state.setdefault("created", []).append(entry)
+            mark_finding_activity(
+                state=state,
+                finding_ids=[finding.finding_id],
+                action="pr-opened",
+                failure_count=0,
+                last_error=None,
+            )
+            open_prs += 1
+            created_prs += 1
+            run_status = (
+                "pr-live-created"
+                if args.live_github_actions
+                else "pr-simulated-resolved-verified"
+            )
+
+        finally:
+            run_no_capture(
+                ["git", "worktree", "remove", "--force", str(worktree_path)],
+                cwd=repo_path,
+            )
+            run_no_capture(["git", "worktree", "prune"], cwd=repo_path)
+            if not args.live_github_actions:
+                run_no_capture(["git", "branch", "-D", worktree_branch], cwd=repo_path)
+            _append_text(
+                log_file, f"cleanup: branch={worktree_branch} status={run_status}"
+            )
+
+    return {
+        "created_prs": created_prs,
+        "open_prs": open_prs,
+        "fix_attempts": fix_attempts,
+        "fixes_verified": fixes_verified,
+        "fixes_failed_verification": fixes_failed_verification,
+        "issues_escalated_max_retries": issues_escalated_max_retries,
+        "claude_invocations": claude_invocations,
+        "deterministic_invocations": deterministic_invocations,
+        "blocked_reasons": blocked_reasons,
+        "state": state,
+        "issues_data": issues_data,
+        "eligible_findings": eligible_findings,
+    }

@@ -139,12 +139,22 @@ def test_all_public_symbols_importable():
             "gh",
             "escalation",
             "cli",
+            "prompts",
+            "git_ops",
+            "validation",
         ):
             try:
                 mod = importlib.import_module(f"bluei.engine.{submodule}")
                 if hasattr(mod, sym):
                     found = True
                     break
+            except ImportError:
+                pass
+        if not found:
+            try:
+                mod = importlib.import_module("bluei.engine.commands.helpers")
+                if hasattr(mod, sym):
+                    found = True
             except ImportError:
                 pass
         if not found:

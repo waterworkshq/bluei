@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 # Allow running as script from core/ directory
-sys.path.insert(0, str(Path(__file__).parent.parent))  # qa-agent/core/
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from bluei.engine.models import Finding
 from bluei.engine.reforge import RefactorWork, RefactorPhase

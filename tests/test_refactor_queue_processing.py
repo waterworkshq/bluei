@@ -5,7 +5,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parents[1] / 'core'))
+sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from bluei.engine.models import Finding
 from bluei.engine.refactor_queue import (
@@ -68,12 +68,15 @@ def test_refactor_queue_process_dry_run_approved():
         worktree.mkdir()
 
         import bluei.engine.refactor_queue as rq_mod
+
         original = rq_mod.DEFAULT_REFACTOR_QUEUE_DIR
         rq_mod.DEFAULT_REFACTOR_QUEUE_DIR = queue_dir
         try:
             from bluei.engine.lifecycle import process_refactor_queue
 
-            finding = FakeFinding(finding_id="rq-dry-001", rule="xo-complexity", path="src/foo.ts")
+            finding = FakeFinding(
+                finding_id="rq-dry-001", rule="xo-complexity", path="src/foo.ts"
+            )
             rw = RefactorWork(finding_id="rq-dry-001")
             entry = enqueue_refactor_work(finding, rw, worktree)
             RefactorQueue(queue_dir=queue_dir).approve(entry.work_id, "human")
@@ -105,12 +108,15 @@ def test_refactor_queue_auto_approve_moves_pending():
         worktree.mkdir()
 
         import bluei.engine.refactor_queue as rq_mod
+
         original = rq_mod.DEFAULT_REFACTOR_QUEUE_DIR
         rq_mod.DEFAULT_REFACTOR_QUEUE_DIR = queue_dir
         try:
             from bluei.engine.lifecycle import process_refactor_queue
 
-            finding = FakeFinding(finding_id="rq-auto-001", rule="xo-max-lines", path="src/big.ts")
+            finding = FakeFinding(
+                finding_id="rq-auto-001", rule="xo-max-lines", path="src/big.ts"
+            )
             rw = RefactorWork(finding_id="rq-auto-001")
             entry = enqueue_refactor_work(finding, rw, worktree)
             assert entry.status == QueueStatus.PENDING_REVIEW
@@ -132,9 +138,9 @@ def test_refactor_queue_auto_approve_moves_pending():
         # dry_run=False means execution is attempted; if Claude is available
         # the item may end up in processed; if not, it goes to failed.
         # Either way it should not still be pending
-        assert entry.work_id in result["processed"] or entry.work_id in result["failed"], (
-            f"expected {entry.work_id} in processed or failed, got {result}"
-        )
+        assert (
+            entry.work_id in result["processed"] or entry.work_id in result["failed"]
+        ), f"expected {entry.work_id} in processed or failed, got {result}"
         # The item should NOT still be in pending after auto_approve
         assert entry.work_id not in result["pending"], (
             f"item should not be pending after auto-approve, got {result}"
@@ -151,6 +157,7 @@ def test_refactor_queue_max_items_limits_processing():
         worktree.mkdir()
 
         import bluei.engine.refactor_queue as rq_mod
+
         original = rq_mod.DEFAULT_REFACTOR_QUEUE_DIR
         rq_mod.DEFAULT_REFACTOR_QUEUE_DIR = queue_dir
         try:
@@ -159,7 +166,9 @@ def test_refactor_queue_max_items_limits_processing():
             queue = RefactorQueue(queue_dir=queue_dir)
             work_ids = []
             for i in range(3):
-                finding = FakeFinding(finding_id=f"rq-max-{i}", rule="xo-complexity", path=f"src/f{i}.ts")
+                finding = FakeFinding(
+                    finding_id=f"rq-max-{i}", rule="xo-complexity", path=f"src/f{i}.ts"
+                )
                 rw = RefactorWork(finding_id=f"rq-max-{i}")
                 e = enqueue_refactor_work(finding, rw, worktree)
                 queue.approve(e.work_id, "human")
@@ -190,6 +199,7 @@ def test_refactor_queue_approved_items_require_execution_phase():
         worktree.mkdir()
 
         import bluei.engine.refactor_queue as rq_mod
+
         original = rq_mod.DEFAULT_REFACTOR_QUEUE_DIR
         rq_mod.DEFAULT_REFACTOR_QUEUE_DIR = queue_dir
         try:
@@ -222,9 +232,7 @@ def test_refactor_queue_approved_items_require_execution_phase():
         assert e1.work_id in result["processed"], (
             f"e1 should be processed, got {result}"
         )
-        assert e2.work_id in result["pending"], (
-            f"e2 should be pending, got {result}"
-        )
+        assert e2.work_id in result["pending"], f"e2 should be pending, got {result}"
         print("✅ only APPROVED items are processed; PENDING_REVIEW go to pending list")
 
 
@@ -237,10 +245,13 @@ def test_queue_entry_from_dict_roundtrips():
         worktree.mkdir()
 
         import bluei.engine.refactor_queue as rq_mod
+
         original = rq_mod.DEFAULT_REFACTOR_QUEUE_DIR
         rq_mod.DEFAULT_REFACTOR_QUEUE_DIR = queue_dir
         try:
-            finding = FakeFinding(finding_id="rq-serial-001", rule="xo-max-lines", path="src/big.ts")
+            finding = FakeFinding(
+                finding_id="rq-serial-001", rule="xo-max-lines", path="src/big.ts"
+            )
             rw = RefactorWork(finding_id="rq-serial-001")
             rw.mark_splitting(["part1.ts", "part2.ts"], original_line_count=3000)
 
@@ -273,6 +284,7 @@ def test_enqueue_refactor_work_stores_worktree_rooted_path():
         worktree.mkdir()
 
         import bluei.engine.refactor_queue as rq_mod
+
         original = rq_mod.DEFAULT_REFACTOR_QUEUE_DIR
         rq_mod.DEFAULT_REFACTOR_QUEUE_DIR = queue_dir
         try:
@@ -309,6 +321,7 @@ def main():
         except Exception as e:
             print(f"❌ {test.__name__}: {e}")
             import traceback
+
             traceback.print_exc()
             failed.append(test.__name__)
 

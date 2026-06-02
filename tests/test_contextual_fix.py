@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "core"))
+sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from bluei.engine.context_fix import (
     apply_contextual_fix,

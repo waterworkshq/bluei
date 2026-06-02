@@ -8,6 +8,8 @@ from bluei.engine import cli
 from bluei.engine import gh
 from bluei.engine import escalation
 from bluei.engine.commands import pipeline
+from bluei.engine.commands import merge_cycle
+from bluei.engine.commands import helpers
 
 
 def test_fetch_open_prs_for_merge_sorts_oldest_first(monkeypatch, tmp_path):
@@ -164,7 +166,7 @@ def test_merge_failure_requires_pr_fix_detects_common_conflicts():
 
 
 def test_autonomous_review_gate_requires_merge_ready_artifact():
-    ok, reason = cli._autonomous_review_gate_passes(
+    ok, reason = helpers._autonomous_review_gate_passes(
         {
             "prs": {
                 "79": {
@@ -186,7 +188,7 @@ def test_autonomous_review_gate_requires_merge_ready_artifact():
 
 
 def test_autonomous_review_gate_allows_cautious_merge_states():
-    ok, reason = cli._autonomous_review_gate_passes(
+    ok, reason = helpers._autonomous_review_gate_passes(
         {
             "prs": {
                 "79": {
@@ -252,9 +254,9 @@ def test_merge_cycle_normalizes_legacy_unknown_merge_state_for_merge_ready_pr(
         cli, "parse_github_repo", lambda origin_url: ("qa-agent-test", "test-repo")
     )
     monkeypatch.setattr(cli, "repo_is_sandbox", lambda repo_slug: True)
-    monkeypatch.setattr(pipeline, "repo_is_sandbox", lambda repo_slug: True)
+    monkeypatch.setattr(merge_cycle, "repo_is_sandbox", lambda repo_slug: True)
     monkeypatch.setattr(
-        pipeline,
+        merge_cycle,
         "fetch_open_prs_for_merge",
         lambda repo_slug, cwd: [
             {
@@ -268,7 +270,7 @@ def test_merge_cycle_normalizes_legacy_unknown_merge_state_for_merge_ready_pr(
         ],
     )
     monkeypatch.setattr(
-        pipeline,
+        merge_cycle,
         "evaluate_pr_check_health",
         lambda *args, **kwargs: {
             "eligible": True,
@@ -277,7 +279,7 @@ def test_merge_cycle_normalizes_legacy_unknown_merge_state_for_merge_ready_pr(
         },
     )
     monkeypatch.setattr(
-        pipeline,
+        merge_cycle,
         "evaluate_pr_reviews",
         lambda *args, **kwargs: {
             "eligible": False,
@@ -286,7 +288,7 @@ def test_merge_cycle_normalizes_legacy_unknown_merge_state_for_merge_ready_pr(
         },
     )
     monkeypatch.setattr(
-        pipeline,
+        merge_cycle,
         "evaluate_pr_mergeability",
         lambda repo_slug, pr_number, cwd: {
             "eligible": False,
@@ -297,7 +299,7 @@ def test_merge_cycle_normalizes_legacy_unknown_merge_state_for_merge_ready_pr(
     )
     merge_calls = []
     monkeypatch.setattr(
-        pipeline,
+        merge_cycle,
         "merge_pr",
         lambda repo_slug, pr_number, dry_run, cwd: (
             merge_calls.append(pr_number) or (True, "merged")
@@ -307,7 +309,9 @@ def test_merge_cycle_normalizes_legacy_unknown_merge_state_for_merge_ready_pr(
         cli, "reconcile_open_workload", lambda **kwargs: (0, 1, {"reason": "test"})
     )
     monkeypatch.setattr(
-        pipeline, "reconcile_open_workload", lambda **kwargs: (0, 1, {"reason": "test"})
+        merge_cycle,
+        "reconcile_open_workload",
+        lambda **kwargs: (0, 1, {"reason": "test"}),
     )
     monkeypatch.setattr(escalation, "run_escalation_checks", lambda *args, **kwargs: [])
 
@@ -451,9 +455,9 @@ def test_merge_cycle_triages_conflict_then_merges_only_one_pr(monkeypatch, tmp_p
         cli, "parse_github_repo", lambda origin_url: ("qa-agent-test", "test-repo")
     )
     monkeypatch.setattr(cli, "repo_is_sandbox", lambda repo_slug: True)
-    monkeypatch.setattr(pipeline, "repo_is_sandbox", lambda repo_slug: True)
+    monkeypatch.setattr(merge_cycle, "repo_is_sandbox", lambda repo_slug: True)
     monkeypatch.setattr(
-        pipeline,
+        merge_cycle,
         "fetch_open_prs_for_merge",
         lambda repo_slug, cwd: [
             {
@@ -475,7 +479,7 @@ def test_merge_cycle_triages_conflict_then_merges_only_one_pr(monkeypatch, tmp_p
         ],
     )
     monkeypatch.setattr(
-        pipeline,
+        merge_cycle,
         "evaluate_pr_check_health",
         lambda *args, **kwargs: {
             "eligible": True,
@@ -484,7 +488,7 @@ def test_merge_cycle_triages_conflict_then_merges_only_one_pr(monkeypatch, tmp_p
         },
     )
     monkeypatch.setattr(
-        pipeline,
+        merge_cycle,
         "evaluate_pr_reviews",
         lambda repo_slug, pr_number, cwd: {
             1: {
@@ -500,7 +504,7 @@ def test_merge_cycle_triages_conflict_then_merges_only_one_pr(monkeypatch, tmp_p
         }[pr_number],
     )
     monkeypatch.setattr(
-        pipeline,
+        merge_cycle,
         "evaluate_pr_mergeability",
         lambda repo_slug, pr_number, cwd: {
             1: {
@@ -519,7 +523,7 @@ def test_merge_cycle_triages_conflict_then_merges_only_one_pr(monkeypatch, tmp_p
     )
     merge_calls = []
     monkeypatch.setattr(
-        pipeline,
+        merge_cycle,
         "merge_pr",
         lambda repo_slug, pr_number, dry_run, cwd: (
             merge_calls.append(pr_number) or (True, "merged")
@@ -529,7 +533,9 @@ def test_merge_cycle_triages_conflict_then_merges_only_one_pr(monkeypatch, tmp_p
         cli, "reconcile_open_workload", lambda **kwargs: (2, 1, {"reason": "test"})
     )
     monkeypatch.setattr(
-        pipeline, "reconcile_open_workload", lambda **kwargs: (2, 1, {"reason": "test"})
+        merge_cycle,
+        "reconcile_open_workload",
+        lambda **kwargs: (2, 1, {"reason": "test"}),
     )
     monkeypatch.setattr(escalation, "run_escalation_checks", lambda *args, **kwargs: [])
 
