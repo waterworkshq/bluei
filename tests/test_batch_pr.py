@@ -143,7 +143,7 @@ class TestVerifyFindingClosed:
         f = _mf(make_finding)
         log = tmp_path / "log.txt"
         with patch(
-            "bluei.engine.validation.verify_fix_closed", side_effect=RuntimeError("boom")
+            "bluei.engine.validation.verify_fix_closed", side_effect=OSError("boom")
         ):
             assert verify_finding_closed(tmp_path, f, log) is False
 
@@ -496,7 +496,7 @@ class TestLinkIssuesToBatchPr:
 
         with (
             patch("bluei.engine.orchestrator.set_issue_status"),
-            patch("bluei.engine.gh.gh_issue_comment", side_effect=RuntimeError("fail")),
+            patch("bluei.engine.gh.gh_issue_comment", side_effect=OSError("fail")),
         ):
             link_issues_to_batch_pr(
                 batch, 42, "https://pr.url", "org/repo", tmp_path, log

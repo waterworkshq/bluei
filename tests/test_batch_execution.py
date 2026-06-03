@@ -420,7 +420,7 @@ class TestVerifyFindingClosed:
         result = verify_finding_closed(Path("/tmp/wt"), finding, Path("/tmp/log"))
         assert result is True
 
-    @patch("bluei.engine.validation.verify_fix_closed", side_effect=Exception("boom"))
+    @patch("bluei.engine.validation.verify_fix_closed", side_effect=OSError("boom"))
     def test_returns_false_on_exception(self, mock_vfc, make_finding):
         """verify_finding_closed returns False on exception."""
         finding = make_finding()
@@ -709,9 +709,7 @@ class TestB9BranchNameUniqueness:
         for i in range(2):
             batch = make_batch_group(n_findings=2, rule="ruff-c408")
             with (
-                patch(
-                    "bluei.engine.git_ops.git_commit_all", return_value="committed"
-                ),
+                patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
                 patch("bluei.engine.git_ops.git_push_branch", return_value=True),
                 patch("bluei.engine.utils.run_no_capture"),
             ):

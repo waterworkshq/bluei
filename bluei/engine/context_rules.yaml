@@ -1,0 +1,467 @@
+- rule: ruff-c408
+  default_strategy: deterministic
+  contexts:
+  - file_patterns:
+    - '**/migrations/*.py'
+    framework: django
+    fix_strategy: skip
+    prompt_hint: Django migration files require dict() for runtime model resolution.
+      Do not rewrite.
+  - file_patterns:
+    - '**/test_*.py'
+    - '**/*_test.py'
+    - tests/**
+    framework: any
+    fix_strategy: deterministic_safe
+    prompt_hint: Using dict() literal in test files is safe.
+- rule: ruff-b904
+  default_strategy: llm_with_context
+  contexts:
+  - file_patterns:
+    - '**/middleware*.py'
+    framework: django
+    fix_strategy: llm_with_context
+    prompt_hint: In Django middleware, preserve exception chain semantics. Use 'raise
+      ... from e' but don't break existing error handling contracts.
+- rule: ruff-b007
+  default_strategy: llm_with_context
+  contexts:
+  - file_patterns:
+    - '**/fixtures*.py'
+    framework: any
+    fix_strategy: deterministic_safe
+    prompt_hint: Rename unused loop variable `i` to `_i`
+- rule: ruff-s311
+  default_strategy: skip
+  contexts:
+  - file_patterns:
+    - '**/test_*.py'
+    - '**/*_test.py'
+    - tests/**
+    - '**/fixtures*.py'
+    framework: any
+    fix_strategy: deterministic_safe
+    prompt_hint: Using pseudo-random generators in test files is acceptable for test
+      data generation.
+- rule: ruff-e501
+  default_strategy: deterministic_safe
+  contexts:
+  - file_patterns:
+    - '**/migrations/*.py'
+    framework: django
+    fix_strategy: skip
+    prompt_hint: Django migration files are auto-generated and line-wrapping them
+      makes diffs harder to read.
+  - file_patterns:
+    - '**/urls.py'
+    - '**/routing.py'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: URL routing files often have long URL patterns that are more readable
+      on one line.
+- rule: broad-except
+  default_strategy: llm_with_context
+  contexts:
+  - file_patterns:
+    - '**/taskqueue*.py'
+    - '**/celery*.py'
+    - '**/tasks/*.py'
+    - '**/workers/*.py'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Task queue workers often intentionally catch all exceptions for retry/logging.
+      Don't narrow.
+  - file_patterns:
+    - '**/middleware*.py'
+    framework: django
+    fix_strategy: skip
+    prompt_hint: Django middleware exception handlers catch broadly by design.
+  - file_patterns:
+    - '**/test_*.py'
+    - '**/*_test.py'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Broad except in tests is often intentional for asserting exception
+      behavior.
+- rule: perf-pop-front-loop
+  default_strategy: deterministic_safe
+  contexts:
+  - file_patterns:
+    - '**/migrations/*.py'
+    framework: django
+    fix_strategy: skip
+    prompt_hint: Migration data operations may use pop(0) intentionally for ordered
+      processing.
+- rule: perf-list-membership-loop
+  default_strategy: deterministic_safe
+  contexts:
+  - file_patterns:
+    - '**/test_*.py'
+    - '**/*_test.py'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Performance optimization in tests is rarely worth the cognitive overhead.
+- rule: trailing-whitespace
+  default_strategy: deterministic_safe
+  contexts:
+  - file_patterns:
+    - '**/*.md'
+    - '*.md'
+    - '**/*.rst'
+    - '*.rst'
+    - '**/*.txt'
+    - '*.txt'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Markdown and RST files may use trailing whitespace for line continuation
+      (two trailing spaces = line break).
+- rule: hardcoded-tmp-path
+  default_strategy: deterministic_safe
+  contexts:
+  - file_patterns:
+    - '**/test_*.py'
+    - '**/*_test.py'
+    - '**/conftest.py'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Test files often use /tmp intentionally for tempdir fixtures.
+  - file_patterns:
+    - '**/scripts/*.py'
+    - scripts/*.py
+    - '**/tools/*.py'
+    - tools/*.py
+    framework: any
+    fix_strategy: llm_with_context
+    prompt_hint: Scripts may use /tmp intentionally for ephemeral output. Verify before
+      replacing.
+- rule: type-explicit-any
+  default_strategy: llm_with_context
+  contexts:
+  - file_patterns:
+    - '**/*.d.ts'
+    - '**/types/**'
+    - '**/typings/**'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Declaration files may legitimately use 'any' for type interop boundaries.
+  - file_patterns:
+    - '**/test/**'
+    - '**/__tests__/**'
+    - '**/*.test.ts'
+    - '**/*.spec.ts'
+    framework: any
+    fix_strategy: deterministic_safe
+    prompt_hint: In test files, replace 'any' with 'unknown' or the expected test
+      type.
+  - file_patterns:
+    - '**/migrations/**'
+    - '**/scripts/**'
+    - scripts/**
+    - migrations/**
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Migration and script files often use 'any' for dynamic data shapes.
+  - file_patterns:
+    - '**/next.config.*'
+    - next.config.*
+    - '**/webpack.config.*'
+    - webpack.config.*
+    - '**/vite.config.*'
+    - vite.config.*
+    - '**/rollup.config.*'
+    - rollup.config.*
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Build configuration files have complex dynamic types; 'any' is often
+      intentional.
+- rule: type-missing-return
+  default_strategy: deterministic_safe
+  contexts:
+  - file_patterns:
+    - '**/pages/api/**'
+    - '**/app/api/**'
+    framework: nextjs
+    fix_strategy: llm_with_context
+    prompt_hint: Next.js API route handlers have specific return type expectations.
+      Infer from Response usage.
+  - file_patterns:
+    - '**/controllers/**'
+    - '**/handlers/**'
+    framework: express
+    fix_strategy: llm_with_context
+    prompt_hint: Express handlers return void (middleware pattern). Don't add return
+      types without checking.
+- rule: xo-max-lines
+  default_strategy: skip
+  contexts:
+  - file_patterns:
+    - '**/generated/**'
+    - generated/**
+    - '**/auto-generated/**'
+    - auto-generated/**
+    - '**/*.generated.ts'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Generated files should not be refactored. Exclude from max-lines
+      rule.
+  - file_patterns:
+    - '**/migrations/**'
+    - migrations/**
+    - '**/seeds/**'
+    - seeds/**
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Database migration and seed files are typically large by nature.
+      Skip.
+- rule: xo-complexity
+  default_strategy: skip
+  contexts:
+  - file_patterns:
+    - '**/generated/**'
+    - generated/**
+    - '**/auto-generated/**'
+    - auto-generated/**
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Generated code is not a refactoring target.
+  - file_patterns:
+    - '**/parsers/**'
+    - '**/serializers/**'
+    - '**/deserializers/**'
+    framework: any
+    fix_strategy: llm_with_context
+    prompt_hint: Parser/deserializer code is inherently complex. Consider extract-by-case
+      rather than general split.
+- rule: xo-no-warning-comments
+  default_strategy: deterministic_safe
+  contexts:
+  - file_patterns:
+    - '**/test/**'
+    - '**/__tests__/**'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: TODO/FIXME in test files are acceptable tracking markers.
+- rule: test-gap-missing-file
+  default_strategy: deterministic_safe
+  contexts:
+  - file_patterns:
+    - '**/migrations/**'
+    - migrations/**
+    - '**/alembic/**'
+    - alembic/**
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Database migrations don't need test files.
+  - file_patterns:
+    - '**/__pycache__/**'
+    - '**/node_modules/**'
+    - node_modules/**
+    - '**/.venv/**'
+    - .venv/**
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Generated/vendor directories don't need tests.
+- rule: test-coverage-line
+  default_strategy: llm_with_context
+  contexts:
+  - file_patterns:
+    - '**/migrations/**'
+    - migrations/**
+    - '**/alembic/**'
+    - alembic/**
+    - '**/generated/**'
+    - generated/**
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Generated/migration code should not get test coverage targets.
+  - file_patterns:
+    - '**/conftest.py'
+    - '**/fixtures/**'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Test infrastructure files don't need their own coverage.
+- rule: orders-tax-truncation
+  default_strategy: deterministic_safe
+  contexts:
+  - file_patterns:
+    - '**/test_*.py'
+    - '**/*_test.py'
+    - tests/**
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Test files may intentionally test truncation behavior. Do not change.
+- rule: debug-console-log
+  default_strategy: deterministic_safe
+  contexts:
+  - file_patterns:
+    - '**/*.test.ts'
+    - '**/*.spec.ts'
+    - '**/__tests__/**'
+    - '**/test/**'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Test files may use console.log for test output. Do not remove.
+  - file_patterns:
+    - '**/scripts/**'
+    - scripts/**
+    - '**/tools/**'
+    - tools/**
+    - '**/debug/**'
+    - debug/**
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Script/debug files may intentionally use console.log for output.
+- rule: go-empty-interface
+  default_strategy: deterministic_safe
+  contexts:
+  - file_patterns:
+    - '**/vendor/**'
+    - vendor/**
+    - '**/third_party/**'
+    - third_party/**
+    - '**/*.generated.go'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Generated/vendor Go files should not be modified.
+- rule: rust-unwrap-panic
+  default_strategy: llm_with_context
+  contexts:
+  - file_patterns:
+    - '**/test/**'
+    - test/**
+    - '**/*_test.rs'
+    - '**/tests/**'
+    - tests/**
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Rust test functions commonly use .unwrap() for simplicity.
+- rule: ts-unsafe-any-cast
+  default_strategy: llm_with_context
+  contexts:
+  - file_patterns:
+    - '**/*.d.ts'
+    - '**/types/**'
+    - '**/typings/**'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Declaration files use 'as any' for type interop boundaries. Do not
+      change.
+  - file_patterns:
+    - '**/*.test.ts'
+    - '**/*.spec.ts'
+    framework: any
+    fix_strategy: deterministic_safe
+    prompt_hint: In test files, replace 'as any' with 'as unknown' for safer typing.
+  - file_patterns:
+    - '**/*.config.*'
+    - '*.config.*'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Build config files use 'as any' for complex dynamic types.
+- rule: go-unchecked-error
+  default_strategy: llm_with_context
+  contexts:
+  - file_patterns:
+    - '**/*_test.go'
+    - '**/test/**'
+    - test/**
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Go test functions (TestXxx) often skip error checking for brevity.
+  - file_patterns:
+    - '**/vendor/**'
+    - vendor/**
+    - '**/*.generated.go'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Generated/vendor code should not be modified.
+- rule: ts-unhandled-promise
+  default_strategy: llm_with_context
+  contexts:
+  - file_patterns:
+    - '**/*.test.ts'
+    - '**/*.spec.ts'
+    - '**/__tests__/**'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Test files often intentionally leave promises unhandled for test
+      assertions.
+  - file_patterns:
+    - '**/*.config.*'
+    - '*.config.*'
+    - '**/webpack.config.*'
+    - webpack.config.*
+    - '**/vite.config.*'
+    - vite.config.*
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Build configuration files often use fire-and-forget async patterns.
+- rule: go-goroutine-unsafe
+  default_strategy: llm_with_context
+  contexts:
+  - file_patterns:
+    - '**/*_test.go'
+    - '**/test/**'
+    - test/**
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Test goroutines don't need production-grade panic recovery.
+  - file_patterns:
+    - '**/vendor/**'
+    - vendor/**
+    - '**/*.generated.go'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Generated/vendor code should not be modified.
+- rule: type-missing-param
+  default_strategy: llm_with_context
+  contexts:
+  - file_patterns:
+    - '**/*.d.ts'
+    - '**/types/**'
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Declaration files may intentionally omit parameter types for generic
+      signatures.
+  - file_patterns:
+    - '**/*.config.*'
+    - '*.config.*'
+    - '**/generated/**'
+    - generated/**
+    - '**/auto-generated/**'
+    - auto-generated/**
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Generated and config files should not be type-annotated.
+- rule: type-untyped-import
+  default_strategy: llm_with_context
+  contexts:
+  - file_patterns:
+    - '**/*.config.*'
+    - '*.config.*'
+    - '**/generated/**'
+    - generated/**
+    - '**/scripts/**'
+    - scripts/**
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Config, generated, and script files often import untyped modules
+      intentionally.
+- rule: rust-expect-vague
+  default_strategy: llm_with_context
+  contexts:
+  - file_patterns:
+    - '**/generated/**'
+    - generated/**
+    - '**/auto-generated/**'
+    - auto-generated/**
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Generated code should not be modified.
+  - file_patterns:
+    - '**/*_test.rs'
+    - '**/tests/**'
+    - tests/**
+    framework: any
+    fix_strategy: skip
+    prompt_hint: Test code often uses .expect("test") intentionally.

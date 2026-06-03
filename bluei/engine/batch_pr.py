@@ -10,6 +10,7 @@ from __future__ import annotations
 import fnmatch
 import logging
 import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -406,10 +407,12 @@ def verify_finding_closed(
 
     try:
         return _verify_fix_closed(worktree_path, finding, log_file)
-    except Exception:
+    except (subprocess.CalledProcessError, OSError) as exc:
         logger.debug(
-            "verify_finding_closed: lifecycle verify failed for %s, assuming open",
+            "verify_finding_closed: lifecycle verify failed for %s: %s %s",
             finding.finding_id,
+            type(exc).__name__,
+            exc,
         )
         return False
 
@@ -554,7 +557,7 @@ def _apply_single_fix(
                     error="contextual-verification-failed",
                     fix_method="contextual",
                 )
-        except Exception as exc:
+        except (subprocess.CalledProcessError, OSError) as exc:
             _append_text(
                 log_file,
                 f"batch-fix: contextual fallback exception for {finding.finding_id[:8]}: {exc}",
@@ -591,7 +594,7 @@ def _apply_single_fix(
             capture_output=True,
         )
         before_commit = before_result.stdout.strip()
-    except Exception:
+    except (subprocess.CalledProcessError, OSError):
         before_commit = None
 
     try:
@@ -605,7 +608,7 @@ def _apply_single_fix(
             max_loc_diff=args.max_loc_diff,
             log_file=log_file,
         )
-    except Exception as exc:
+    except (subprocess.CalledProcessError, OSError, ValueError) as exc:
         _append_text(
             log_file, f"batch-fix: claude exception for {finding.finding_id[:8]}: {exc}"
         )
@@ -638,7 +641,7 @@ def _apply_single_fix(
             )
             after_commit = after_result.stdout.strip()
             worktree_changed = after_commit != before_commit
-        except Exception:
+        except (subprocess.CalledProcessError, OSError):
             logger.debug("Failed to check worktree commit status")
 
     # Fallback: OpenCode (and some other engines) edit files in-place without
@@ -653,7 +656,7 @@ def _apply_single_fix(
             )
             if diff_result.stdout and diff_result.stdout.strip():
                 worktree_changed = True
-        except Exception:
+        except (subprocess.CalledProcessError, OSError):
             logger.debug("Failed to check worktree diff status")
 
     if rc == 0 and not tools_blocked and worktree_changed:
@@ -776,7 +779,7 @@ def link_issues_to_batch_pr(
                     f"This finding has been batched into PR #{pr_number}: {pr_url}",
                     cwd=repo_path,
                 )
-            except Exception as exc:
+            except (subprocess.CalledProcessError, OSError) as exc:
                 _append_text(
                     log_file,
                     f"batch-link: failed to comment on issue #{issue_number}: {exc}",
@@ -808,7 +811,7 @@ def _hydrate_batch_worktree_deps(
             _append_text(
                 log_file, f"worktree-deps: linked {dirname} from repo into worktree"
             )
-        except Exception as exc:
+        except OSError as exc:
             _append_text(log_file, f"worktree-deps: failed to link {dirname}: {exc}")
 
 
@@ -1189,12 +1192,11 @@ def recover_interrupted_batch(
                     cwd=worktree_root,
                 )
                 run_no_capture(["git", "worktree", "prune"], cwd=worktree_root)
-            except Exception:
+            except (subprocess.CalledProcessError, OSError):
                 logging.debug(
                     "worktree force-remove failed during batch recovery for %s",
                     worktree_path,
                 )
-                pass
     else:
         # No worktree → abort
         new_status = BatchStatus.ABORTED.value
