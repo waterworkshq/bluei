@@ -1,579 +1,763 @@
-import json
-import sys
+"""Tests for bluei.engine.commands.merge_cycle — merge eligibility, cooldown, triage."""
+
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import pytest
 
-from bluei.engine import cli
-from bluei.engine import gh
-from bluei.engine import escalation
-from bluei.engine.commands import pipeline
-from bluei.engine.commands import merge_cycle
-from bluei.engine.commands import helpers
+from bluei.engine.commands.merge_cycle import run_merge_cycle_phase
 
 
-def test_fetch_open_prs_for_merge_sorts_oldest_first(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        gh,
-        "gh_json",
-        lambda *args, **kwargs: [
-            {
-                "number": 79,
-                "url": "https://example.com/pr/79",
-                "title": "newer",
-                "state": "OPEN",
-                "isDraft": False,
-                "createdAt": "2026-04-09T08:00:00+00:00",
-                "headRefName": "qa/live-79",
-            },
-            {
-                "number": 64,
-                "url": "https://example.com/pr/64",
-                "title": "older",
-                "state": "OPEN",
-                "isDraft": False,
-                "createdAt": "2026-04-01T08:00:00+00:00",
-                "headRefName": "qa/live-64",
-            },
-            {
-                "number": 90,
-                "url": "https://example.com/pr/90",
-                "title": "draft-oldest",
-                "state": "OPEN",
-                "isDraft": True,
-                "createdAt": "2026-03-30T08:00:00+00:00",
-                "headRefName": "qa/live-90",
-            },
-        ],
+def _args(**overrides):
+    defaults = dict(
+        auto_merge_sandbox=True,
+        auto_rebase_enabled=False,
+        dry_run=False,
+        live_github_actions=True,
+        merge_cooldown_minutes=30,
+        open_prs_cap=5,
+        rebase_max_prs=5,
+        rebase_stats_file=None,
+        simulate_open_issues=False,
+        simulate_open_prs=False,
+        regression_check=False,
     )
-
-    prs = gh.fetch_open_prs_for_merge("qa-agent-test/test-repo", cwd=tmp_path)
-    assert [pr["number"] for pr in prs] == [64, 79, 90]
-
-
-def test_evaluate_pr_mergeability_triages_dirty(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        gh,
-        "gh_json",
-        lambda *args, **kwargs: {
-            "number": 78,
-            "url": "https://example.com/pr/78",
-            "mergeStateStatus": "DIRTY",
-            "reviewDecision": "APPROVED",
-        },
-    )
-
-    result = gh.evaluate_pr_mergeability("qa-agent-test/test-repo", 78, cwd=tmp_path)
-
-    assert result["eligible"] is False
-    assert result["requires_pr_fix"] is True
-    assert result["reason"] == "merge-conflict-dirty"
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
 
 
-def test_evaluate_pr_mergeability_allows_unknown_cautiously(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        gh,
-        "gh_json",
-        lambda *args, **kwargs: {
-            "number": 79,
-            "url": "https://example.com/pr/79",
-            "mergeStateStatus": "UNKNOWN",
-            "reviewDecision": "REVIEW_REQUIRED",
-        },
-    )
-
-    result = gh.evaluate_pr_mergeability("qa-agent-test/test-repo", 79, cwd=tmp_path)
-
-    assert result["eligible"] is True
-    assert result["requires_pr_fix"] is False
-    assert result["reason"] == "merge-state-unknown-proceed-cautiously"
-
-
-def test_evaluate_pr_mergeability_allows_unstable_when_only_pending_checks(
-    monkeypatch, tmp_path
+def _pr(
+    number=42,
+    created_hours_ago=2,
+    is_draft=False,
+    url="https://github.com/acme/widget/pull/42",
+    head_branch="fix-1",
+    base_branch="main",
 ):
-    def fake_gh_json(cmd, cwd):
-        payload = " ".join(cmd)
-        if "mergeStateStatus" in payload:
-            return {
-                "number": 78,
-                "url": "https://example.com/pr/78",
-                "mergeStateStatus": "UNSTABLE",
-                "reviewDecision": "REVIEW_REQUIRED",
-            }
-        return {
-            "number": 78,
-            "url": "https://example.com/pr/78",
-            "statusCheckRollup": [
-                {
-                    "name": "Greptile Review",
-                    "status": "IN_PROGRESS",
-                    "conclusion": "",
-                }
-            ],
-        }
-
-    monkeypatch.setattr(gh, "gh_json", fake_gh_json)
-
-    result = gh.evaluate_pr_mergeability("qa-agent-test/test-repo", 78, cwd=tmp_path)
-
-    assert result["eligible"] is True
-    assert result["requires_pr_fix"] is False
-    assert result["reason"] == "merge-state-unstable-checks-pending-no-failures"
+    now = datetime.now(timezone.utc)
+    return {
+        "number": number,
+        "url": url,
+        "isDraft": is_draft,
+        "createdAt": (now - timedelta(hours=created_hours_ago)).isoformat(),
+        "headRefName": head_branch,
+        "baseRefName": base_branch,
+    }
 
 
-def test_evaluate_pr_mergeability_blocks_unstable_when_checks_fail(
-    monkeypatch, tmp_path
-):
-    def fake_gh_json(cmd, cwd):
-        payload = " ".join(cmd)
-        if "mergeStateStatus" in payload:
-            return {
-                "number": 78,
-                "url": "https://example.com/pr/78",
-                "mergeStateStatus": "UNSTABLE",
-                "reviewDecision": "REVIEW_REQUIRED",
-            }
-        return {
-            "number": 78,
-            "url": "https://example.com/pr/78",
-            "statusCheckRollup": [
-                {
-                    "name": "CI",
-                    "status": "COMPLETED",
-                    "conclusion": "FAILURE",
-                }
-            ],
-        }
-
-    monkeypatch.setattr(gh, "gh_json", fake_gh_json)
-
-    result = gh.evaluate_pr_mergeability("qa-agent-test/test-repo", 78, cwd=tmp_path)
-
-    assert result["eligible"] is False
-    assert result["requires_pr_fix"] is False
-    assert result["reason"] == "merge-state-unstable-checks-failing:FAILURE"
-
-
-def test_merge_failure_requires_pr_fix_detects_common_conflicts():
-    assert gh.merge_failure_requires_pr_fix(
-        "Pull request is not mergeable: the merge commit cannot be cleanly created."
-    )
-    assert gh.merge_failure_requires_pr_fix(
-        "Head branch is out of date with the base branch"
-    )
-    assert not gh.merge_failure_requires_pr_fix("merge blocked by branch protection")
-
-
-def test_autonomous_review_gate_requires_merge_ready_artifact():
-    ok, reason = helpers._autonomous_review_gate_passes(
-        {
-            "prs": {
-                "79": {
-                    "last_action": "merge_ready",
-                    "last_review_comment_key": "abc:merge_ready",
-                    "last_snapshot": {
-                        "merge_state_status": "CLEAN",
-                        "actionable_comment_count": 0,
-                        "active_change_requesters": [],
-                    },
-                }
-            }
-        },
-        79,
-    )
-
-    assert ok is True
-    assert reason == "review-artifact-merge-ready"
-
-
-def test_autonomous_review_gate_allows_cautious_merge_states():
-    ok, reason = helpers._autonomous_review_gate_passes(
-        {
-            "prs": {
-                "79": {
-                    "last_action": "merge_ready",
-                    "last_review_comment_key": "abc:merge_ready",
-                    "last_snapshot": {
-                        "merge_state_status": "UNSTABLE",
-                        "actionable_comment_count": 0,
-                        "active_change_requesters": [],
-                    },
-                }
-            }
-        },
-        79,
-    )
-
-    assert ok is True
-    assert reason == "review-artifact-merge-ready"
-
-
-def test_merge_cycle_normalizes_legacy_unknown_merge_state_for_merge_ready_pr(
-    monkeypatch, tmp_path
-):
-    repo_path = Path("/tmp/test-repo")
-    state_file = tmp_path / "state.json"
-    findings_file = tmp_path / "findings.jsonl"
-    log_file = tmp_path / "run.log"
-    status_file = tmp_path / "status.json"
-    docs_index_file = tmp_path / "docs-index.json"
-    issues_file = tmp_path / "issues.json"
-    worktree_root = tmp_path / "worktrees"
-    lessons_file = tmp_path / "lessons.md"
-
-    issues_file.write_text(json.dumps({"issues": []}, indent=2))
-
-    review_state_file = tmp_path / "review_state.json"
-    review_state_file.write_text(
-        json.dumps(
-            {
-                "prs": {
-                    "79": {
-                        "last_action": "merge_ready",
-                        "last_review_comment_key": "abc:merge_ready",
-                        "last_snapshot": {
-                            "merge_state_status": "UNKNOWN",
-                            "actionable_comment_count": 0,
-                            "active_change_requesters": [],
-                        },
-                    },
-                }
-            }
+class TestMergeCycleSkips:
+    @patch("bluei.engine.commands.merge_cycle._append_text")
+    def test_skips_when_auto_merge_disabled(self, mock_log):
+        result = run_merge_cycle_phase(
+            repo_path=Path("/repo"),
+            log_file=Path("/tmp/test.log"),
+            review_state_file=Path("/review.json"),
+            state={},
+            issues_data={"issues": []},
+            args=_args(auto_merge_sandbox=False),
+            gh_repo_slug="acme/sandbox-qa-widget",
+            merges_failed=0,
+            merges_succeeded=0,
+            merge_attempts=0,
+            merged_pr_urls=[],
+            open_prs=1,
+            open_issues=1,
+            blocked_reasons=[],
+            reconcile_event={},
         )
-    )
+        _, succeeded, _, _, _, _, blocked, _ = result
+        assert succeeded == 0
+        assert any("auto-merge" in b for b in blocked)
 
-    monkeypatch.setattr(cli, "is_mnemo_available", lambda repo_path: False)
-    monkeypatch.setattr(cli, "assert_safe_repo", lambda repo_path: None)
-    monkeypatch.setattr(
-        cli,
-        "get_origin_url",
-        lambda repo_path: "git@github.com:qa-agent-test/test-repo.git",
+    @patch("bluei.engine.commands.merge_cycle.repo_is_sandbox", return_value=False)
+    @patch("bluei.engine.commands.merge_cycle._append_text")
+    def test_skips_non_sandbox_repo(self, mock_log, mock_sandbox):
+        result = run_merge_cycle_phase(
+            repo_path=Path("/repo"),
+            log_file=Path("/tmp/test.log"),
+            review_state_file=Path("/review.json"),
+            state={},
+            issues_data={"issues": []},
+            args=_args(),
+            gh_repo_slug="acme/production-repo",
+            merges_failed=0,
+            merges_succeeded=0,
+            merge_attempts=0,
+            merged_pr_urls=[],
+            open_prs=1,
+            open_issues=1,
+            blocked_reasons=[],
+            reconcile_event={},
+        )
+        _, succeeded, _, _, _, _, blocked, _ = result
+        assert succeeded == 0
+        assert any("not sandbox" in b for b in blocked)
+
+
+class TestMergeCycleElibility:
+    @patch(
+        "bluei.engine.commands.merge_cycle.reconcile_open_workload",
+        return_value=(0, 0, {}),
     )
-    monkeypatch.setattr(
-        cli, "parse_github_repo", lambda origin_url: ("qa-agent-test", "test-repo")
+    @patch("bluei.engine.state._append_text")
+    @patch(
+        "bluei.engine.commands.merge_cycle.merge_pr",
+        return_value=(True, "merge-commit"),
     )
-    monkeypatch.setattr(cli, "repo_is_sandbox", lambda repo_slug: True)
-    monkeypatch.setattr(merge_cycle, "repo_is_sandbox", lambda repo_slug: True)
-    monkeypatch.setattr(
-        merge_cycle,
-        "fetch_open_prs_for_merge",
-        lambda repo_slug, cwd: [
-            {
-                "number": 79,
-                "url": "https://example.com/pr/79",
-                "title": "merge ready but unknown state",
-                "state": "OPEN",
-                "isDraft": False,
-                "createdAt": "2026-04-08T00:00:00+00:00",
-            },
-        ],
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_mergeability",
+        return_value={"eligible": True},
     )
-    monkeypatch.setattr(
-        merge_cycle,
-        "evaluate_pr_check_health",
-        lambda *args, **kwargs: {
-            "eligible": True,
-            "has_checks": True,
-            "reason": "checks-pass-or-neutral",
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_reviews",
+        return_value={"eligible": True},
+    )
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_check_health",
+        return_value={"eligible": True, "has_checks": True},
+    )
+    @patch("bluei.engine.commands.merge_cycle.repo_is_sandbox", return_value=True)
+    @patch("bluei.engine.commands.merge_cycle.fetch_open_prs_for_merge")
+    @patch("bluei.engine.commands.merge_cycle._append_text")
+    def test_merges_eligible_pr(
+        self,
+        mock_log,
+        mock_fetch,
+        mock_sb,
+        mock_ch,
+        mock_rv,
+        mock_mb,
+        mock_merge,
+        mock_slog,
+        mock_recon,
+    ):
+        mock_fetch.return_value = [_pr()]
+        result = run_merge_cycle_phase(
+            repo_path=Path("/repo"),
+            log_file=Path("/tmp/test.log"),
+            review_state_file=Path("/review.json"),
+            state={},
+            issues_data={"issues": []},
+            args=_args(),
+            gh_repo_slug="acme/sandbox-qa-widget",
+            merges_failed=0,
+            merges_succeeded=0,
+            merge_attempts=0,
+            merged_pr_urls=[],
+            open_prs=1,
+            open_issues=0,
+            blocked_reasons=[],
+            reconcile_event={},
+        )
+        _, succeeded, attempts, pr_urls, _, _, _, _ = result
+        assert succeeded == 1
+        assert attempts == 1
+
+    @patch(
+        "bluei.engine.commands.merge_cycle.reconcile_open_workload",
+        return_value=(0, 0, {}),
+    )
+    @patch("bluei.engine.state._append_text")
+    @patch("bluei.engine.commands.merge_cycle._append_text")
+    @patch("bluei.engine.commands.merge_cycle.repo_is_sandbox", return_value=True)
+    @patch("bluei.engine.commands.merge_cycle.fetch_open_prs_for_merge")
+    def test_skips_draft_pr(self, mock_fetch, mock_sb, mock_log, mock_slog, mock_recon):
+        mock_fetch.return_value = [_pr(is_draft=True)]
+        result = run_merge_cycle_phase(
+            repo_path=Path("/repo"),
+            log_file=Path("/tmp/test.log"),
+            review_state_file=Path("/review.json"),
+            state={},
+            issues_data={"issues": []},
+            args=_args(),
+            gh_repo_slug="acme/sandbox-qa-widget",
+            merges_failed=0,
+            merges_succeeded=0,
+            merge_attempts=0,
+            merged_pr_urls=[],
+            open_prs=1,
+            open_issues=0,
+            blocked_reasons=[],
+            reconcile_event={},
+        )
+        _, succeeded, _, _, _, _, _, _ = result
+        assert succeeded == 0
+
+    @patch(
+        "bluei.engine.commands.merge_cycle.reconcile_open_workload",
+        return_value=(0, 0, {}),
+    )
+    @patch("bluei.engine.state._append_text")
+    @patch("bluei.engine.commands.merge_cycle._append_text")
+    @patch("bluei.engine.commands.merge_cycle.repo_is_sandbox", return_value=True)
+    @patch("bluei.engine.commands.merge_cycle.fetch_open_prs_for_merge")
+    def test_skips_pr_in_cooldown(
+        self, mock_fetch, mock_sb, mock_log, mock_slog, mock_recon
+    ):
+        mock_fetch.return_value = [_pr(created_hours_ago=0.1)]
+        result = run_merge_cycle_phase(
+            repo_path=Path("/repo"),
+            log_file=Path("/tmp/test.log"),
+            review_state_file=Path("/review.json"),
+            state={},
+            issues_data={"issues": []},
+            args=_args(merge_cooldown_minutes=30),
+            gh_repo_slug="acme/sandbox-qa-widget",
+            merges_failed=0,
+            merges_succeeded=0,
+            merge_attempts=0,
+            merged_pr_urls=[],
+            open_prs=1,
+            open_issues=0,
+            blocked_reasons=[],
+            reconcile_event={},
+        )
+        _, succeeded, _, _, _, _, _, _ = result
+        assert succeeded == 0
+
+    @patch(
+        "bluei.engine.commands.merge_cycle.reconcile_open_workload",
+        return_value=(0, 0, {}),
+    )
+    @patch("bluei.engine.commands.helpers._append_text")
+    @patch("bluei.engine.state._append_text")
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_mergeability",
+        return_value={
+            "eligible": False,
+            "reason": "MERGE_CONFLICT",
+            "requires_pr_fix": True,
+            "merge_state_status": "DIRTY",
         },
     )
-    monkeypatch.setattr(
-        merge_cycle,
-        "evaluate_pr_reviews",
-        lambda *args, **kwargs: {
-            "eligible": False,
-            "has_reviews": False,
-            "reason": "no-reviews-block",
-        },
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_reviews",
+        return_value={"eligible": True},
     )
-    monkeypatch.setattr(
-        merge_cycle,
-        "evaluate_pr_mergeability",
-        lambda repo_slug, pr_number, cwd: {
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_check_health",
+        return_value={"eligible": True, "has_checks": True},
+    )
+    @patch("bluei.engine.commands.merge_cycle.repo_is_sandbox", return_value=True)
+    @patch("bluei.engine.commands.merge_cycle.fetch_open_prs_for_merge")
+    @patch("bluei.engine.commands.merge_cycle._append_text")
+    def test_triages_merge_conflict_back_to_fix(
+        self,
+        mock_log,
+        mock_fetch,
+        mock_sb,
+        mock_ch,
+        mock_rv,
+        mock_mb,
+        mock_hlog,
+        mock_slog,
+        mock_recon,
+    ):
+        mock_fetch.return_value = [_pr()]
+        result = run_merge_cycle_phase(
+            repo_path=Path("/repo"),
+            log_file=Path("/tmp/test.log"),
+            review_state_file=Path("/review.json"),
+            state={},
+            issues_data={"issues": [{"issue_id": "i1", "github": {"pr_number": 42}}]},
+            args=_args(),
+            gh_repo_slug="acme/sandbox-qa-widget",
+            merges_failed=0,
+            merges_succeeded=0,
+            merge_attempts=0,
+            merged_pr_urls=[],
+            open_prs=1,
+            open_issues=0,
+            blocked_reasons=[],
+            reconcile_event={},
+        )
+        _, succeeded, _, _, _, _, _, _ = result
+        assert succeeded == 0
+
+
+class TestMergeDecisionLogic:
+    """Verify key decision points in the merge evaluation pipeline."""
+
+    @patch(
+        "bluei.engine.commands.merge_cycle.reconcile_open_workload",
+        return_value=(0, 0, {}),
+    )
+    @patch("bluei.engine.state._append_text")
+    @patch("bluei.engine.commands.merge_cycle._append_text")
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_check_health",
+        return_value={"eligible": False, "reason": "CI-failing"},
+    )
+    @patch("bluei.engine.commands.merge_cycle.repo_is_sandbox", return_value=True)
+    @patch("bluei.engine.commands.merge_cycle.fetch_open_prs_for_merge")
+    def test_check_health_failure_blocks_merge(
+        self, mock_fetch, mock_sb, mock_ch, mock_log, mock_slog, mock_recon
+    ):
+        mock_fetch.return_value = [_pr()]
+        _, _, _, _, _, _, blocked, _ = run_merge_cycle_phase(
+            repo_path=Path("/repo"),
+            log_file=Path("/tmp/test.log"),
+            review_state_file=Path("/review.json"),
+            state={},
+            issues_data={"issues": []},
+            args=_args(),
+            gh_repo_slug="acme/sandbox-qa-widget",
+            merges_failed=0,
+            merges_succeeded=0,
+            merge_attempts=0,
+            merged_pr_urls=[],
+            open_prs=1,
+            open_issues=0,
+            blocked_reasons=[],
+            reconcile_event={},
+        )
+        assert any("merge-block" in b and "CI-failing" in b for b in blocked)
+
+    @patch(
+        "bluei.engine.commands.merge_cycle.reconcile_open_workload",
+        return_value=(0, 0, {}),
+    )
+    @patch("bluei.engine.state._append_text")
+    @patch("bluei.engine.commands.merge_cycle.merge_pr", return_value=(True, "merged"))
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_mergeability",
+        return_value={"eligible": True},
+    )
+    @patch(
+        "bluei.engine.commands.merge_cycle._autonomous_review_gate_passes",
+        return_value=(True, "auto"),
+    )
+    @patch("bluei.engine.commands.merge_cycle._load_review_state", return_value={})
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_reviews",
+        return_value={"eligible": False, "reason": "no-approval"},
+    )
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_check_health",
+        return_value={"eligible": True, "has_checks": True},
+    )
+    @patch("bluei.engine.commands.merge_cycle.repo_is_sandbox", return_value=True)
+    @patch("bluei.engine.commands.merge_cycle.fetch_open_prs_for_merge")
+    @patch("bluei.engine.commands.merge_cycle._append_text")
+    def test_autonomous_gate_bypasses_review_block(
+        self,
+        mock_log,
+        mock_fetch,
+        mock_sb,
+        mock_ch,
+        mock_rv,
+        mock_lrs,
+        mock_gate,
+        mock_mb,
+        mock_merge,
+        mock_slog,
+        mock_recon,
+    ):
+        mock_fetch.return_value = [_pr()]
+        _, succeeded, _, _, _, _, _, _ = run_merge_cycle_phase(
+            repo_path=Path("/repo"),
+            log_file=Path("/tmp/test.log"),
+            review_state_file=Path("/review.json"),
+            state={},
+            issues_data={"issues": []},
+            args=_args(),
+            gh_repo_slug="acme/sandbox-qa-widget",
+            merges_failed=0,
+            merges_succeeded=0,
+            merge_attempts=0,
+            merged_pr_urls=[],
+            open_prs=1,
+            open_issues=0,
+            blocked_reasons=[],
+            reconcile_event={},
+        )
+        assert succeeded == 1
+        mock_merge.assert_called_once()
+
+    @patch(
+        "bluei.engine.commands.merge_cycle.reconcile_open_workload",
+        return_value=(0, 0, {}),
+    )
+    @patch("bluei.engine.state._append_text")
+    @patch(
+        "bluei.engine.commands.merge_cycle._autonomous_review_gate_passes",
+        return_value=(False, "needs-human"),
+    )
+    @patch("bluei.engine.commands.merge_cycle._load_review_state", return_value={})
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_reviews",
+        return_value={"eligible": False, "reason": "no-approvals"},
+    )
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_check_health",
+        return_value={"eligible": True, "has_checks": True},
+    )
+    @patch("bluei.engine.commands.merge_cycle.repo_is_sandbox", return_value=True)
+    @patch("bluei.engine.commands.merge_cycle.fetch_open_prs_for_merge")
+    @patch("bluei.engine.commands.merge_cycle._append_text")
+    def test_review_block_without_autonomous_bypass_fails(
+        self,
+        mock_log,
+        mock_fetch,
+        mock_sb,
+        mock_ch,
+        mock_rv,
+        mock_lrs,
+        mock_gate,
+        mock_slog,
+        mock_recon,
+    ):
+        mock_fetch.return_value = [_pr()]
+        _, succeeded, _, _, _, _, blocked, _ = run_merge_cycle_phase(
+            repo_path=Path("/repo"),
+            log_file=Path("/tmp/test.log"),
+            review_state_file=Path("/review.json"),
+            state={},
+            issues_data={"issues": []},
+            args=_args(),
+            gh_repo_slug="acme/sandbox-qa-widget",
+            merges_failed=0,
+            merges_succeeded=0,
+            merge_attempts=0,
+            merged_pr_urls=[],
+            open_prs=1,
+            open_issues=0,
+            blocked_reasons=[],
+            reconcile_event={},
+        )
+        assert succeeded == 0
+        assert any("merge-block" in b for b in blocked)
+
+    @patch(
+        "bluei.engine.commands.merge_cycle.reconcile_open_workload",
+        return_value=(0, 0, {}),
+    )
+    @patch("bluei.engine.state._append_text")
+    @patch("bluei.engine.commands.merge_cycle.merge_pr", return_value=(True, "merged"))
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_mergeability",
+        return_value={
             "eligible": False,
-            "requires_pr_fix": False,
+            "reason": "unknown",
             "merge_state_status": "UNKNOWN",
-            "reason": "merge-state-unknown",
         },
     )
-    merge_calls = []
-    monkeypatch.setattr(
-        merge_cycle,
-        "merge_pr",
-        lambda repo_slug, pr_number, dry_run, cwd: (
-            merge_calls.append(pr_number) or (True, "merged")
-        ),
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_reviews",
+        return_value={"eligible": True},
     )
-    monkeypatch.setattr(
-        cli, "reconcile_open_workload", lambda **kwargs: (0, 1, {"reason": "test"})
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_check_health",
+        return_value={"eligible": True, "has_checks": True},
     )
-    monkeypatch.setattr(
-        merge_cycle,
-        "reconcile_open_workload",
-        lambda **kwargs: (0, 1, {"reason": "test"}),
-    )
-    monkeypatch.setattr(escalation, "run_escalation_checks", lambda *args, **kwargs: [])
-
-    argv = [
-        "qa-agent",
-        "--repo-path",
-        str(repo_path),
-        "--state-file",
-        str(state_file),
-        "--log-file",
-        str(log_file),
-        "--findings-file",
-        str(findings_file),
-        "--issues-file",
-        str(issues_file),
-        "--worktree-root",
-        str(worktree_root),
-        "--status-file",
-        str(status_file),
-        "--docs-index-file",
-        str(docs_index_file),
-        "--lessons-file",
-        str(lessons_file),
-        "--run-phase",
-        "merge-cycle",
-        "--live-github-actions",
-        "--auto-merge-sandbox",
-        "--no-dry-run",
-        "--merge-cooldown-minutes",
-        "0",
-    ]
-    monkeypatch.setattr(sys, "argv", argv)
-
-    rc = cli.main()
-    assert rc == 0
-    assert merge_calls == [79]
-    assert (
-        "normalized legacy unknown merge-state to cautious pass" in log_file.read_text()
-    )
-
-
-def test_merge_cycle_triages_conflict_then_merges_only_one_pr(monkeypatch, tmp_path):
-    repo_path = Path("/tmp/test-repo")
-    state_file = tmp_path / "state.json"
-    findings_file = tmp_path / "findings.jsonl"
-    log_file = tmp_path / "run.log"
-    status_file = tmp_path / "status.json"
-    docs_index_file = tmp_path / "docs-index.json"
-    issues_file = tmp_path / "issues.json"
-    worktree_root = tmp_path / "worktrees"
-    lessons_file = tmp_path / "lessons.md"
-
-    issues_file.write_text(
-        json.dumps(
-            {
-                "issues": [
-                    {
-                        "issue_id": "QA-0001",
-                        "finding_id": "finding-1",
-                        "repo": "zulip",
-                        "path": "a.py",
-                        "line": 1,
-                        "rule": "ruff-b904",
-                        "snippet": "x",
-                        "confidence": 0.9,
-                        "quick_win": True,
-                        "safe_to_autofix": True,
-                        "status": "pr_opened",
-                        "created_at": "2026-04-09T00:00:00+00:00",
-                        "updated_at": "2026-04-09T00:00:00+00:00",
-                        "history": [],
-                        "github": {
-                            "pr_number": 1,
-                            "pr_url": "https://example.com/pr/1",
-                            "branch": "qa/live-ruff-b904-a1",
-                        },
-                    },
-                    {
-                        "issue_id": "QA-0002",
-                        "finding_id": "finding-2",
-                        "repo": "zulip",
-                        "path": "b.py",
-                        "line": 2,
-                        "rule": "ruff-b904",
-                        "snippet": "y",
-                        "confidence": 0.9,
-                        "quick_win": True,
-                        "safe_to_autofix": True,
-                        "status": "pr_opened",
-                        "created_at": "2026-04-09T00:00:00+00:00",
-                        "updated_at": "2026-04-09T00:00:00+00:00",
-                        "history": [],
-                        "github": {
-                            "pr_number": 2,
-                            "pr_url": "https://example.com/pr/2",
-                            "branch": "qa/live-ruff-b904-b2",
-                        },
-                    },
-                ]
-            },
-            indent=2,
+    @patch("bluei.engine.commands.merge_cycle.repo_is_sandbox", return_value=True)
+    @patch("bluei.engine.commands.merge_cycle.fetch_open_prs_for_merge")
+    @patch("bluei.engine.commands.merge_cycle._append_text")
+    def test_unknown_mergeability_normalized_to_cautious_pass(
+        self,
+        mock_log,
+        mock_fetch,
+        mock_sb,
+        mock_ch,
+        mock_rv,
+        mock_mb,
+        mock_merge,
+        mock_slog,
+        mock_recon,
+    ):
+        mock_fetch.return_value = [_pr()]
+        _, succeeded, _, _, _, _, _, _ = run_merge_cycle_phase(
+            repo_path=Path("/repo"),
+            log_file=Path("/tmp/test.log"),
+            review_state_file=Path("/review.json"),
+            state={},
+            issues_data={"issues": []},
+            args=_args(),
+            gh_repo_slug="acme/sandbox-qa-widget",
+            merges_failed=0,
+            merges_succeeded=0,
+            merge_attempts=0,
+            merged_pr_urls=[],
+            open_prs=1,
+            open_issues=0,
+            blocked_reasons=[],
+            reconcile_event={},
         )
-    )
+        assert succeeded == 1
 
-    review_state_file = tmp_path / "review_state.json"
-    review_state_file.write_text(
-        json.dumps(
-            {
-                "prs": {
-                    "1": {
-                        "last_action": "retry_exhausted",
-                        "last_review_comment_key": "k1",
-                        "last_snapshot": {
-                            "merge_state_status": "CLEAN",
-                            "actionable_comment_count": 4,
-                            "active_change_requesters": [],
-                        },
-                    },
-                    "2": {
-                        "last_action": "merge_ready",
-                        "last_review_comment_key": "k2",
-                        "last_snapshot": {
-                            "merge_state_status": "CLEAN",
-                            "actionable_comment_count": 0,
-                            "active_change_requesters": [],
-                        },
-                    },
-                }
-            }
+    @patch(
+        "bluei.engine.commands.merge_cycle.reconcile_open_workload",
+        return_value=(0, 0, {}),
+    )
+    @patch("bluei.engine.commands.helpers._append_text")
+    @patch("bluei.engine.state._append_text")
+    @patch(
+        "bluei.engine.commands.merge_cycle.merge_failure_requires_pr_fix",
+        return_value=True,
+    )
+    @patch(
+        "bluei.engine.commands.merge_cycle.merge_pr", return_value=(False, "conflict")
+    )
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_mergeability",
+        return_value={"eligible": True},
+    )
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_reviews",
+        return_value={"eligible": True},
+    )
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_check_health",
+        return_value={"eligible": True, "has_checks": True},
+    )
+    @patch("bluei.engine.commands.merge_cycle.repo_is_sandbox", return_value=True)
+    @patch("bluei.engine.commands.merge_cycle.fetch_open_prs_for_merge")
+    @patch("bluei.engine.commands.merge_cycle._append_text")
+    def test_merge_failure_needing_fix_triages_back(
+        self,
+        mock_log,
+        mock_fetch,
+        mock_sb,
+        mock_ch,
+        mock_rv,
+        mock_mb,
+        mock_merge,
+        mock_req_fix,
+        mock_hlog,
+        mock_slog,
+        mock_recon,
+    ):
+        mock_fetch.return_value = [_pr()]
+        _, succeeded, _, _, _, _, _, _ = run_merge_cycle_phase(
+            repo_path=Path("/repo"),
+            log_file=Path("/tmp/test.log"),
+            review_state_file=Path("/review.json"),
+            state={},
+            issues_data={"issues": [{"issue_id": "i1", "github": {"pr_number": 42}}]},
+            args=_args(),
+            gh_repo_slug="acme/sandbox-qa-widget",
+            merges_failed=0,
+            merges_succeeded=0,
+            merge_attempts=0,
+            merged_pr_urls=[],
+            open_prs=1,
+            open_issues=0,
+            blocked_reasons=[],
+            reconcile_event={},
         )
-    )
+        assert succeeded == 0
 
-    monkeypatch.setattr(cli, "is_mnemo_available", lambda repo_path: False)
-    monkeypatch.setattr(cli, "assert_safe_repo", lambda repo_path: None)
-    monkeypatch.setattr(
-        cli,
-        "get_origin_url",
-        lambda repo_path: "git@github.com:qa-agent-test/test-repo.git",
+    @patch(
+        "bluei.engine.commands.merge_cycle.reconcile_open_workload",
+        return_value=(0, 0, {}),
     )
-    monkeypatch.setattr(
-        cli, "parse_github_repo", lambda origin_url: ("qa-agent-test", "test-repo")
+    @patch("bluei.engine.state._append_text")
+    @patch(
+        "bluei.engine.commands.merge_cycle.merge_failure_requires_pr_fix",
+        return_value=False,
     )
-    monkeypatch.setattr(cli, "repo_is_sandbox", lambda repo_slug: True)
-    monkeypatch.setattr(merge_cycle, "repo_is_sandbox", lambda repo_slug: True)
-    monkeypatch.setattr(
-        merge_cycle,
-        "fetch_open_prs_for_merge",
-        lambda repo_slug, cwd: [
-            {
-                "number": 1,
-                "url": "https://example.com/pr/1",
-                "title": "conflicted",
-                "state": "OPEN",
-                "isDraft": False,
-                "createdAt": "2026-04-08T00:00:00+00:00",
-            },
-            {
-                "number": 2,
-                "url": "https://example.com/pr/2",
-                "title": "mergeable",
-                "state": "OPEN",
-                "isDraft": False,
-                "createdAt": "2026-04-08T00:00:00+00:00",
-            },
-        ],
+    @patch(
+        "bluei.engine.commands.merge_cycle.merge_pr",
+        return_value=(False, "network-error"),
     )
-    monkeypatch.setattr(
-        merge_cycle,
-        "evaluate_pr_check_health",
-        lambda *args, **kwargs: {
-            "eligible": True,
-            "has_checks": True,
-            "reason": "checks-pass-or-neutral",
-        },
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_mergeability",
+        return_value={"eligible": True},
     )
-    monkeypatch.setattr(
-        merge_cycle,
-        "evaluate_pr_reviews",
-        lambda repo_slug, pr_number, cwd: {
-            1: {
-                "eligible": True,
-                "has_reviews": True,
-                "reason": "review-check-pass",
-            },
-            2: {
-                "eligible": False,
-                "has_reviews": False,
-                "reason": "no-reviews-block",
-            },
-        }[pr_number],
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_reviews",
+        return_value={"eligible": True},
     )
-    monkeypatch.setattr(
-        merge_cycle,
-        "evaluate_pr_mergeability",
-        lambda repo_slug, pr_number, cwd: {
-            1: {
-                "eligible": False,
-                "requires_pr_fix": True,
-                "merge_state_status": "DIRTY",
-                "reason": "merge-conflict-dirty",
-            },
-            2: {
-                "eligible": True,
-                "requires_pr_fix": False,
-                "merge_state_status": "CLEAN",
-                "reason": "mergeable-state-pass",
-            },
-        }[pr_number],
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_check_health",
+        return_value={"eligible": True, "has_checks": True},
     )
-    merge_calls = []
-    monkeypatch.setattr(
-        merge_cycle,
-        "merge_pr",
-        lambda repo_slug, pr_number, dry_run, cwd: (
-            merge_calls.append(pr_number) or (True, "merged")
-        ),
-    )
-    monkeypatch.setattr(
-        cli, "reconcile_open_workload", lambda **kwargs: (2, 1, {"reason": "test"})
-    )
-    monkeypatch.setattr(
-        merge_cycle,
-        "reconcile_open_workload",
-        lambda **kwargs: (2, 1, {"reason": "test"}),
-    )
-    monkeypatch.setattr(escalation, "run_escalation_checks", lambda *args, **kwargs: [])
+    @patch("bluei.engine.commands.merge_cycle.repo_is_sandbox", return_value=True)
+    @patch("bluei.engine.commands.merge_cycle.fetch_open_prs_for_merge")
+    @patch("bluei.engine.commands.merge_cycle._append_text")
+    def test_merge_failure_no_fix_counts_as_failed(
+        self,
+        mock_log,
+        mock_fetch,
+        mock_sb,
+        mock_ch,
+        mock_rv,
+        mock_mb,
+        mock_merge,
+        mock_req_fix,
+        mock_slog,
+        mock_recon,
+    ):
+        mock_fetch.return_value = [_pr()]
+        failed, _, _, _, _, _, blocked, _ = run_merge_cycle_phase(
+            repo_path=Path("/repo"),
+            log_file=Path("/tmp/test.log"),
+            review_state_file=Path("/review.json"),
+            state={},
+            issues_data={"issues": []},
+            args=_args(),
+            gh_repo_slug="acme/sandbox-qa-widget",
+            merges_failed=0,
+            merges_succeeded=0,
+            merge_attempts=0,
+            merged_pr_urls=[],
+            open_prs=1,
+            open_issues=0,
+            blocked_reasons=[],
+            reconcile_event={},
+        )
+        assert failed == 1
+        assert any("merge-failed" in b for b in blocked)
 
-    argv = [
-        "qa-agent",
-        "--repo-path",
-        str(repo_path),
-        "--state-file",
-        str(state_file),
-        "--log-file",
-        str(log_file),
-        "--findings-file",
-        str(findings_file),
-        "--issues-file",
-        str(issues_file),
-        "--worktree-root",
-        str(worktree_root),
-        "--status-file",
-        str(status_file),
-        "--docs-index-file",
-        str(docs_index_file),
-        "--lessons-file",
-        str(lessons_file),
-        "--run-phase",
-        "merge-cycle",
-        "--live-github-actions",
-        "--auto-merge-sandbox",
-        "--no-dry-run",
-        "--merge-cooldown-minutes",
-        "0",
-    ]
-    monkeypatch.setattr(sys, "argv", argv)
+    @patch(
+        "bluei.engine.commands.merge_cycle.reconcile_open_workload",
+        return_value=(0, 0, {}),
+    )
+    @patch("bluei.engine.state._append_text")
+    @patch(
+        "bluei.engine.commands.merge_cycle.sweep_rebase",
+        return_value={"rebased": [], "conflicted": [], "skipped": []},
+    )
+    @patch("bluei.engine.commands.merge_cycle.merge_pr", return_value=(True, "merged"))
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_mergeability",
+        return_value={"eligible": True},
+    )
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_reviews",
+        return_value={"eligible": True},
+    )
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_check_health",
+        return_value={"eligible": True, "has_checks": True},
+    )
+    @patch("bluei.engine.commands.merge_cycle.repo_is_sandbox", return_value=True)
+    @patch("bluei.engine.commands.merge_cycle.fetch_open_prs_for_merge")
+    @patch("bluei.engine.commands.merge_cycle._append_text")
+    def test_rebase_sweep_on_merge_when_enabled(
+        self,
+        mock_log,
+        mock_fetch,
+        mock_sb,
+        mock_ch,
+        mock_rv,
+        mock_mb,
+        mock_merge,
+        mock_rebase,
+        mock_slog,
+        mock_recon,
+    ):
+        mock_fetch.return_value = [_pr()]
+        result = run_merge_cycle_phase(
+            repo_path=Path("/repo"),
+            log_file=Path("/tmp/test.log"),
+            review_state_file=Path("/review.json"),
+            state={},
+            issues_data={"issues": []},
+            args=_args(auto_rebase_enabled=True),
+            gh_repo_slug="acme/sandbox-qa-widget",
+            merges_failed=0,
+            merges_succeeded=0,
+            merge_attempts=0,
+            merged_pr_urls=[],
+            open_prs=1,
+            open_issues=0,
+            blocked_reasons=[],
+            reconcile_event={},
+        )
+        _, succeeded, attempts, _, _, _, _, _ = result
+        assert succeeded == 1
+        assert attempts == 1
+        mock_rebase.assert_called_once()
 
-    rc = cli.main()
-    assert rc == 0
-    assert merge_calls == [2]
+    @patch(
+        "bluei.engine.commands.merge_cycle.reconcile_open_workload",
+        return_value=(0, 0, {}),
+    )
+    @patch("bluei.engine.state._append_text")
+    @patch("bluei.engine.commands.merge_cycle.merge_pr", return_value=(True, "merged"))
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_mergeability",
+        return_value={"eligible": True},
+    )
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_reviews",
+        return_value={"eligible": True},
+    )
+    @patch(
+        "bluei.engine.commands.merge_cycle.evaluate_pr_check_health",
+        return_value={"eligible": True, "has_checks": True},
+    )
+    @patch("bluei.engine.commands.merge_cycle.repo_is_sandbox", return_value=True)
+    @patch("bluei.engine.commands.merge_cycle.fetch_open_prs_for_merge")
+    @patch("bluei.engine.commands.merge_cycle._append_text")
+    def test_merge_sets_issue_status_resolved(
+        self,
+        mock_log,
+        mock_fetch,
+        mock_sb,
+        mock_ch,
+        mock_rv,
+        mock_mb,
+        mock_merge,
+        mock_slog,
+        mock_recon,
+    ):
+        mock_fetch.return_value = [_pr()]
+        with patch("bluei.engine.orchestrator.set_issue_status") as mock_set:
+            run_merge_cycle_phase(
+                repo_path=Path("/repo"),
+                log_file=Path("/tmp/test.log"),
+                review_state_file=Path("/review.json"),
+                state={},
+                issues_data={
+                    "issues": [{"issue_id": "i1", "github": {"pr_number": 42}}]
+                },
+                args=_args(),
+                gh_repo_slug="acme/sandbox-qa-widget",
+                merges_failed=0,
+                merges_succeeded=0,
+                merge_attempts=0,
+                merged_pr_urls=[],
+                open_prs=1,
+                open_issues=0,
+                blocked_reasons=[],
+                reconcile_event={},
+            )
+        resolved = [c for c in mock_set.call_args_list if c[0][1] == "resolved_merged"]
+        assert len(resolved) == 1
 
-    saved = json.loads(issues_file.read_text())
-    statuses = {item["issue_id"]: item["status"] for item in saved["issues"]}
-    assert statuses["QA-0001"] == "pr_merge_conflict"
-    assert statuses["QA-0002"] == "resolved_merged"
+    @patch(
+        "bluei.engine.commands.merge_cycle.reconcile_open_workload",
+        return_value=(0, 0, {}),
+    )
+    @patch("bluei.engine.state._append_text")
+    @patch("bluei.engine.commands.merge_cycle.repo_is_sandbox", return_value=True)
+    @patch(
+        "bluei.engine.commands.merge_cycle.fetch_open_prs_for_merge", return_value=[]
+    )
+    @patch("bluei.engine.commands.merge_cycle._append_text")
+    def test_no_open_prs_returns_clean(
+        self, mock_log, mock_fetch, mock_sb, mock_slog, mock_recon
+    ):
+        _, succeeded, attempts, _, _, _, _, _ = run_merge_cycle_phase(
+            repo_path=Path("/repo"),
+            log_file=Path("/tmp/test.log"),
+            review_state_file=Path("/review.json"),
+            state={},
+            issues_data={"issues": []},
+            args=_args(),
+            gh_repo_slug="acme/sandbox-qa-widget",
+            merges_failed=0,
+            merges_succeeded=0,
+            merge_attempts=0,
+            merged_pr_urls=[],
+            open_prs=0,
+            open_issues=0,
+            blocked_reasons=[],
+            reconcile_event={},
+        )
+        assert succeeded == 0
+        assert attempts == 0

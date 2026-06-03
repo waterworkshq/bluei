@@ -327,7 +327,10 @@ class TestGhJson:
             assert result == {"key": "value"}
 
     def test_returns_none_on_nonzero(self, tmp_path: Path) -> None:
-        with patch("bluei.engine.gh.run_capture", return_value=(1, "error")):
+        with (
+            patch("bluei.engine.gh.time.sleep"),
+            patch("bluei.engine.gh.run_capture", return_value=(1, "error")),
+        ):
             result = gh_json(["gh", "test"], cwd=tmp_path)
             assert result is None
 

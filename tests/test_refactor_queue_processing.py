@@ -4,6 +4,7 @@
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
@@ -121,27 +122,27 @@ def test_refactor_queue_auto_approve_moves_pending():
             entry = enqueue_refactor_work(finding, rw, worktree)
             assert entry.status == QueueStatus.PENDING_REVIEW
 
-            # Use dry_run=False to actually perform the approval
-            result = process_refactor_queue(
-                worktree_path=worktree,
-                repo_path=worktree.parent / "repo",
-                dry_run=False,
-                max_items=None,
-                auto_approve=True,
+            mock_apply = patch(
+                "bluei.engine.lifecycle.apply_claude_fix",
+                return_value=(1, "mocked: claude not available in tests", ""),
             )
+            with mock_apply:
+                result = process_refactor_queue(
+                    worktree_path=worktree,
+                    repo_path=worktree.parent / "repo",
+                    dry_run=False,
+                    max_items=None,
+                    auto_approve=True,
+                )
         finally:
             rq_mod.DEFAULT_REFACTOR_QUEUE_DIR = original
 
         assert entry.work_id in result["approved"], (
             f"expected {entry.work_id} in approved, got {result}"
         )
-        # dry_run=False means execution is attempted; if Claude is available
-        # the item may end up in processed; if not, it goes to failed.
-        # Either way it should not still be pending
-        assert (
-            entry.work_id in result["processed"] or entry.work_id in result["failed"]
-        ), f"expected {entry.work_id} in processed or failed, got {result}"
-        # The item should NOT still be in pending after auto_approve
+        assert entry.work_id in result["failed"], (
+            f"expected {entry.work_id} in failed (mocked claude rc=1), got {result}"
+        )
         assert entry.work_id not in result["pending"], (
             f"item should not be pending after auto-approve, got {result}"
         )

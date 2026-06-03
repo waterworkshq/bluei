@@ -779,7 +779,7 @@ def link_issues_to_batch_pr(
                     f"This finding has been batched into PR #{pr_number}: {pr_url}",
                     cwd=repo_path,
                 )
-            except (subprocess.CalledProcessError, OSError) as exc:
+            except Exception as exc:
                 _append_text(
                     log_file,
                     f"batch-link: failed to comment on issue #{issue_number}: {exc}",

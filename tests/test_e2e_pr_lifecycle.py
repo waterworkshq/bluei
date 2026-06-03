@@ -139,7 +139,10 @@ class TestPRCreation:
         )
         log_file = tmp_path / "test.log"
 
-        with patch("bluei.engine.gh.run_capture") as mock_rc:
+        with (
+            patch("bluei.engine.gh.time.sleep"),
+            patch("bluei.engine.gh.run_capture") as mock_rc,
+        ):
             mock_rc.return_value = (1, "not found")
             result = create_or_update_github_issue(
                 "test/repo",
