@@ -38,14 +38,21 @@ _MNEMO_DEFAULTS = {
 }
 
 
-def _mnemo_config() -> dict:
-    """Load mnemo config from global config.yaml, with env var fallbacks."""
-    try:
-        from bluei.app.config import load_global_config
+def _mnemo_config(config: Optional[dict] = None) -> dict:
+    """Load mnemo config from global config.yaml, with env var fallbacks.
 
-        cfg = load_global_config().get("mnemo", {})
-    except Exception:
-        cfg = {}
+    Args:
+        config: Optional pre-loaded mnemo config dict. If None, reads from
+            global config (``mnemo`` section) with env var fallbacks.
+    """
+    if config is None:
+        try:
+            from bluei.app.config import load_global_config
+
+            config = load_global_config().get("mnemo", {})
+        except Exception:
+            config = {}
+    cfg = config
     return {
         "max_patterns": cfg.get(
             "max_patterns",

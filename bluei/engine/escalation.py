@@ -214,35 +214,11 @@ def check_reappearing_findings(
 ) -> List[Dict[str, Any]]:
     """Detect findings that keep reappearing after being fixed.
 
-    Checks issue history for findings with >= threshold
-    fix_failed_verification or needs-human events.
+    Re-exported from issue_lifecycle — kept for backward compat.
     """
-    threshold = (thresholds or {}).get(
-        "reappearing_finding", REAPPEARING_FINDING_THRESHOLD
-    )
-    escalated: List[Dict[str, Any]] = []
+    from bluei.engine.issue_lifecycle import check_reappearing_findings as _impl
 
-    from bluei.engine.orchestrator import count_failed_fix_attempts
-
-    for issue in issues_data.get("issues", []):
-        finding_id = issue.get("finding_id", "")
-        if not finding_id:
-            continue
-        attempts = count_failed_fix_attempts(issue)
-        if attempts >= threshold:
-            escalated.append(
-                {
-                    "type": "reappearing_finding",
-                    "finding_id": finding_id,
-                    "rule": issue.get("rule", ""),
-                    "path": issue.get("path", ""),
-                    "failed_attempts": attempts,
-                    "threshold": threshold,
-                    "detail": f"Finding {finding_id} failed {attempts} times (threshold: {threshold})",
-                }
-            )
-
-    return escalated
+    return _impl(issues_data, thresholds)
 
 
 def check_dedup_saturation(
@@ -574,3 +550,115 @@ def run_escalation_checks(
         _append_escalation(escalation_file, record)
 
     return findings
+
+
+# ---------------------------------------------------------------------------
+# Escalation log writer (merged from app/escalation.py)
+# ---------------------------------------------------------------------------
+
+
+DEFAULT_ESCALATION_FILE = Path("state/escalation_log.jsonl")
+
+
+def write_escalation(
+    message: str,
+    severity: str = "error",
+    repo: Optional[str] = None,
+    escalation_file: Optional[Path] = None,
+) -> None:
+    """Write an escalation record to escalation_log.jsonl.
+
+    Args:
+        message: Human-readable escalation message.
+        severity: Severity level (info, warning, error).
+        repo: Optional repo name for context.
+        escalation_file: Path to escalation log. Defaults to
+                        state/escalation_log.jsonl relative to CWD.
+    """
+    file_path = escalation_file or DEFAULT_ESCALATION_FILE
+    record: Dict[str, Any] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "findings": [
+            {
+                "type": severity,
+                "detail": f"[{repo}] {message}" if repo else message,
+            }
+        ],
+        "count": 1,
+    }
+
+    try:
+        abs_path = (
+            file_path.resolve() if file_path else Path.cwd() / DEFAULT_ESCALATION_FILE
+        )
+        if not abs_path.parent.exists():
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(abs_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except OSError:
+        _logger.debug("Failed to write escalation record")
+
+
+def check_escalation_status(repo_name: str) -> Dict[str, Any]:
+    """Read the escalation log and return current escalation status for a repo.
+
+    Args:
+        repo_name: Repository name or slug to filter by.
+
+    Returns:
+        Dict with keys: total_escalations, active_escalations, latest, types, repo.
+    """
+    escalation_file = DEFAULT_ESCALATION_FILE
+
+    records: list[Dict[str, Any]] = []
+    if escalation_file.exists():
+        try:
+            for line in escalation_file.read_text().strip().splitlines():
+                if line.strip():
+                    records.append(json.loads(line))
+        except (json.JSONDecodeError, OSError):
+            _logger.debug("Failed to read escalation log")
+
+    repo_records: list[Dict[str, Any]] = []
+    for r in records:
+        findings = r.get("findings", [])
+        if not findings:
+            continue
+        repo_match = False
+        for f in findings:
+            detail = str(f.get("detail", "") or "")
+            if repo_name in detail:
+                repo_match = True
+                break
+        if repo_match:
+            repo_records.append(r)
+
+    now = datetime.now(timezone.utc)
+    active_cutoff = now.timestamp() - 3600
+
+    active_count = 0
+    for r in repo_records:
+        ts_str = r.get("timestamp", "")
+        if ts_str:
+            try:
+                ts = datetime.fromisoformat(ts_str).timestamp()
+                if ts >= active_cutoff:
+                    active_count += 1
+            except (ValueError, TypeError):
+                _logger.debug("Failed to parse escalation timestamp")
+
+    type_counts: Dict[str, int] = {}
+    for r in repo_records:
+        for f in r.get("findings", []):
+            ftype = str(f.get("type", "unknown"))
+            type_counts[ftype] = type_counts.get(ftype, 0) + 1
+
+    latest = repo_records[-1] if repo_records else None
+
+    return {
+        "total_escalations": len(repo_records),
+        "active_escalations": active_count,
+        "latest": latest,
+        "types": type_counts,
+        "repo": repo_name,
+    }

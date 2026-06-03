@@ -21,19 +21,19 @@ from bluei.engine.utils import run_capture
 
 
 LANGUAGE_BY_EXTENSION = {
-    '.py': 'python',
-    '.ts': 'typescript',
-    '.tsx': 'typescript',
-    '.js': 'javascript',
-    '.jsx': 'javascript',
-    '.go': 'go',
-    '.rs': 'rust',
-    '.sh': 'shell',
-    '.bash': 'shell',
-    '.zsh': 'shell',
+    ".py": "python",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".go": "go",
+    ".rs": "rust",
+    ".sh": "shell",
+    ".bash": "shell",
+    ".zsh": "shell",
 }
 
-VALID_SOURCES = {'autofix', 'claude', 'contextual'}
+VALID_SOURCES = {"autofix", "claude", "contextual"}
 
 
 def extract(
@@ -58,28 +58,38 @@ def extract(
     try:
         source = fix_source if fix_source in VALID_SOURCES else str(fix_source)
         rc, diff_patch = run_capture(
-            ['git', 'diff'],
+            ["git", "diff"],
             cwd=Path(worktree_path),
             timeout=30,
         )
         if rc != 0:
-            _append_log(log_file, f'pattern-extract-skip: rule={finding.rule} reason=git_diff_failed rc={rc}')
+            _append_log(
+                log_file,
+                f"pattern-extract-skip: rule={finding.rule} reason=git_diff_failed rc={rc}",
+            )
             return None
         if not diff_patch.strip():
-            _append_log(log_file, f'pattern-extract-skip: rule={finding.rule} reason=empty_diff')
+            _append_log(
+                log_file, f"pattern-extract-skip: rule={finding.rule} reason=empty_diff"
+            )
             return None
 
         changed_files = _changed_files(diff_patch)
         if len(changed_files) == 0:
             _append_log(
                 log_file,
-                f'pattern-extract-skip: rule={finding.rule} reason=no_files_in_diff',
+                f"pattern-extract-skip: rule={finding.rule} reason=no_files_in_diff",
             )
             return None
 
         if len(changed_files) > 1:
             comp_id = _extract_composite(
-                worktree_path, finding, diff_patch, changed_files, source, log_file,
+                worktree_path,
+                finding,
+                diff_patch,
+                changed_files,
+                source,
+                log_file,
             )
             if comp_id:
                 return comp_id
@@ -89,11 +99,14 @@ def extract(
         before_snippet = normalize_snippet(before)
         after_snippet = normalize_snippet(after)
         if not before_snippet or not after_snippet or before_snippet == after_snippet:
-            _append_log(log_file, f'pattern-extract-skip: rule={finding.rule} reason=no_snippet_change')
+            _append_log(
+                log_file,
+                f"pattern-extract-skip: rule={finding.rule} reason=no_snippet_change",
+            )
             return None
 
         pattern = FixPattern(
-            pattern_id='',
+            pattern_id="",
             rule=finding.rule,
             language=infer_language(finding.path),
             file_path=finding.path,
@@ -108,12 +121,15 @@ def extract(
         pattern_id = store.append(pattern)
         _append_log(
             log_file,
-            f'pattern-extract: rule={finding.rule} pattern_id={pattern_id} source={source}',
+            f"pattern-extract: rule={finding.rule} pattern_id={pattern_id} source={source}",
         )
         return pattern_id
     except Exception as exc:
         try:
-            _append_log(log_file, f'pattern-extract-skip: rule={finding.rule} reason=exception error={type(exc).__name__}')
+            _append_log(
+                log_file,
+                f"pattern-extract-skip: rule={finding.rule} reason=exception error={type(exc).__name__}",
+            )
         except Exception:
             _logger.debug("Failed to log pattern-extract-skip")
         return None
@@ -122,7 +138,7 @@ def extract(
 def infer_language(file_path: str) -> str:
     """Infer a pattern language label from a file extension."""
     suffix = Path(file_path).suffix.lower()
-    return LANGUAGE_BY_EXTENSION.get(suffix, suffix.lstrip('.') or 'unknown')
+    return LANGUAGE_BY_EXTENSION.get(suffix, suffix.lstrip(".") or "unknown")
 
 
 def _changed_files(diff_patch: str) -> List[str]:
@@ -136,7 +152,7 @@ def _changed_files(diff_patch: str) -> List[str]:
     """
     files: List[str] = []
     for line in diff_patch.splitlines():
-        if not line.startswith('diff --git '):
+        if not line.startswith("diff --git "):
             continue
         parts = line.split()
         if len(parts) >= 4:
@@ -145,7 +161,7 @@ def _changed_files(diff_patch: str) -> List[str]:
 
 
 def _strip_diff_prefix(path: str) -> str:
-    if path.startswith('a/') or path.startswith('b/'):
+    if path.startswith("a/") or path.startswith("b/"):
         return path[2:]
     return path
 
@@ -170,52 +186,59 @@ def _snippets_from_unified_diff(diff_patch: str) -> Tuple[str, str]:
 
     def flush_hunk() -> None:
         if before_lines or after_lines:
-            before_hunks.append('\n'.join(before_lines))
-            after_hunks.append('\n'.join(after_lines))
+            before_hunks.append("\n".join(before_lines))
+            after_hunks.append("\n".join(after_lines))
             before_lines.clear()
             after_lines.clear()
 
     for line in diff_patch.splitlines():
-        if line.startswith('@@ '):
+        if line.startswith("@@ "):
             flush_hunk()
             in_hunk = True
             continue
         if not in_hunk:
             continue
-        if line.startswith('diff --git '):
+        if line.startswith("diff --git "):
             flush_hunk()
             in_hunk = False
             continue
-        if line.startswith('\\ No newline at end of file'):
+        if line.startswith("\\ No newline at end of file"):
             continue
-        if line.startswith('-') and not line.startswith('--- '):
+        if line.startswith("-") and not line.startswith("--- "):
             before_lines.append(line[1:])
-        elif line.startswith('+') and not line.startswith('+++ '):
+        elif line.startswith("+") and not line.startswith("+++ "):
             after_lines.append(line[1:])
-        elif line.startswith(' '):
+        elif line.startswith(" "):
             text = line[1:]
             before_lines.append(text)
             after_lines.append(text)
 
     flush_hunk()
-    return '\n'.join(before_hunks), '\n'.join(after_hunks)
+    return "\n".join(before_hunks), "\n".join(after_hunks)
 
 
 def _append_log(log_file: Path, message: str) -> None:
-    compact = re.sub(r'\s+', ' ', message).strip()
+    compact = re.sub(r"\s+", " ", message).strip()
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    with log_file.open('a', encoding='utf-8') as handle:
-        handle.write(compact + '\n')
+    with log_file.open("a", encoding="utf-8") as handle:
+        handle.write(compact + "\n")
 
 
-def _detect_framework(worktree_path: Path) -> Optional[str]:
+def _detect_framework(
+    worktree_path: Path, detected_frameworks: Optional[List[str]] = None
+) -> Optional[str]:
     """Return the primary framework detected in the worktree, or ``None``.
 
     Args:
         worktree_path: Root of the working tree to scan.
+        detected_frameworks: Optional pre-detected framework list. If None,
+            lazily imports ``detect_frameworks`` from ``bluei.app.onboarding``.
     """
+    if detected_frameworks is not None:
+        return detected_frameworks[0] if detected_frameworks else None
     try:
         from bluei.app.onboarding import detect_frameworks
+
         frameworks = detect_frameworks(worktree_path)
         return frameworks[0] if frameworks else None
     except Exception:
@@ -250,9 +273,9 @@ def _per_file_snippets(diff_patch: str) -> Dict[str, Tuple[str, str]]:
     current_file = None
     current_lines: List[str] = []
     for line in diff_patch.splitlines():
-        if line.startswith('diff --git '):
+        if line.startswith("diff --git "):
             if current_file is not None and current_lines:
-                combined = '\n'.join(current_lines)
+                combined = "\n".join(current_lines)
                 before, after = _snippets_from_unified_diff(combined)
                 file_diffs[current_file] = (before, after)
             parts = line.split()
@@ -262,7 +285,7 @@ def _per_file_snippets(diff_patch: str) -> Dict[str, Tuple[str, str]]:
         if current_file is not None:
             current_lines.append(line)
     if current_file is not None and current_lines:
-        combined = '\n'.join(current_lines)
+        combined = "\n".join(current_lines)
         before, after = _snippets_from_unified_diff(combined)
         file_diffs[current_file] = (before, after)
     return file_diffs
@@ -290,7 +313,11 @@ def _extract_composite(
         The composite ``pattern_id``, or ``None`` on failure.
     """
     try:
-        from bluei.engine.composite_pattern import CompositePattern, CompositePatternStep, CompositePatternStore
+        from bluei.engine.composite_pattern import (
+            CompositePattern,
+            CompositePatternStep,
+            CompositePatternStore,
+        )
 
         file_snippets = _per_file_snippets(diff_patch)
         if not file_snippets:
@@ -314,14 +341,16 @@ def _extract_composite(
                 scope = "related_file"
                 fp = _compute_file_pattern(fpath)
 
-            steps.append(CompositePatternStep(
-                order=order,
-                description=f"fix in {fpath}",
-                match=re.escape(before_norm),
-                replacement=after_norm,
-                scope=scope,
-                file_pattern=fp,
-            ))
+            steps.append(
+                CompositePatternStep(
+                    order=order,
+                    description=f"fix in {fpath}",
+                    match=re.escape(before_norm),
+                    replacement=after_norm,
+                    scope=scope,
+                    file_pattern=fp,
+                )
+            )
 
         if not steps:
             return None
@@ -341,16 +370,16 @@ def _extract_composite(
         pattern_id = comp_store.append(pattern)
         _append_log(
             log_file,
-            f'composite-extract: rule={finding.rule} pattern_id={pattern_id} '
-            f'steps={len(steps)} files={len(changed_files)}',
+            f"composite-extract: rule={finding.rule} pattern_id={pattern_id} "
+            f"steps={len(steps)} files={len(changed_files)}",
         )
         return pattern_id
     except Exception as exc:
         try:
             _append_log(
                 log_file,
-                f'composite-extract-skip: rule={finding.rule} '
-                f'reason=exception error={type(exc).__name__}',
+                f"composite-extract-skip: rule={finding.rule} "
+                f"reason=exception error={type(exc).__name__}",
             )
         except Exception:
             _logger.debug("Failed to log composite-extract-skip")

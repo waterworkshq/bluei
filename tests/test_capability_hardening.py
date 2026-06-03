@@ -259,7 +259,7 @@ def test_verify_fix_closed_treats_legacy_complexity_issue_as_closed_when_only_xo
     )
 
     monkeypatch.setattr(
-        "bluei.engine.validation.discover_findings",
+        "bluei.engine.orchestrator.discover_findings",
         lambda *args, **kwargs: [
             Finding(
                 finding_id="new-xo-id",

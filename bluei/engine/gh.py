@@ -347,33 +347,38 @@ def finding_from_issue_record(issue: Dict[str, Any]) -> Optional[Finding]:
     )
 
 
-def repo_is_sandbox(repo_slug: str) -> bool:
+def repo_is_sandbox(
+    repo_slug: str, self_merge_repos: Optional[List[str]] = None
+) -> bool:
     """Check whether a repo slug is a sandbox or self-merge repo.
 
     Args:
         repo_slug: GitHub repo in ``owner/repo`` format.
+        self_merge_repos: Optional list of self-merge repo slugs. If None,
+            reads from global config (``github.self_merge_repos``) with
+            env var fallback (``BLUEI_SELF_MERGE_REPOS``).
 
     Returns:
         ``True`` if the repo ends with ``qa-sandbox-repo`` or is listed
-        in ``config.yaml`` ``github.self_merge_repos`` (env var fallback:
-        ``BLUEI_SELF_MERGE_REPOS``).
+        in the self-merge list.
     """
     if repo_slug.endswith("/qa-sandbox-repo"):
         return True
-    try:
-        from bluei.app.config import load_global_config
+    if self_merge_repos is None:
+        try:
+            from bluei.app.config import load_global_config
 
-        self_merge_list = (
-            load_global_config().get("github", {}).get("self_merge_repos", [])
-        )
-    except Exception:
-        self_merge_list = []
-    if not self_merge_list:
-        env_val = os.environ.get("BLUEI_SELF_MERGE_REPOS", "")
-        self_merge_list = (
-            [s.strip() for s in env_val.split(",") if s.strip()] if env_val else []
-        )
-    for slug in self_merge_list:
+            self_merge_repos = (
+                load_global_config().get("github", {}).get("self_merge_repos", [])
+            )
+        except Exception:
+            self_merge_repos = []
+        if not self_merge_repos:
+            env_val = os.environ.get("BLUEI_SELF_MERGE_REPOS", "")
+            self_merge_repos = (
+                [s.strip() for s in env_val.split(",") if s.strip()] if env_val else []
+            )
+    for slug in self_merge_repos:
         if repo_slug == slug or repo_slug.endswith("/" + slug):
             return True
     return False

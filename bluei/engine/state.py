@@ -159,61 +159,35 @@ def append_findings(path: Path, findings: List[Finding]) -> int:
 
 
 def load_issues(path: Path) -> Dict[str, Any]:
-    if not path.exists():
-        return {"issues": []}
-    data = json.loads(path.read_text())
-    if not isinstance(data, dict):
-        return {"issues": []}
-    if "issues" not in data or not isinstance(data["issues"], list):
-        data["issues"] = []
-    return data
+    """Re-export from issue_lifecycle — kept for backward compat."""
+    from bluei.engine.issue_lifecycle import load_issues as _impl
+
+    return _impl(path)
 
 
 def save_issues(path: Path, data: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    """Re-export from issue_lifecycle — kept for backward compat."""
+    from bluei.engine.issue_lifecycle import save_issues as _impl
+
+    _impl(path, data)
 
 
 # Statuses that indicate an issue is NOT actionable (blocked/escalated/resolved)
-NON_ACTIONABLE_ISSUE_STATUSES = frozenset(
-    {
-        "needs-human-max-retries-exceeded",
-        "needs-human-validation-failed",
-        "needs-human-scope-limit-exceeded",
-        "needs-human-commit-failed",
-        "needs-human-push-failed",
-        "blocked_untracked_path",
-        "resolved_merged",
-        "resolved_verified",
-        "needs-human-not-fixable",  # Rule not autofixable and not LLM-fixable
-        "needs-human-refactor-review",  # Structural refactor routed to dedicated queue/review lane
-        "needs-human-max-duplicates-exceeded",  # Finding accumulated too many open PRs, routed to human
-    }
-)
+from bluei.engine.issue_lifecycle import NON_ACTIONABLE_ISSUE_STATUSES  # noqa: E402, F401
 
 
 def count_actionable_issues(issues_data: Dict[str, Any]) -> int:
-    """Count only actionable issues (excluding blocked/escalated/resolved)."""
-    actionable = 0
-    for issue in issues_data.get("issues", []):
-        status = issue.get("status", "open")
-        if status not in NON_ACTIONABLE_ISSUE_STATUSES:
-            actionable += 1
-    return actionable
+    """Re-export from issue_lifecycle — kept for backward compat."""
+    from bluei.engine.issue_lifecycle import count_actionable_issues as _impl
+
+    return _impl(issues_data)
 
 
 def guard_open_issues(open_issues: int, cap: int) -> tuple[bool, str]:
-    """Check if open issues (count) is below the cap.
+    """Re-export from issue_lifecycle — kept for backward compat."""
+    from bluei.engine.issue_lifecycle import guard_open_issues as _impl
 
-    IMPORTANT: Callers should use count_actionable_issues() to get open_issues
-    rather than raw counts, so blocked/escalated issues don't stall the pipeline.
-    """
-    if open_issues >= cap:
-        return (
-            False,
-            f"guard-block: open issues={open_issues} meets/exceeds issue cap={cap}",
-        )
-    return True, f"guard-pass: open issues={open_issues} below issue cap={cap}"
+    return _impl(open_issues, cap)
 
 
 def guard_open_prs(open_prs: int, cap: int) -> tuple[bool, str]:

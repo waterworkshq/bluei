@@ -11,9 +11,10 @@ import argparse
 import json
 import logging
 import os
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from bluei.engine.constants import (
     CLAUDE_REQUIRED_RULES,
@@ -62,111 +63,123 @@ _AST_SKIP_DIRS = {
     ".ruff_cache",
 }
 
+_TS_SKIP_DIRS = _AST_SKIP_DIRS | {"dist", "build", ".next", "coverage", "vendor"}
 
-def _ast_scan_python_files(
-    repo_path: Path, log_file: Path, rule_meta: dict
+
+# ---------------------------------------------------------------------------
+# Parameterised AST scan pipeline
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LanguageScanConfig:
+    """Configuration for a single language's AST scan pipeline."""
+
+    name: str
+    extensions: Set[str]
+    get_matcher: Callable[[], Any]
+    skip_dirs: Set[str] = field(default_factory=lambda: _AST_SKIP_DIRS)
+    language: Optional[str] = None
+    ext_to_language: Optional[Dict[str, str]] = None
+    needs_tree_sitter: bool = False
+
+
+def _python_getter():
+    from bluei.engine.ast_engine import get_python_matcher
+
+    return get_python_matcher()
+
+
+def _ts_getter():
+    from bluei.engine.ast_engine import get_ts_matcher
+
+    return get_ts_matcher()
+
+
+def _go_getter():
+    from bluei.engine.ast_engine import get_go_matcher
+
+    return get_go_matcher()
+
+
+def _rust_getter():
+    from bluei.engine.ast_engine import get_rust_matcher
+
+    return get_rust_matcher()
+
+
+LANGUAGE_SCAN_CONFIGS: Dict[str, LanguageScanConfig] = {
+    "python": LanguageScanConfig(
+        name="python",
+        extensions={".py"},
+        get_matcher=_python_getter,
+        skip_dirs=_AST_SKIP_DIRS,
+        language="python",
+        needs_tree_sitter=False,
+    ),
+    "typescript": LanguageScanConfig(
+        name="typescript",
+        extensions={".ts", ".tsx", ".js", ".jsx"},
+        get_matcher=_ts_getter,
+        skip_dirs=_TS_SKIP_DIRS,
+        ext_to_language={
+            ".ts": "typescript",
+            ".tsx": "typescript",
+            ".js": "javascript",
+            ".jsx": "javascript",
+        },
+        needs_tree_sitter=True,
+    ),
+    "go": LanguageScanConfig(
+        name="go",
+        extensions={".go"},
+        get_matcher=_go_getter,
+        skip_dirs=_TS_SKIP_DIRS,
+        language="go",
+        needs_tree_sitter=True,
+    ),
+    "rust": LanguageScanConfig(
+        name="rust",
+        extensions={".rs"},
+        get_matcher=_rust_getter,
+        skip_dirs=_TS_SKIP_DIRS,
+        language="rust",
+        needs_tree_sitter=True,
+    ),
+}
+
+
+def ast_scan_pipeline(
+    repo_path: Path,
+    log_file: Path,
+    rule_meta: dict,
+    config: LanguageScanConfig,
 ) -> List[Finding]:
-    """Walk *.py files under repo_path and run AST pattern matching.
+    """Run AST pattern matching for a single language.
 
     Args:
         repo_path: Absolute path to the target repository.
-        log_file: Path to the run log (unused here, kept for signature parity).
+        log_file: Path to the run log (unused, kept for signature parity).
         rule_meta: Dict mapping rule IDs to their catalog entries.
+        config: Language scan configuration.
 
     Returns:
         List of Finding objects for every matched AST pattern.
     """
-    from bluei.engine.ast_engine import get_python_matcher
+    if config.needs_tree_sitter:
+        from bluei.engine.ast_engine.ts_parser import TreeSitterAdapter
 
-    matcher = get_python_matcher()
+        if not TreeSitterAdapter.is_available():
+            return []
+
+    matcher = config.get_matcher()
     findings: List[Finding] = []
 
-    for py_file in repo_path.rglob("*.py"):
-        skip = False
-        for part in py_file.relative_to(repo_path).parts:
-            if part in _AST_SKIP_DIRS:
-                skip = True
-                break
-        if skip:
-            continue
-
-        try:
-            source = py_file.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-
-        if not source.strip():
-            continue
-
-        matches = matcher.find_matches(
-            source, str(py_file.relative_to(repo_path)), "python"
-        )
-        rel_path = str(py_file.relative_to(repo_path))
-
-        for m in matches:
-            rule_entry = rule_meta.get(m.pattern.id)
-            if rule_entry is None:
-                # AST engine uses the full rule id; catalog stores the shorter form.
-                if m.pattern.id == "hardcoded-tmp-path-string":
-                    rule_entry = rule_meta.get("hardcoded-tmp-path")
-            if rule_entry is None:
-                continue
-
-            findings.append(
-                Finding(
-                    finding_id=stable_finding_id(
-                        str(repo_path), rel_path, m.line, m.pattern.id, m.source_text
-                    ),
-                    repo=str(repo_path),
-                    path=rel_path,
-                    line=m.line,
-                    rule=m.pattern.id,
-                    snippet=m.source_text,
-                    confidence=rule_entry.get("confidence", m.pattern.confidence),
-                    quick_win=rule_entry.get("autofix", False),
-                    safe_to_autofix=rule_entry.get("autofix", False),
-                )
-            )
-
-    return findings
-
-
-_TS_EXTENSIONS = {".ts", ".tsx"}
-_JS_EXTENSIONS = {".js", ".jsx"}
-_GO_EXT = ".go"
-_RUST_EXT = ".rs"
-
-_TS_SKIP_DIRS = _AST_SKIP_DIRS | {"dist", "build", ".next", "coverage", "vendor"}
-
-
-def _ast_scan_ts_js_files(
-    repo_path: Path, log_file: Path, rule_meta: dict
-) -> List[Finding]:
-    """Walk .ts/.tsx/.js/.jsx files and run tree-sitter AST matching.
-
-    Args:
-        repo_path: Absolute path to the target repository.
-        log_file: Path to the run log (unused here, kept for signature parity).
-        rule_meta: Dict mapping rule IDs to their catalog entries.
-
-    Returns:
-        List of Finding objects for matched AST patterns.
-    """
-    from bluei.engine.ast_engine.ts_parser import TreeSitterAdapter
-
-    if not TreeSitterAdapter.is_available():
-        return []
-
-    from bluei.engine.ast_engine import get_ts_matcher
-
-    matcher = get_ts_matcher()
-    findings: List[Finding] = []
-
-    for ext in _TS_EXTENSIONS | _JS_EXTENSIONS:
+    for ext in config.extensions:
         for f in repo_path.rglob(f"*{ext}"):
             skip = False
             for part in f.relative_to(repo_path).parts:
-                if part in _TS_SKIP_DIRS:
+                if part in config.skip_dirs:
                     skip = True
                     break
             if skip:
@@ -180,12 +193,20 @@ def _ast_scan_ts_js_files(
             if not source.strip():
                 continue
 
-            language = "typescript" if ext in _TS_EXTENSIONS else "javascript"
+            if config.ext_to_language:
+                language = config.ext_to_language.get(ext, config.name)
+            else:
+                language = config.language or config.name
+
             rel_path = str(f.relative_to(repo_path))
             matches = matcher.find_matches(source, rel_path, language)
 
             for m in matches:
                 rule_entry = rule_meta.get(m.pattern.id)
+                if rule_entry is None:
+                    # AST engine uses the full rule id; catalog stores the shorter form.
+                    if m.pattern.id == "hardcoded-tmp-path-string":
+                        rule_entry = rule_meta.get("hardcoded-tmp-path")
                 if rule_entry is None:
                     continue
 
@@ -212,319 +233,62 @@ def _ast_scan_ts_js_files(
     return findings
 
 
+# ---------------------------------------------------------------------------
+# Backward-compatible wrappers (used as monkeypatch targets in tests)
+# ---------------------------------------------------------------------------
+
+
+def _ast_scan_python_files(
+    repo_path: Path, log_file: Path, rule_meta: dict
+) -> List[Finding]:
+    """Walk *.py files under repo_path and run AST pattern matching."""
+    return ast_scan_pipeline(
+        repo_path, log_file, rule_meta, LANGUAGE_SCAN_CONFIGS["python"]
+    )
+
+
+def _ast_scan_ts_js_files(
+    repo_path: Path, log_file: Path, rule_meta: dict
+) -> List[Finding]:
+    """Walk .ts/.tsx/.js/.jsx files and run tree-sitter AST matching."""
+    return ast_scan_pipeline(
+        repo_path, log_file, rule_meta, LANGUAGE_SCAN_CONFIGS["typescript"]
+    )
+
+
 def _ast_scan_go_files(
     repo_path: Path, log_file: Path, rule_meta: dict
 ) -> List[Finding]:
-    """Walk .go files and run tree-sitter AST matching.
-
-    Args:
-        repo_path: Absolute path to the target repository.
-        log_file: Path to the run log (unused here, kept for signature parity).
-        rule_meta: Dict mapping rule IDs to their catalog entries.
-
-    Returns:
-        List of Finding objects for matched AST patterns.
-    """
-    from bluei.engine.ast_engine.ts_parser import TreeSitterAdapter
-
-    if not TreeSitterAdapter.is_available():
-        return []
-
-    from bluei.engine.ast_engine import get_go_matcher
-
-    matcher = get_go_matcher()
-    findings: List[Finding] = []
-
-    for f in repo_path.rglob(f"*{_GO_EXT}"):
-        skip = False
-        for part in f.relative_to(repo_path).parts:
-            if part in _TS_SKIP_DIRS:
-                skip = True
-                break
-        if skip:
-            continue
-
-        try:
-            source = f.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-
-        if not source.strip():
-            continue
-
-        rel_path = str(f.relative_to(repo_path))
-        matches = matcher.find_matches(source, rel_path, "go")
-
-        for m in matches:
-            rule_entry = rule_meta.get(m.pattern.id)
-            if rule_entry is None:
-                continue
-
-            findings.append(
-                Finding(
-                    finding_id=stable_finding_id(
-                        str(repo_path), rel_path, m.line, m.pattern.id, m.source_text
-                    ),
-                    repo=str(repo_path),
-                    path=rel_path,
-                    line=m.line,
-                    rule=m.pattern.id,
-                    snippet=m.source_text,
-                    confidence=rule_entry.get("confidence", m.pattern.confidence),
-                    quick_win=rule_entry.get("autofix", False),
-                    safe_to_autofix=rule_entry.get("autofix", False),
-                )
-            )
-
-    return findings
+    """Walk .go files and run tree-sitter AST matching."""
+    return ast_scan_pipeline(
+        repo_path, log_file, rule_meta, LANGUAGE_SCAN_CONFIGS["go"]
+    )
 
 
 def _ast_scan_rust_files(
     repo_path: Path, log_file: Path, rule_meta: dict
 ) -> List[Finding]:
-    """Walk .rs files and run tree-sitter AST matching.
-
-    Args:
-        repo_path: Absolute path to the target repository.
-        log_file: Path to the run log (unused here, kept for signature parity).
-        rule_meta: Dict mapping rule IDs to their catalog entries.
-
-    Returns:
-        List of Finding objects for matched AST patterns.
-    """
-    from bluei.engine.ast_engine.ts_parser import TreeSitterAdapter
-
-    if not TreeSitterAdapter.is_available():
-        return []
-
-    from bluei.engine.ast_engine import get_rust_matcher
-
-    matcher = get_rust_matcher()
-    findings: List[Finding] = []
-
-    for f in repo_path.rglob(f"*{_RUST_EXT}"):
-        skip = False
-        for part in f.relative_to(repo_path).parts:
-            if part in _TS_SKIP_DIRS:
-                skip = True
-                break
-        if skip:
-            continue
-
-        try:
-            source = f.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-
-        if not source.strip():
-            continue
-
-        rel_path = str(f.relative_to(repo_path))
-        matches = matcher.find_matches(source, rel_path, "rust")
-
-        for m in matches:
-            rule_entry = rule_meta.get(m.pattern.id)
-            if rule_entry is None:
-                continue
-
-            findings.append(
-                Finding(
-                    finding_id=stable_finding_id(
-                        str(repo_path), rel_path, m.line, m.pattern.id, m.source_text
-                    ),
-                    repo=str(repo_path),
-                    path=rel_path,
-                    line=m.line,
-                    rule=m.pattern.id,
-                    snippet=m.source_text,
-                    confidence=rule_entry.get("confidence", m.pattern.confidence),
-                    quick_win=rule_entry.get("autofix", False),
-                    safe_to_autofix=rule_entry.get("autofix", False),
-                )
-            )
-
-    return findings
+    """Walk .rs files and run tree-sitter AST matching."""
+    return ast_scan_pipeline(
+        repo_path, log_file, rule_meta, LANGUAGE_SCAN_CONFIGS["rust"]
+    )
 
 
-def _build_base_cycle_command(args: argparse.Namespace) -> List[str]:
-    """Assemble the shared CLI argument list used by all cycle command builders.
+# ---------------------------------------------------------------------------
+# Command builders — re-exported from command_builder.py
+# ---------------------------------------------------------------------------
 
-    Args:
-        args: Parsed CLI namespace with repo/state/log/worktree paths and
-            throttling knobs.
-
-    Returns:
-        List of command-line tokens ready for ``command_list_to_shell``.
-    """
-    cmd = [
-        "python3",
-        str(RUNNER_PATH),
-        "--repo-path",
-        str(args.repo_path),
-        "--state-file",
-        str(args.state_file),
-        "--log-file",
-        str(args.log_file),
-        "--findings-file",
-        str(args.findings_file),
-        "--issues-file",
-        str(args.issues_file),
-        "--worktree-root",
-        str(args.worktree_root),
-        "--open-issues-cap",
-        str(args.open_issues_cap),
-        "--open-prs-cap",
-        str(args.open_prs_cap),
-        "--issue-confidence-threshold",
-        str(args.issue_confidence_threshold),
-        "--max-files-changed",
-        str(args.max_files_changed),
-        "--max-loc-diff",
-        str(args.max_loc_diff),
-        "--max-prs-per-run",
-        str(args.max_prs_per_run),
-        "--max-issues-per-run",
-        str(args.max_issues_per_run),
-        "--finding-cooldown-seconds",
-        str(args.finding_cooldown_seconds),
-        "--merge-cooldown-minutes",
-        str(args.merge_cooldown_minutes),
-        "--max-fix-attempts-per-issue",
-        str(args.max_fix_attempts_per_issue),
-        "--docs-index-file",
-        str(args.docs_index_file),
-        "--fix-engine",
-        str(args.fix_engine),
-        "--claude-cmd-template",
-        str(args.claude_cmd_template),
-    ]
-    if getattr(args, "refresh_docs_index", False):
-        cmd.append("--refresh-docs-index")
-    if getattr(args, "live_github_actions", False):
-        cmd.append("--live-github-actions")
-    if getattr(args, "auto_merge_sandbox", False):
-        cmd.append("--auto-merge-sandbox")
-    return cmd
-
-
-def build_active_cycle_command(args: argparse.Namespace) -> str:
-    cmd = _build_base_cycle_command(args) + [
-        "--run-phase",
-        str(args.run_phase),
-        "--no-dry-run",
-    ]
-    return command_list_to_shell(cmd)
-
-
-def build_issue_cycle_command(args: argparse.Namespace) -> str:
-    cmd = _build_base_cycle_command(args) + [
-        "--run-phase",
-        "issue-cycle",
-        "--no-dry-run",
-    ]
-    return command_list_to_shell(cmd)
-
-
-def build_pr_cycle_command(args: argparse.Namespace) -> str:
-    cmd = _build_base_cycle_command(args) + ["--run-phase", "pr-cycle", "--no-dry-run"]
-    return command_list_to_shell(cmd)
-
-
-def build_merge_cycle_command(args: argparse.Namespace) -> str:
-    cmd = _build_base_cycle_command(args) + [
-        "--run-phase",
-        "merge-cycle",
-        "--no-dry-run",
-        "--auto-merge-sandbox",
-    ]
-    return command_list_to_shell(cmd)
-
-
-def build_orchestrated_cycle_command(args: argparse.Namespace) -> str:
-    cmd = _build_base_cycle_command(args) + [
-        "--run-phase",
-        "orchestrated",
-        "--no-dry-run",
-        "--auto-merge-sandbox",
-    ]
-    return command_list_to_shell(cmd)
-
-
-def build_refactor_cycle_command(args: argparse.Namespace) -> str:
-    cmd = _build_base_cycle_command(args) + [
-        "--run-phase",
-        "refactor-cycle",
-        "--no-dry-run",
-    ]
-    if getattr(args, "max_queue_items", None) is not None:
-        cmd.extend(["--max-queue-items", str(args.max_queue_items)])
-    if getattr(args, "auto_approve", False):
-        cmd.append("--auto-approve")
-    return command_list_to_shell(cmd)
-
-
-def build_reconcile_only_command(args: argparse.Namespace) -> str:
-    cmd = [
-        "python3",
-        str(RUNNER_PATH),
-        "--reconcile-only",
-        "--repo-path",
-        str(args.repo_path),
-        "--state-file",
-        str(args.state_file),
-        "--log-file",
-        str(args.log_file),
-        "--findings-file",
-        str(args.findings_file),
-        "--issues-file",
-        str(args.issues_file),
-        "--worktree-root",
-        str(args.worktree_root),
-    ]
-    if getattr(args, "live_github_actions", False):
-        cmd.append("--live-github-actions")
-    return command_list_to_shell(cmd)
-
-
-def build_docs_index_refresh_command(args: argparse.Namespace) -> str:
-    cmd = [
-        "python3",
-        str(RUNNER_PATH),
-        "--run-phase",
-        "docs-index",
-        "--repo-path",
-        str(args.repo_path),
-        "--log-file",
-        str(args.log_file),
-        "--docs-index-file",
-        str(args.docs_index_file),
-        "--refresh-docs-index",
-    ]
-    return command_list_to_shell(cmd)
-
-
-def build_verification_only_command(args: argparse.Namespace) -> str:
-    cmd = [
-        "python3",
-        str(RUNNER_PATH),
-        "--run-phase",
-        "verify-only",
-        "--repo-path",
-        str(args.repo_path),
-        "--state-file",
-        str(args.state_file),
-        "--log-file",
-        str(args.log_file),
-        "--findings-file",
-        str(args.findings_file),
-        "--issues-file",
-        str(args.issues_file),
-        "--worktree-root",
-        str(args.worktree_root),
-    ]
-    if getattr(args, "live_github_actions", False):
-        cmd.append("--live-github-actions")
-    return command_list_to_shell(cmd)
+from bluei.engine.command_builder import (  # noqa: E402, F401
+    build_active_cycle_command,
+    build_docs_index_refresh_command,
+    build_issue_cycle_command,
+    build_merge_cycle_command,
+    build_orchestrated_cycle_command,
+    build_pr_cycle_command,
+    build_reconcile_only_command,
+    build_refactor_cycle_command,
+    build_verification_only_command,
+)
 
 
 def discover_findings(
@@ -888,43 +652,28 @@ def discover_findings(
         )
 
     # AST-based detection (supplements string-based detection); dedup by (path, line, rule).
-    ast_findings = _ast_scan_python_files(repo_path, log_file, rule_meta)
-    if ast_findings:
-        existing_keys = {(f.path, f.line, f.rule) for f in findings}
-        added = 0
-        for af in ast_findings:
-            if (af.path, af.line, af.rule) not in existing_keys:
-                findings.append(af)
-                added += 1
-        if added:
-            _append_text(
-                log_file,
-                f"ast-discovery: added {added} AST findings (deduped from {len(ast_findings)} total)",
-            )
-
-    # AST-based detection for TS/JS, Go, Rust (requires tree-sitter)
-    ts_ast_findings = _ast_scan_ts_js_files(repo_path, log_file, rule_meta)
-    if ts_ast_findings:
-        findings.extend(ts_ast_findings)
-        _append_text(
-            log_file,
-            f"ast-ts-discovery: added {len(ts_ast_findings)} TS/JS AST findings",
-        )
-
-    go_ast_findings = _ast_scan_go_files(repo_path, log_file, rule_meta)
-    if go_ast_findings:
-        findings.extend(go_ast_findings)
-        _append_text(
-            log_file, f"ast-go-discovery: added {len(go_ast_findings)} Go AST findings"
-        )
-
-    rust_ast_findings = _ast_scan_rust_files(repo_path, log_file, rule_meta)
-    if rust_ast_findings:
-        findings.extend(rust_ast_findings)
-        _append_text(
-            log_file,
-            f"ast-rust-discovery: added {len(rust_ast_findings)} Rust AST findings",
-        )
+    existing_keys = {(f.path, f.line, f.rule) for f in findings}
+    # Call wrappers individually so tests can monkeypatch them.
+    ast_scan_calls = [
+        ("python", _ast_scan_python_files),
+        ("typescript", _ast_scan_ts_js_files),
+        ("go", _ast_scan_go_files),
+        ("rust", _ast_scan_rust_files),
+    ]
+    for lang_name, scan_fn in ast_scan_calls:
+        lang_findings = scan_fn(repo_path, log_file, rule_meta)
+        if lang_findings:
+            added = 0
+            for af in lang_findings:
+                if (af.path, af.line, af.rule) not in existing_keys:
+                    findings.append(af)
+                    existing_keys.add((af.path, af.line, af.rule))
+                    added += 1
+            if added:
+                _append_text(
+                    log_file,
+                    f"ast-{lang_name}-discovery: added {added} AST findings (deduped from {len(lang_findings)} total)",
+                )
 
     # Also run type safety discovery for TypeScript repos
     type_findings = discover_typescript_type_findings(repo_path, log_file)
@@ -968,120 +717,6 @@ def discover_findings(
         )
 
     return findings
-
-
-def create_issues_for_findings(
-    issues_data: Dict[str, Any],
-    findings: List[Finding],
-    confidence_threshold: float,
-    max_issues_per_run: int,
-    cycle_signals_path: Optional[Path] = None,
-) -> List[Dict[str, Any]]:
-    """Convert qualifying findings into tracked issues, respecting caps and suppressions.
-
-    Args:
-        issues_data: Mutable issues dict (``{issues: [...]}``). New issues
-            are appended in-place.
-        findings: Raw Finding objects from discovery.
-        confidence_threshold: Minimum confidence to create an issue.
-        max_issues_per_run: Cap on new issues created in one call.
-        cycle_signals_path: Optional path to the cycle-signals YAML file
-            containing ``suppressed_rules``.
-
-    Returns:
-        List of newly created issue dicts (including SUPPRESSED markers).
-    """
-    existing = {
-        str(x.get("finding_id"))
-        for x in issues_data.get("issues", [])
-        if x.get("finding_id")
-    }
-    created: List[Dict[str, Any]] = []
-
-    # Load cross-cycle signals to check for suppressed rules
-    _cycle_signal_checker = None
-    if cycle_signals_path is not None:
-        try:
-            from pathlib import Path as _Path
-
-            _signal_file = (
-                _Path(cycle_signals_path)
-                if isinstance(cycle_signals_path, (str, _Path))
-                else cycle_signals_path
-            )
-            if _signal_file.exists():
-                # Inline read: check if this finding's rule is globally suppressed
-                _signal_data = json.loads(_signal_file.read_text())
-                _suppressed = _signal_data.get("suppressed_rules", {})
-                _now = datetime.now(timezone.utc).isoformat()
-                _active_suppressions = {
-                    r: info
-                    for r, info in _suppressed.items()
-                    if info.get("expires_at", "") > _now
-                }
-                _cycle_signal_checker = _active_suppressions
-        except (OSError, json.JSONDecodeError):
-            _logger.debug("Failed to read cycle signal suppressions")
-
-    for finding in findings:
-        if len(created) >= max_issues_per_run:
-            break
-        if finding.confidence < confidence_threshold:
-            continue
-        if finding.finding_id in existing:
-            continue
-
-        # Cross-cycle suppression check — skip suppressed rules
-        if _cycle_signal_checker:
-            _global_reason = _cycle_signal_checker.get("__global__")
-            if _global_reason:
-                created.append(
-                    {
-                        "issue_id": "SUPPRESSED",
-                        "finding_id": finding.finding_id,
-                        "rule": finding.rule,
-                        "status": "suppressed_cross_cycle",
-                        "reason": _global_reason.get("reason", "suppressed"),
-                        "created_at": now_iso(),
-                    }
-                )
-                continue
-            _rule_reason = _cycle_signal_checker.get(finding.rule)
-            if _rule_reason:
-                created.append(
-                    {
-                        "issue_id": "SUPPRESSED",
-                        "finding_id": finding.finding_id,
-                        "rule": finding.rule,
-                        "status": "suppressed_cross_cycle",
-                        "reason": _rule_reason.get("reason", "suppressed"),
-                        "created_at": now_iso(),
-                    }
-                )
-                continue
-
-        issue_id = f"QA-{len(issues_data['issues']) + len(created) + 1:04d}"
-        issue = {
-            "issue_id": issue_id,
-            "finding_id": finding.finding_id,
-            "repo": finding.repo,
-            "path": finding.path,
-            "line": finding.line,
-            "rule": finding.rule,
-            "snippet": finding.snippet,
-            "confidence": finding.confidence,
-            "quick_win": finding.quick_win,
-            "safe_to_autofix": finding.safe_to_autofix,
-            "status": "open",
-            "created_at": now_iso(),
-            "updated_at": now_iso(),
-            "source": "bluei_engine_v2",
-            "history": [{"at": now_iso(), "event": "open"}],
-        }
-        created.append(issue)
-
-    issues_data["issues"].extend(created)
-    return created
 
 
 def choose_safe_autofix_items(
@@ -1169,190 +804,26 @@ def route_findings_with_intent(
     return routed
 
 
-def find_issue_for_finding(
-    issues_data: Dict[str, Any], finding_id: str
-) -> Optional[Dict[str, Any]]:
-    for issue in issues_data.get("issues", []):
-        if str(issue.get("finding_id")) == str(finding_id):
-            return issue
-    return None
+# ---------------------------------------------------------------------------
+# Issue lifecycle — re-exported from issue_lifecycle.py
+# (Kept here for backward compatibility with monkeypatch targets in tests.)
+# ---------------------------------------------------------------------------
+
+from bluei.engine.issue_lifecycle import (  # noqa: E402, F401
+    check_consecutive_fix_failures,
+    check_finding_escalation_before_fix,
+    count_failed_fix_attempts,
+    create_issues_for_findings,
+    ensure_issue_for_finding,
+    find_issue_for_finding,
+    set_issue_status,
+)
 
 
 def append_issue_history(
     issue: Dict[str, Any], event: str, detail: Optional[str] = None
 ) -> None:
-    history = issue.setdefault("history", [])
-    payload: Dict[str, Any] = {"at": now_iso(), "event": event}
-    if detail:
-        payload["detail"] = detail
-    history.append(payload)
+    """Re-export from issue_lifecycle — kept for monkeypatch compat."""
+    from bluei.engine.issue_lifecycle import append_issue_history as _impl
 
-
-def set_issue_status(
-    issue: Dict[str, Any], status: str, detail: Optional[str] = None
-) -> None:
-    issue["status"] = status
-    issue["updated_at"] = now_iso()
-    if detail:
-        issue["status_detail"] = detail
-    append_issue_history(issue, status, detail)
-
-
-def check_consecutive_fix_failures(
-    issue: Dict[str, Any],
-    consecutive_threshold: int = 3,
-) -> bool:
-    """Check if the last N consecutive fix attempts for this issue all failed.
-
-    Args:
-        issue: The issue dict with 'history' list.
-        consecutive_threshold: Number of consecutive failures to trigger (default 3).
-
-    Returns:
-        True if the last N consecutive attempts were all failures.
-    """
-    history = issue.get("history", [])
-    if not history:
-        return False
-
-    # Walk backwards from the most recent history entry
-    consecutive_failures = 0
-    for entry in reversed(history):
-        event = str(entry.get("event", "")).lower()
-
-        # A success event resets the consecutive counter
-        if event in ("resolved_verified", "resolved_merged", "pr_opened"):
-            break
-
-        # A reopen resets the counter
-        if event == "open":
-            break
-
-        # Count failures
-        if event == "fix_failed_verification" or event.startswith("needs-human"):
-            consecutive_failures += 1
-            if consecutive_failures >= consecutive_threshold:
-                return True
-
-    return False
-
-
-def check_finding_escalation_before_fix(
-    issue: Dict[str, Any],
-    issues_data: Dict[str, Any],
-    consecutive_threshold: int = 3,
-    escalation_config: Optional[Any] = None,
-    log_file: Optional[Path] = None,
-) -> bool:
-    """Check if a finding should be escalated (skipped) before a fix attempt.
-
-    Args:
-        issue: The issue dict to check.
-        issues_data: Full issues data dict (used for context).
-        consecutive_threshold: Number of consecutive failures before escalating.
-        escalation_config: Optional EscalationConfig for logging.
-        log_file: Optional path to the run log.
-
-    Returns:
-        True if the finding should be escalated/skipped.
-    """
-    if check_consecutive_fix_failures(issue, consecutive_threshold):
-        finding_id = issue.get("finding_id", "unknown")
-        issue_id = issue.get("issue_id", "unknown")
-        rule = issue.get("rule", "unknown")
-        detail = f"Consecutive fix failures for issue={issue_id} finding={finding_id} rule={rule}"
-
-        # Log escalation event if config provided
-        if escalation_config is not None:
-            try:
-                from bluei.engine.escalation import log_escalation_event
-
-                event = {
-                    "type": "cycle_escalation",
-                    "finding_id": finding_id,
-                    "issue_id": issue_id,
-                    "rule": rule,
-                    "consecutive_failures": consecutive_threshold,
-                    "threshold": consecutive_threshold,
-                    "cycle_type": "pr-cycle",
-                    "detail": detail,
-                }
-                log_escalation_event(escalation_config, event)
-            except Exception:
-                logging.debug("escalation event logging failed")
-                pass
-        if log_file is not None:
-            from bluei.engine.state import _append_text
-
-            _append_text(log_file, f"escalation: {detail}")
-
-        return True
-
-    return False
-
-
-def count_failed_fix_attempts(issue: Dict[str, Any]) -> int:
-    """Count the number of failed fix verification attempts from issue history."""
-    count = 0
-    history = issue.get("history", [])
-    failed_events = {
-        "fix_failed_verification",
-        "needs-human-validation-failed",
-        "needs-human-scope-limit-exceeded",
-        "needs-human-commit-failed",
-        "needs-human-push-failed",
-        "needs-human-max-retries-exceeded",
-    }
-    last_open_index = 0
-    for idx, entry in enumerate(history):
-        if str(entry.get("event", "")).lower() == "open":
-            last_open_index = idx
-
-    for entry in history[last_open_index + 1 :]:
-        event = str(entry.get("event", "")).lower()
-        if event in failed_events or event.startswith("needs-human"):
-            count += 1
-    return count
-
-
-def ensure_issue_for_finding(
-    issues_data: Dict[str, Any],
-    finding: Finding,
-    confidence_threshold: float,
-) -> Optional[Dict[str, Any]]:
-    """Return the existing issue for a finding, or create one if it qualifies.
-
-    Args:
-        issues_data: Mutable issues dict (``{issues: [...]}``).
-        finding: A single Finding to look up or create.
-        confidence_threshold: Minimum confidence to create a new issue.
-
-    Returns:
-        The matched or newly created issue dict, or None if below threshold.
-    """
-    existing = find_issue_for_finding(issues_data, finding.finding_id)
-    if existing:
-        return existing
-    if finding.confidence < confidence_threshold:
-        return None
-
-    issue_id = f"QA-{len(issues_data['issues']) + 1:04d}"
-    issue = {
-        "issue_id": issue_id,
-        "finding_id": finding.finding_id,
-        "repo": finding.repo,
-        "path": finding.path,
-        "line": finding.line,
-        "rule": finding.rule,
-        "snippet": finding.snippet,
-        "confidence": finding.confidence,
-        "quick_win": finding.quick_win,
-        "safe_to_autofix": finding.safe_to_autofix,
-        "status": "open",
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-        "source": "bluei_engine_v2",
-        "history": [{"at": now_iso(), "event": "open"}],
-    }
-    issues_data["issues"].append(issue)
-    return issue
+    _impl(issue, event, detail)

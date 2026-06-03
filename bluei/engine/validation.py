@@ -8,9 +8,16 @@ from typing import Any, Dict, List, Optional
 
 from bluei.engine.constants import DEFAULT_DOCS_INDEX
 from bluei.engine.models import Finding
-from bluei.engine.orchestrator import discover_findings
 from bluei.engine.state import _append_text
 from bluei.engine.utils import run_capture
+
+
+def _get_default_discover_fn():
+    """Lazy import of discover_findings from orchestrator (avoids load-time coupling)."""
+    from bluei.engine.orchestrator import discover_findings
+
+    return discover_findings
+
 
 _logger = logging.getLogger(__name__)
 
@@ -360,6 +367,7 @@ def verify_fix_closed(
     finding: Finding,
     log_file: Path,
     docs_index_file: Path = DEFAULT_DOCS_INDEX,
+    discover_fn: Any = None,
 ) -> bool:
     """Re-scan the worktree and confirm the finding no longer fires.
 
@@ -368,11 +376,18 @@ def verify_fix_closed(
         finding: The Finding that should be resolved.
         log_file: Path to the run log.
         docs_index_file: Path to the docs index used by the discovery engine.
+        discover_fn: Optional discovery function. If None, lazily imports
+            ``discover_findings`` from ``bluei.engine.orchestrator``.
 
     Returns:
         True if the finding is gone (fix closed), False if it still fires.
     """
-    rescanned = discover_findings(worktree_path, docs_index_file=docs_index_file)
+    if discover_fn is None:
+        from bluei.engine.orchestrator import discover_findings as _default_discover
+
+        discover_fn = _default_discover
+
+    rescanned = discover_fn(worktree_path, docs_index_file=docs_index_file)
     still_firing = [
         f
         for f in rescanned

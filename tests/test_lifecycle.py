@@ -661,13 +661,13 @@ class TestRunSmokeTest:
 
 
 class TestVerifyFixClosed:
-    @patch("bluei.engine.validation.discover_findings", return_value=[])
+    @patch("bluei.engine.orchestrator.discover_findings", return_value=[])
     def test_true_when_gone(self, mock_disc, tmp_path, make_finding):
         log = tmp_path / "log.txt"
         log.write_text("")
         assert verify_fix_closed(tmp_path, make_finding(), log) is True
 
-    @patch("bluei.engine.validation.discover_findings")
+    @patch("bluei.engine.orchestrator.discover_findings")
     def test_false_when_persists(self, mock_disc, tmp_path, make_finding):
         mock_disc.return_value = [make_finding()]
         log = tmp_path / "log.txt"

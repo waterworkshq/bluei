@@ -46,13 +46,17 @@ def _make_pr(number: int, finding_id: str) -> dict:
 
 def _patch_esc_file(esc_mod, tmp_path: Path, records: list[dict]):
     """Write records to a temp file, patch module DEFAULT_ESCALATION_FILE, return original."""
+    import bluei.engine.escalation as eng_esc
+
     esc_file = tmp_path / "state" / "escalation_log.jsonl"
     esc_file.parent.mkdir(parents=True, exist_ok=True)
     if records:
         esc_file.write_text("\n".join(json.dumps(r) for r in records) + "\n")
-    original = esc_mod.DEFAULT_ESCALATION_FILE
+    original_app = esc_mod.DEFAULT_ESCALATION_FILE
+    original_eng = eng_esc.DEFAULT_ESCALATION_FILE
     esc_mod.DEFAULT_ESCALATION_FILE = esc_file
-    return original
+    eng_esc.DEFAULT_ESCALATION_FILE = esc_file
+    return (original_app, original_eng)
 
 
 # ── 1. Merge failure pattern ────────────────────────────────────────
@@ -544,6 +548,7 @@ class TestAppCheckEscalationStatus:
 
     def test_filters_by_repo_and_aggregates_types(self, tmp_path):
         import bluei.app.escalation as esc_mod
+        import bluei.engine.escalation as eng_esc
 
         records = [
             {
@@ -569,12 +574,14 @@ class TestAppCheckEscalationStatus:
         try:
             s = check_escalation_status("acme/api")
         finally:
-            esc_mod.DEFAULT_ESCALATION_FILE = orig
+            esc_mod.DEFAULT_ESCALATION_FILE = orig[0]
+            eng_esc.DEFAULT_ESCALATION_FILE = orig[1]
         assert s["total_escalations"] == 2
         assert s["types"] == {"error": 2, "warning": 1}
 
     def test_active_count_within_60_min(self, tmp_path):
         import bluei.app.escalation as esc_mod
+        import bluei.engine.escalation as eng_esc
 
         records = [
             {
@@ -592,13 +599,15 @@ class TestAppCheckEscalationStatus:
         try:
             s = check_escalation_status("r")
         finally:
-            esc_mod.DEFAULT_ESCALATION_FILE = orig
+            esc_mod.DEFAULT_ESCALATION_FILE = orig[0]
+            eng_esc.DEFAULT_ESCALATION_FILE = orig[1]
         assert s["total_escalations"] == 2
         assert s["active_escalations"] == 1
         assert s["latest"]["findings"][0]["detail"] == "[r] new"
 
     def test_no_matching_repo(self, tmp_path):
         import bluei.app.escalation as esc_mod
+        import bluei.engine.escalation as eng_esc
 
         orig = _patch_esc_file(
             esc_mod,
@@ -614,7 +623,8 @@ class TestAppCheckEscalationStatus:
         try:
             s = check_escalation_status("acme/api")
         finally:
-            esc_mod.DEFAULT_ESCALATION_FILE = orig
+            esc_mod.DEFAULT_ESCALATION_FILE = orig[0]
+            eng_esc.DEFAULT_ESCALATION_FILE = orig[1]
         assert s["total_escalations"] == 0
 
     @pytest.mark.parametrize(
@@ -636,16 +646,20 @@ class TestAppCheckEscalationStatus:
     )
     def test_malformed_data_handled(self, tmp_path, label, raw):
         import bluei.app.escalation as esc_mod
+        import bluei.engine.escalation as eng_esc
 
         esc_file = tmp_path / "state" / "esc.jsonl"
         esc_file.parent.mkdir(parents=True)
         esc_file.write_text(raw)
-        orig = esc_mod.DEFAULT_ESCALATION_FILE
+        orig_app = esc_mod.DEFAULT_ESCALATION_FILE
+        orig_eng = eng_esc.DEFAULT_ESCALATION_FILE
         esc_mod.DEFAULT_ESCALATION_FILE = esc_file
+        eng_esc.DEFAULT_ESCALATION_FILE = esc_file
         try:
             s = check_escalation_status("r")
         finally:
-            esc_mod.DEFAULT_ESCALATION_FILE = orig
+            esc_mod.DEFAULT_ESCALATION_FILE = orig_app
+            eng_esc.DEFAULT_ESCALATION_FILE = orig_eng
         assert isinstance(s["total_escalations"], int)
         assert isinstance(s["active_escalations"], int)
 
