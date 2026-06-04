@@ -350,31 +350,6 @@ def discover_findings(
 
     rule_meta = {entry["rule"]: entry for entry in DETECTOR_CATALOG}
 
-    # Bug detectors
-    for idx, line in enumerate(_read_lines("price.py"), start=1):
-        if "return amount + discount" in line:
-            _add_finding(
-                "price.py",
-                idx,
-                "discount-math-sign",
-                line.strip(),
-                rule_meta["discount-math-sign"]["confidence"],
-                quick_win=True,
-                safe_to_autofix=True,
-            )
-
-    for idx, line in enumerate(_read_lines("src/qa_sandbox/catalog.py"), start=1):
-        if "if item == query" in line:
-            _add_finding(
-                "src/qa_sandbox/catalog.py",
-                idx,
-                "catalog-query-not-normalized",
-                line.strip(),
-                rule_meta["catalog-query-not-normalized"]["confidence"],
-                quick_win=True,
-                safe_to_autofix=True,
-            )
-
     orders_lines = _read_lines("src/qa_sandbox/orders.py")
     for idx, line in enumerate(orders_lines, start=1):
         if "int(order.subtotal * order.tax_rate)" in line:
@@ -385,45 +360,6 @@ def discover_findings(
                 line.strip(),
                 rule_meta["orders-tax-truncation"]["confidence"],
             )
-        if "except Exception" in line:
-            _add_finding(
-                "src/qa_sandbox/orders.py",
-                idx,
-                "broad-except",
-                line.strip(),
-                rule_meta["broad-except"]["confidence"],
-            )
-
-    for idx, line in enumerate(_read_lines("src/qa_sandbox/notifications.py"), start=1):
-        if "return value.lower()" in line:
-            _add_finding(
-                "src/qa_sandbox/notifications.py",
-                idx,
-                "notifications-email-no-trim",
-                line.strip(),
-                rule_meta["notifications-email-no-trim"]["confidence"],
-                quick_win=True,
-                safe_to_autofix=True,
-            )
-
-    # Check for missing type guard in notifications module
-    notifications_lines = _read_lines("src/qa_sandbox/notifications.py")
-    has_type_guard = any(
-        "isinstance" in line and "str" in line for line in notifications_lines
-    )
-    if notifications_lines and not has_type_guard:
-        for idx, line in enumerate(notifications_lines, start=1):
-            if "def normalize_email" in line:
-                _add_finding(
-                    "src/qa_sandbox/notifications.py",
-                    idx,
-                    "notifications-type-guard-missing",
-                    "missing isinstance(value, str) type guard",
-                    rule_meta["notifications-type-guard-missing"]["confidence"],
-                    quick_win=True,
-                    safe_to_autofix=True,
-                )
-                break
 
     inventory_lines = _read_lines("src/qa_sandbox/inventory.py")
     if inventory_lines and not any("quantity <= 0" in line for line in inventory_lines):
@@ -439,25 +375,6 @@ def discover_findings(
                     safe_to_autofix=True,
                 )
                 break
-    for idx, line in enumerate(inventory_lines, start=1):
-        if "pop(0)" in line:
-            _add_finding(
-                "src/qa_sandbox/inventory.py",
-                idx,
-                "perf-pop-front-loop",
-                line.strip(),
-                rule_meta["perf-pop-front-loop"]["confidence"],
-            )
-
-    for idx, line in enumerate(_read_lines("src/qa_sandbox/analytics.py"), start=1):
-        if "not in seen" in line:
-            _add_finding(
-                "src/qa_sandbox/analytics.py",
-                idx,
-                "perf-list-membership-loop",
-                line.strip(),
-                rule_meta["perf-list-membership-loop"]["confidence"],
-            )
 
     # Debt/TODO detectors
     todo_targets = [
@@ -477,19 +394,6 @@ def discover_findings(
                     stripped,
                     rule_meta["debt-todo-marker"]["confidence"],
                 )
-
-    # Lint/style detector
-    for idx, line in enumerate(_read_lines("scripts/report_health.py"), start=1):
-        if 'Path("/tmp/' in line or "Path('/tmp/" in line:
-            _add_finding(
-                "scripts/report_health.py",
-                idx,
-                "hardcoded-tmp-path",
-                line.strip(),
-                rule_meta["hardcoded-tmp-path"]["confidence"],
-                quick_win=True,
-                safe_to_autofix=True,
-            )
 
     # Trailing whitespace detector for Python source files
     py_files = [

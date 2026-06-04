@@ -23,24 +23,35 @@ DiscoverResult = Tuple[
 ]
 
 
-def run_discover_phase(
-    *,
-    repo_path: Path,
-    docs_index_file: Path,
-    findings_file: Path,
-    log_file: Path,
-    state: Dict[str, Any],
-    issues_data: Dict[str, Any],
-    args: Any,
-    run_issue_cycle: bool,
-    run_pr_cycle: bool,
-) -> DiscoverResult:
+def run_discover_phase(*args, **kwargs) -> DiscoverResult:
     """Run the discovery phase: find findings, apply cooldown, route refactors.
 
     Returns:
         (findings, written_findings, eligible_findings, suppressed_findings,
          refactor_routed_items, blocked_reasons, cap_ok)
     """
+    if args:
+        ctx = args[0]
+        repo_path = ctx.repo_path
+        docs_index_file = ctx.docs_index_file
+        findings_file = ctx.findings_file
+        log_file = ctx.log_file
+        state = ctx.state
+        issues_data = ctx.issues_data
+        args = ctx.args
+        run_issue_cycle = ctx.run_issue_cycle
+        run_pr_cycle = ctx.run_pr_cycle
+    else:
+        repo_path = kwargs["repo_path"]
+        docs_index_file = kwargs["docs_index_file"]
+        findings_file = kwargs["findings_file"]
+        log_file = kwargs["log_file"]
+        state = kwargs["state"]
+        issues_data = kwargs["issues_data"]
+        args = kwargs["args"]
+        run_issue_cycle = kwargs["run_issue_cycle"]
+        run_pr_cycle = kwargs["run_pr_cycle"]
+
     from bluei.engine.orchestrator import discover_findings, route_findings_with_intent
     from bluei.engine.reforge import RefactorClass, classify_finding
     from bluei.engine.utils import is_path_tracked

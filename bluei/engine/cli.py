@@ -67,6 +67,7 @@ from bluei.engine.commands.pipeline import (  # noqa: E402
     run_reconcile_only,
     run_verify_only,
 )
+from bluei.engine.commands.context import RunContext  # noqa: E402
 
 
 def main() -> int:
@@ -284,36 +285,11 @@ def main() -> int:
     )
     state["last_run_at"] = now_iso()
 
-    if args.reconcile_only:
-        return run_reconcile_only(
-            state_file=state_file,
-            state=state,
-            status_file=status_file,
-            issues_file=issues_file,
-            findings_file=findings_file,
-            log_file=log_file,
-            args=args,
-            reconcile_event=reconcile_event,
-            previous_last_run_at=previous_last_run_at,
-            open_issues=open_issues,
-            open_prs=open_prs,
-        )
+    # --- Construct RunContext: single source of truth for pipeline state ---
+    run_issue_cycle = args.run_phase in ("issue-cycle", "orchestrated")
+    run_pr_cycle = args.run_phase in ("pr-cycle", "orchestrated")
+    run_merge_cycle = args.run_phase in ("merge-cycle", "orchestrated")
 
-    blocked_reasons: List[str] = []
-    fix_attempts = 0
-    fixes_verified = 0
-    fixes_failed_verification = 0
-    issues_escalated_max_retries = 0
-    created_prs = 0
-    claude_invocations = 0
-    opencode_invocations = 0
-    deterministic_invocations = 0
-    merge_attempts = 0
-    merges_succeeded = 0
-    merges_failed = 0
-    merged_pr_urls: List[str] = []
-
-    # Cost tracker — persisted per-cycle so cumulative cost history is available
     cost_log_path = Path(state_file).parent / "cost_log.jsonl"
     cost_tracker = CostTracker(
         log_path=cost_log_path,
@@ -321,46 +297,57 @@ def main() -> int:
         hard_limit=10.0,
     )
 
-    findings: List[Finding] = []
-    written_findings = 0
-    eligible_findings: List[Finding] = []
-    suppressed_findings: List[Finding] = []
-    refactor_routed_items: List[Dict[str, Any]] = []
-
     issues_data = load_issues(issues_file)
-    created_issues: List[Dict[str, Any]] = []
 
-    run_issue_cycle = args.run_phase in ("issue-cycle", "orchestrated")
-    run_pr_cycle = args.run_phase in ("pr-cycle", "orchestrated")
-    run_merge_cycle = args.run_phase in ("merge-cycle", "orchestrated")
+    ctx = RunContext(
+        args=args,
+        repo_path=repo_path,
+        state_file=state_file,
+        log_file=log_file,
+        findings_file=findings_file,
+        issues_file=issues_file,
+        worktree_root=worktree_root,
+        status_file=status_file,
+        docs_index_file=docs_index_file,
+        lessons_file=lessons_file,
+        review_state_file=review_state_file,
+        gh_repo_slug=gh_repo_slug,
+        origin_url=origin_url,
+        state=state,
+        issues_data=issues_data,
+        open_issues=open_issues,
+        open_prs=open_prs,
+        reconcile_event=reconcile_event,
+        previous_last_run_at=previous_last_run_at,
+        cost_tracker=cost_tracker,
+        cost_log_path=cost_log_path,
+        pattern_store=pattern_store,
+        PER_REPO_BASELINE_CHECKS=PER_REPO_BASELINE_CHECKS,
+        run_issue_cycle=run_issue_cycle,
+        run_pr_cycle=run_pr_cycle,
+        run_merge_cycle=run_merge_cycle,
+    )
+
+    if args.reconcile_only:
+        return run_reconcile_only(ctx)
 
     if (
-        args.run_phase in ("verify-only",) or run_issue_cycle
-    ) and not docs_index_file.exists():
-        refresh_docs_index(repo_path, docs_index_file, log_file)
+        args.run_phase in ("verify-only",) or ctx.run_issue_cycle
+    ) and not ctx.docs_index_file.exists():
+        refresh_docs_index(ctx.repo_path, ctx.docs_index_file, ctx.log_file)
 
     cap_ok = True
-    if args.run_phase in ("verify-only",) or run_issue_cycle:
+    if args.run_phase in ("verify-only",) or ctx.run_issue_cycle:
         (
-            findings,
-            written_findings,
-            eligible_findings,
-            suppressed_findings,
-            refactor_routed_items,
+            ctx.findings,
+            ctx.written_findings,
+            ctx.eligible_findings,
+            ctx.suppressed_findings,
+            ctx.refactor_routed_items,
             _disc_blocked,
             cap_ok,
-        ) = run_discover_phase(
-            repo_path=repo_path,
-            docs_index_file=docs_index_file,
-            findings_file=findings_file,
-            log_file=log_file,
-            state=state,
-            issues_data=issues_data,
-            args=args,
-            run_issue_cycle=run_issue_cycle,
-            run_pr_cycle=run_pr_cycle,
-        )
-        blocked_reasons.extend(_disc_blocked)
+        ) = run_discover_phase(ctx)
+        ctx.blocked_reasons.extend(_disc_blocked)
 
     # --- Contextual Fix Migration ---
     if args.migrate_context:
@@ -383,144 +370,42 @@ def main() -> int:
                 )
             print(f"Reclassified {len(changes)} findings.")
 
-    if run_issue_cycle:
-        _created, _open, _blocked = run_issue_creation_phase(
-            issues_data=issues_data,
-            eligible_findings=eligible_findings,
-            refactor_routed_items=refactor_routed_items,
-            log_file=log_file,
-            args=args,
-            gh_repo_slug=gh_repo_slug,
-            open_issues=open_issues,
-        )
-        created_issues.extend(_created)
-        open_issues = _open
-        blocked_reasons.extend(_blocked)
+    if ctx.run_issue_cycle:
+        _created, _open, _blocked = run_issue_creation_phase(ctx)
+        ctx.created_issues.extend(_created)
+        ctx.open_issues = _open
+        ctx.blocked_reasons.extend(_blocked)
 
     if args.run_phase == "verify-only":
-        return run_verify_only(
-            findings=findings,
-            issues_data=issues_data,
-            issues_file=issues_file,
-            state_file=state_file,
-            state=state,
-            status_file=status_file,
-            findings_file=findings_file,
-            log_file=log_file,
-            args=args,
-            reconcile_event=reconcile_event,
-            previous_last_run_at=previous_last_run_at,
-            open_issues=open_issues,
-            open_prs=open_prs,
-            written_findings=written_findings,
-            suppressed_findings=suppressed_findings,
-            blocked_reasons=blocked_reasons,
-        )
+        return run_verify_only(ctx)
 
-    if run_pr_cycle:
-        pr_result = run_pr_cycle_phase(
-            repo_path=repo_path,
-            findings_file=findings_file,
-            log_file=log_file,
-            worktree_root=worktree_root,
-            gh_repo_slug=gh_repo_slug,
-            review_state_file=review_state_file,
-            docs_index_file=docs_index_file,
-            lessons_file=lessons_file,
-            args=args,
-            state=state,
-            issues_data=issues_data,
-            eligible_findings=eligible_findings,
-            findings=findings,
-            PER_REPO_BASELINE_CHECKS=PER_REPO_BASELINE_CHECKS,
-            cost_tracker=cost_tracker,
-            pattern_store=pattern_store,
-            created_prs=created_prs,
-            open_prs=open_prs,
-            fix_attempts=fix_attempts,
-            fixes_verified=fixes_verified,
-            fixes_failed_verification=fixes_failed_verification,
-            issues_escalated_max_retries=issues_escalated_max_retries,
-            claude_invocations=claude_invocations,
-            deterministic_invocations=deterministic_invocations,
-            blocked_reasons=blocked_reasons,
-        )
-        created_prs = pr_result["created_prs"]
-        open_prs = pr_result["open_prs"]
-        fix_attempts = pr_result["fix_attempts"]
-        fixes_verified = pr_result["fixes_verified"]
-        fixes_failed_verification = pr_result["fixes_failed_verification"]
-        issues_escalated_max_retries = pr_result["issues_escalated_max_retries"]
-        claude_invocations = pr_result["claude_invocations"]
-        deterministic_invocations = pr_result["deterministic_invocations"]
-        blocked_reasons = pr_result["blocked_reasons"]
-        state = pr_result["state"]
-        issues_data = pr_result["issues_data"]
-        eligible_findings = pr_result["eligible_findings"]
-    if run_merge_cycle:
+    if ctx.run_pr_cycle:
+        pr_result = run_pr_cycle_phase(ctx)
+        ctx.created_prs = pr_result["created_prs"]
+        ctx.open_prs = pr_result["open_prs"]
+        ctx.fix_attempts = pr_result["fix_attempts"]
+        ctx.fixes_verified = pr_result["fixes_verified"]
+        ctx.fixes_failed_verification = pr_result["fixes_failed_verification"]
+        ctx.issues_escalated_max_retries = pr_result["issues_escalated_max_retries"]
+        ctx.claude_invocations = pr_result["claude_invocations"]
+        ctx.deterministic_invocations = pr_result["deterministic_invocations"]
+        ctx.blocked_reasons = pr_result["blocked_reasons"]
+        ctx.state = pr_result["state"]
+        ctx.issues_data = pr_result["issues_data"]
+        ctx.eligible_findings = pr_result["eligible_findings"]
+    if ctx.run_merge_cycle:
         (
-            merges_failed,
-            merges_succeeded,
-            merge_attempts,
-            merged_pr_urls,
-            open_prs,
-            open_issues,
-            blocked_reasons,
-            reconcile_event,
-        ) = run_merge_cycle_phase(
-            repo_path=repo_path,
-            log_file=log_file,
-            review_state_file=review_state_file,
-            state=state,
-            issues_data=issues_data,
-            args=args,
-            gh_repo_slug=gh_repo_slug,
-            merges_failed=merges_failed,
-            merges_succeeded=merges_succeeded,
-            merge_attempts=merge_attempts,
-            merged_pr_urls=merged_pr_urls,
-            open_prs=open_prs,
-            open_issues=open_issues,
-            blocked_reasons=blocked_reasons,
-            reconcile_event=reconcile_event,
-        )
+            ctx.merges_failed,
+            ctx.merges_succeeded,
+            ctx.merge_attempts,
+            ctx.merged_pr_urls,
+            ctx.open_prs,
+            ctx.open_issues,
+            ctx.blocked_reasons,
+            ctx.reconcile_event,
+        ) = run_merge_cycle_phase(ctx)
 
-    return run_finalize_phase(
-        state_file=state_file,
-        issues_file=issues_file,
-        status_file=status_file,
-        findings_file=findings_file,
-        log_file=log_file,
-        lessons_file=lessons_file,
-        repo_path=repo_path,
-        args=args,
-        state=state,
-        issues_data=issues_data,
-        reconcile_event=reconcile_event,
-        previous_last_run_at=previous_last_run_at,
-        open_issues=open_issues,
-        open_prs=open_prs,
-        findings=findings,
-        written_findings=written_findings,
-        created_issues=created_issues,
-        suppressed_findings=suppressed_findings,
-        blocked_reasons=blocked_reasons,
-        fix_attempts=fix_attempts,
-        fixes_verified=fixes_verified,
-        fixes_failed_verification=fixes_failed_verification,
-        created_prs=created_prs,
-        issues_escalated_max_retries=issues_escalated_max_retries,
-        merge_attempts=merge_attempts,
-        merges_succeeded=merges_succeeded,
-        merges_failed=merges_failed,
-        merged_pr_urls=merged_pr_urls,
-        claude_invocations=claude_invocations,
-        opencode_invocations=opencode_invocations,
-        deterministic_invocations=deterministic_invocations,
-        cost_tracker=cost_tracker,
-        cost_log_path=cost_log_path,
-        gh_repo_slug=gh_repo_slug,
-    )
+    return run_finalize_phase(ctx)
 
 
 if __name__ == "__main__":

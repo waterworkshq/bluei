@@ -1,6 +1,6 @@
 """RunContext — shared pipeline state container for cli.py decomposition.
 
-Packs the 20+ local variables from main() into a single mutable dataclass
+Packs the local variables from main() into a single mutable dataclass
 that pipeline phases receive and mutate by reference.
 """
 
@@ -17,6 +17,7 @@ from bluei.engine.pattern_store import FixPatternStore
 class RunContext:
     args: Any  # argparse.Namespace
 
+    # Paths
     repo_path: Path = field(default_factory=Path)
     state_file: Path = field(default_factory=Path)
     log_file: Path = field(default_factory=Path)
@@ -28,9 +29,11 @@ class RunContext:
     lessons_file: Path = field(default_factory=Path)
     review_state_file: Path = field(default_factory=Path)
 
+    # GitHub
     gh_repo_slug: str = ""
     origin_url: str = ""
 
+    # State
     state: Dict[str, Any] = field(default_factory=dict)
     issues_data: Dict[str, Any] = field(default_factory=dict)
     open_issues: int = 0
@@ -38,12 +41,14 @@ class RunContext:
     reconcile_event: Dict[str, Any] = field(default_factory=dict)
     previous_last_run_at: Optional[str] = None
 
+    # Findings
     findings: List[Finding] = field(default_factory=list)
     written_findings: int = 0
     eligible_findings: List[Finding] = field(default_factory=list)
     suppressed_findings: List[Finding] = field(default_factory=list)
     refactor_routed_items: List[Dict[str, Any]] = field(default_factory=list)
 
+    # Counters
     fix_attempts: int = 0
     fixes_verified: int = 0
     fixes_failed_verification: int = 0
@@ -59,10 +64,17 @@ class RunContext:
     merged_pr_urls: List[str] = field(default_factory=list)
     blocked_reasons: List[str] = field(default_factory=list)
 
+    # Cost tracking
     cost_tracker: Optional[CostTracker] = None
-    pattern_store: Optional[FixPatternStore] = None
-    per_repo_baseline_checks: Dict[str, List[str]] = field(default_factory=dict)
+    cost_log_path: Optional[Path] = None
 
+    # Pattern store
+    pattern_store: Optional[FixPatternStore] = None
+
+    # Baseline checks (per-repo, resolved once)
+    PER_REPO_BASELINE_CHECKS: Dict[str, List[str]] = field(default_factory=dict)
+
+    # Cycle flags
     run_issue_cycle: bool = False
     run_pr_cycle: bool = False
     run_merge_cycle: bool = False

@@ -10,21 +10,30 @@ IssueCreationResult = Tuple[
 ]
 
 
-def run_issue_creation_phase(
-    *,
-    issues_data: Dict[str, Any],
-    eligible_findings: List[Any],
-    refactor_routed_items: List[Dict[str, Any]],
-    log_file: Path,
-    args: Any,
-    gh_repo_slug: str,
-    open_issues: int,
-) -> IssueCreationResult:
+def run_issue_creation_phase(*args, **kwargs) -> IssueCreationResult:
     """Create issues for discovered findings.
 
     Returns:
         (created_issues, open_issues, blocked_reasons)
     """
+    if args:
+        ctx = args[0]
+        issues_data = ctx.issues_data
+        eligible_findings = ctx.eligible_findings
+        refactor_routed_items = ctx.refactor_routed_items
+        log_file = ctx.log_file
+        args = ctx.args
+        gh_repo_slug = ctx.gh_repo_slug
+        open_issues = ctx.open_issues
+    else:
+        issues_data = kwargs["issues_data"]
+        eligible_findings = kwargs["eligible_findings"]
+        refactor_routed_items = kwargs["refactor_routed_items"]
+        log_file = kwargs["log_file"]
+        args = kwargs["args"]
+        gh_repo_slug = kwargs["gh_repo_slug"]
+        open_issues = kwargs["open_issues"]
+
     from bluei.engine.orchestrator import (
         create_issues_for_findings,
         ensure_issue_for_finding,

@@ -8,26 +8,44 @@ from bluei.engine.state import _append_text, save_issues, save_state
 from bluei.engine.commands.helpers import update_status_artifact
 
 
-def run_verify_only(
-    *,
-    findings: List[Any],
-    issues_data: Dict[str, Any],
-    issues_file: Path,
-    state_file: Path,
-    state: Dict[str, Any],
-    status_file: Path,
-    findings_file: Path,
-    log_file: Path,
-    args: Any,
-    reconcile_event: Dict[str, Any],
-    previous_last_run_at: Optional[str],
-    open_issues: int,
-    open_prs: int,
-    written_findings: int,
-    suppressed_findings: List[Any],
-    blocked_reasons: List[str],
-) -> int:
+def run_verify_only(*args, **kwargs) -> int:
     """Handle --run-phase=verify-only exit."""
+    if args:
+        ctx = args[0]
+        findings = ctx.findings
+        issues_data = ctx.issues_data
+        issues_file = ctx.issues_file
+        state_file = ctx.state_file
+        state = ctx.state
+        status_file = ctx.status_file
+        findings_file = ctx.findings_file
+        log_file = ctx.log_file
+        args = ctx.args
+        reconcile_event = ctx.reconcile_event
+        previous_last_run_at = ctx.previous_last_run_at
+        open_issues = ctx.open_issues
+        open_prs = ctx.open_prs
+        written_findings = ctx.written_findings
+        suppressed_findings = ctx.suppressed_findings
+        blocked_reasons = ctx.blocked_reasons
+    else:
+        findings = kwargs["findings"]
+        issues_data = kwargs["issues_data"]
+        issues_file = kwargs["issues_file"]
+        state_file = kwargs["state_file"]
+        state = kwargs["state"]
+        status_file = kwargs["status_file"]
+        findings_file = kwargs["findings_file"]
+        log_file = kwargs["log_file"]
+        args = kwargs["args"]
+        reconcile_event = kwargs["reconcile_event"]
+        previous_last_run_at = kwargs["previous_last_run_at"]
+        open_issues = kwargs["open_issues"]
+        open_prs = kwargs["open_prs"]
+        written_findings = kwargs["written_findings"]
+        suppressed_findings = kwargs["suppressed_findings"]
+        blocked_reasons = kwargs["blocked_reasons"]
+
     from bluei.engine.orchestrator import set_issue_status
 
     fixes_verified = 0

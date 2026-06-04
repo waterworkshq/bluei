@@ -14,44 +14,80 @@ from bluei.engine.commands.helpers import update_status_artifact
 logger = logging.getLogger(__name__)
 
 
-def run_finalize_phase(
-    *,
-    state_file: Path,
-    issues_file: Path,
-    status_file: Path,
-    findings_file: Path,
-    log_file: Path,
-    lessons_file: Path,
-    repo_path: Path,
-    args: Any,
-    state: Dict[str, Any],
-    issues_data: Dict[str, Any],
-    reconcile_event: Dict[str, Any],
-    previous_last_run_at: Optional[str],
-    open_issues: int,
-    open_prs: int,
-    findings: List[Any],
-    written_findings: int,
-    created_issues: List[Any],
-    suppressed_findings: List[Any],
-    blocked_reasons: List[str],
-    fix_attempts: int,
-    fixes_verified: int,
-    fixes_failed_verification: int,
-    created_prs: int,
-    issues_escalated_max_retries: int,
-    merge_attempts: int,
-    merges_succeeded: int,
-    merges_failed: int,
-    merged_pr_urls: List[str],
-    claude_invocations: int,
-    opencode_invocations: int,
-    deterministic_invocations: int,
-    cost_tracker: Any,
-    cost_log_path: Path,
-    gh_repo_slug: str,
-) -> int:
+def run_finalize_phase(*args, **kwargs) -> int:
     """Save state, write status artifact, log lessons, run escalation checks."""
+    if args:
+        ctx = args[0]
+        state_file = ctx.state_file
+        issues_file = ctx.issues_file
+        status_file = ctx.status_file
+        findings_file = ctx.findings_file
+        log_file = ctx.log_file
+        lessons_file = ctx.lessons_file
+        repo_path = ctx.repo_path
+        args = ctx.args
+        state = ctx.state
+        issues_data = ctx.issues_data
+        reconcile_event = ctx.reconcile_event
+        previous_last_run_at = ctx.previous_last_run_at
+        open_issues = ctx.open_issues
+        open_prs = ctx.open_prs
+        findings = ctx.findings
+        written_findings = ctx.written_findings
+        created_issues = ctx.created_issues
+        suppressed_findings = ctx.suppressed_findings
+        blocked_reasons = ctx.blocked_reasons
+        fix_attempts = ctx.fix_attempts
+        fixes_verified = ctx.fixes_verified
+        fixes_failed_verification = ctx.fixes_failed_verification
+        created_prs = ctx.created_prs
+        issues_escalated_max_retries = ctx.issues_escalated_max_retries
+        merge_attempts = ctx.merge_attempts
+        merges_succeeded = ctx.merges_succeeded
+        merges_failed = ctx.merges_failed
+        merged_pr_urls = ctx.merged_pr_urls
+        claude_invocations = ctx.claude_invocations
+        opencode_invocations = ctx.opencode_invocations
+        deterministic_invocations = ctx.deterministic_invocations
+        cost_tracker = ctx.cost_tracker
+        cost_log_path = ctx.cost_log_path
+        gh_repo_slug = ctx.gh_repo_slug
+    else:
+        state_file = kwargs["state_file"]
+        issues_file = kwargs["issues_file"]
+        status_file = kwargs["status_file"]
+        findings_file = kwargs["findings_file"]
+        log_file = kwargs["log_file"]
+        lessons_file = kwargs["lessons_file"]
+        repo_path = kwargs["repo_path"]
+        args = kwargs["args"]
+        state = kwargs["state"]
+        issues_data = kwargs["issues_data"]
+        reconcile_event = kwargs["reconcile_event"]
+        previous_last_run_at = kwargs["previous_last_run_at"]
+        open_issues = kwargs["open_issues"]
+        open_prs = kwargs["open_prs"]
+        findings = kwargs["findings"]
+        written_findings = kwargs["written_findings"]
+        created_issues = kwargs["created_issues"]
+        suppressed_findings = kwargs["suppressed_findings"]
+        blocked_reasons = kwargs["blocked_reasons"]
+        fix_attempts = kwargs["fix_attempts"]
+        fixes_verified = kwargs["fixes_verified"]
+        fixes_failed_verification = kwargs["fixes_failed_verification"]
+        created_prs = kwargs["created_prs"]
+        issues_escalated_max_retries = kwargs["issues_escalated_max_retries"]
+        merge_attempts = kwargs["merge_attempts"]
+        merges_succeeded = kwargs["merges_succeeded"]
+        merges_failed = kwargs["merges_failed"]
+        merged_pr_urls = kwargs["merged_pr_urls"]
+        claude_invocations = kwargs["claude_invocations"]
+        opencode_invocations = kwargs["opencode_invocations"]
+        deterministic_invocations = kwargs["deterministic_invocations"]
+        cost_tracker = kwargs["cost_tracker"]
+        cost_log_path = kwargs["cost_log_path"]
+        gh_repo_slug = kwargs["gh_repo_slug"]
+
     save_issues(issues_file, issues_data)
     unresolved_open = len(
         [

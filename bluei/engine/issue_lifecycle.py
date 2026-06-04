@@ -33,8 +33,10 @@ def load_issues(path: Path) -> Dict[str, Any]:
 
 
 def save_issues(path: Path, data: Dict[str, Any]) -> None:
+    from bluei.app.state import _atomic_json_write
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    _atomic_json_write(path, data)
 
 
 # Statuses that indicate an issue is NOT actionable (blocked/escalated/resolved)

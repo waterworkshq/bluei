@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -87,22 +85,9 @@ def load_state(path: Path) -> Dict[str, Any]:
 
 
 def save_state(path: Path, state: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent),
-        prefix=".state-",
-        suffix=".tmp",
-    )
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(json.dumps(state, indent=2, sort_keys=True) + "\n")
-        os.replace(tmp_path, str(path))
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            _logger.debug("Failed to unlink temp file during atomic write")
-        raise
+    from bluei.app.state import _atomic_json_write
+
+    _atomic_json_write(path, state)
 
 
 def append_log(path: Path, msg: str) -> None:

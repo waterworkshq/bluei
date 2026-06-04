@@ -7,21 +7,34 @@ from bluei.engine.state import _append_text, save_state
 from bluei.engine.commands.helpers import update_status_artifact
 
 
-def run_reconcile_only(
-    *,
-    state_file: Path,
-    state: Dict[str, Any],
-    status_file: Path,
-    issues_file: Path,
-    findings_file: Path,
-    log_file: Path,
-    args: Any,
-    reconcile_event: Dict[str, Any],
-    previous_last_run_at: Optional[str],
-    open_issues: int,
-    open_prs: int,
-) -> int:
+def run_reconcile_only(*args, **kwargs) -> int:
     """Handle --reconcile-only early exit."""
+    if args:
+        ctx = args[0]
+        state_file = ctx.state_file
+        state = ctx.state
+        status_file = ctx.status_file
+        issues_file = ctx.issues_file
+        findings_file = ctx.findings_file
+        log_file = ctx.log_file
+        args = ctx.args
+        reconcile_event = ctx.reconcile_event
+        previous_last_run_at = ctx.previous_last_run_at
+        open_issues = ctx.open_issues
+        open_prs = ctx.open_prs
+    else:
+        state_file = kwargs["state_file"]
+        state = kwargs["state"]
+        status_file = kwargs["status_file"]
+        issues_file = kwargs["issues_file"]
+        findings_file = kwargs["findings_file"]
+        log_file = kwargs["log_file"]
+        args = kwargs["args"]
+        reconcile_event = kwargs["reconcile_event"]
+        previous_last_run_at = kwargs["previous_last_run_at"]
+        open_issues = kwargs["open_issues"]
+        open_prs = kwargs["open_prs"]
+
     save_state(state_file, state)
     update_status_artifact(
         status_file=status_file,

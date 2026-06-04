@@ -11,6 +11,7 @@ and exercise the live path with dry_run=False.
 
 from __future__ import annotations
 
+import subprocess
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -345,7 +346,7 @@ class TestLiveGHIssueLinkingPartialFailure:
             nonlocal comment_call_count
             comment_call_count += 1
             if issue_number == 11:
-                raise RuntimeError("gh api rate limited")
+                raise subprocess.CalledProcessError(1, "gh issue comment")
             return True
 
         with _PatchStack(_live_patches()) as mocks:
@@ -388,7 +389,7 @@ class TestLiveGHIssueLinkingPartialFailure:
             with (
                 patch(
                     "bluei.engine.gh.gh_issue_comment",
-                    side_effect=RuntimeError("gh down"),
+                    side_effect=subprocess.CalledProcessError(1, "gh issue comment"),
                 ),
                 patch("bluei.engine.orchestrator.set_issue_status"),
             ):

@@ -62,35 +62,61 @@ from bluei.engine.commands.helpers import (
 )
 
 
-def run_pr_cycle_phase(
-    *,
-    repo_path: Path,
-    findings_file: Path,
-    log_file: Path,
-    worktree_root: Path,
-    gh_repo_slug: str,
-    review_state_file: Path,
-    docs_index_file: Path,
-    lessons_file: Path,
-    args: Any,
-    state: Dict[str, Any],
-    issues_data: Dict[str, Any],
-    eligible_findings: List[Any],
-    findings: List[Any],
-    PER_REPO_BASELINE_CHECKS: Dict[str, List[str]],
-    cost_tracker: Any,
-    pattern_store: Any,
-    created_prs: int,
-    open_prs: int,
-    fix_attempts: int,
-    fixes_verified: int,
-    fixes_failed_verification: int,
-    issues_escalated_max_retries: int,
-    claude_invocations: int,
-    deterministic_invocations: int,
-    blocked_reasons: List[str],
-) -> Dict[str, Any]:
+def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
     """Run the PR cycle: queue candidates, apply fixes, create PRs."""
+    if args:
+        ctx = args[0]
+        repo_path = ctx.repo_path
+        findings_file = ctx.findings_file
+        log_file = ctx.log_file
+        worktree_root = ctx.worktree_root
+        gh_repo_slug = ctx.gh_repo_slug
+        review_state_file = ctx.review_state_file
+        docs_index_file = ctx.docs_index_file
+        lessons_file = ctx.lessons_file
+        args = ctx.args
+        state = ctx.state
+        issues_data = ctx.issues_data
+        eligible_findings = ctx.eligible_findings
+        findings = ctx.findings
+        PER_REPO_BASELINE_CHECKS = ctx.PER_REPO_BASELINE_CHECKS
+        cost_tracker = ctx.cost_tracker
+        pattern_store = ctx.pattern_store
+        created_prs = ctx.created_prs
+        open_prs = ctx.open_prs
+        fix_attempts = ctx.fix_attempts
+        fixes_verified = ctx.fixes_verified
+        fixes_failed_verification = ctx.fixes_failed_verification
+        issues_escalated_max_retries = ctx.issues_escalated_max_retries
+        claude_invocations = ctx.claude_invocations
+        deterministic_invocations = ctx.deterministic_invocations
+        blocked_reasons = ctx.blocked_reasons
+    else:
+        repo_path = kwargs["repo_path"]
+        findings_file = kwargs["findings_file"]
+        log_file = kwargs["log_file"]
+        worktree_root = kwargs["worktree_root"]
+        gh_repo_slug = kwargs["gh_repo_slug"]
+        review_state_file = kwargs["review_state_file"]
+        docs_index_file = kwargs["docs_index_file"]
+        lessons_file = kwargs["lessons_file"]
+        args = kwargs["args"]
+        state = kwargs["state"]
+        issues_data = kwargs["issues_data"]
+        eligible_findings = kwargs["eligible_findings"]
+        findings = kwargs["findings"]
+        PER_REPO_BASELINE_CHECKS = kwargs["PER_REPO_BASELINE_CHECKS"]
+        cost_tracker = kwargs["cost_tracker"]
+        pattern_store = kwargs["pattern_store"]
+        created_prs = kwargs["created_prs"]
+        open_prs = kwargs["open_prs"]
+        fix_attempts = kwargs["fix_attempts"]
+        fixes_verified = kwargs["fixes_verified"]
+        fixes_failed_verification = kwargs["fixes_failed_verification"]
+        issues_escalated_max_retries = kwargs["issues_escalated_max_retries"]
+        claude_invocations = kwargs["claude_invocations"]
+        deterministic_invocations = kwargs["deterministic_invocations"]
+        blocked_reasons = kwargs["blocked_reasons"]
 
     queue_candidates: List[Tuple[Dict[str, Any], Finding]] = []
     for issue in issues_data.get("issues", []):

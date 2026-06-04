@@ -618,9 +618,6 @@ def _cmd_lesson(rest: list[str]) -> int:
     from bin.cmd_lesson import _cmd_lesson as _impl
 
     return _impl(rest)
-    from bin.cmd_lesson import _cmd_lesson as _impl
-
-    return _impl(rest)
 
 
 def _cmd_notify(rest: list[str]) -> int:

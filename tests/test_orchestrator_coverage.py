@@ -200,28 +200,14 @@ class TestDiscoverFindingsDetectors:
     @pytest.mark.parametrize(
         "file_path, content, expected_rule",
         [
-            (
-                "price.py",
-                "def calc(amount, discount):\n    return amount + discount\n",
-                "discount-math-sign",
-            ),
             ("price.py", "x = 1   \n", "trailing-whitespace"),
         ],
-        ids=["discount-math-sign", "trailing-whitespace"],
+        ids=["trailing-whitespace"],
     )
     def test_python_detectors(self, tmp_path, file_path, content, expected_rule):
         (tmp_path / file_path).write_text(content)
         findings = _run_discovery(tmp_path, tmp_path / "log.txt")
         assert expected_rule in [f.rule for f in findings]
-
-    def test_broad_except(self, tmp_path):
-        orders_dir = tmp_path / "src" / "qa_sandbox"
-        orders_dir.mkdir(parents=True)
-        (orders_dir / "orders.py").write_text(
-            "try:\n    pass\nexcept Exception:\n    pass\n"
-        )
-        findings = _run_discovery(tmp_path, tmp_path / "log.txt")
-        assert "broad-except" in [f.rule for f in findings]
 
     def test_docs_legacy_reference(self, tmp_path):
         docs = tmp_path / "docs"
@@ -319,7 +305,9 @@ class TestDiscoverFindingsMultiLanguage:
         ],
         ids=["ts-ast", "go-ast", "rust-ast", "plugin"],
     )
-    def test_scanner_findings_aggregated(self, tmp_path, scanner_key, file_path, rule, make_finding):
+    def test_scanner_findings_aggregated(
+        self, tmp_path, scanner_key, file_path, rule, make_finding
+    ):
         f = _mf(make_finding, path=file_path, rule=rule)
         findings = _run_discovery(tmp_path, tmp_path / "log.txt", **{scanner_key: [f]})
         assert any(finding.rule == rule for finding in findings)
@@ -451,7 +439,8 @@ class TestRouteFindingsWithIntent:
     def test_safe_autofix_routed_correctly(self, make_finding):
         from bluei.engine.orchestrator import route_findings_with_intent
 
-        f = _mf(make_finding, 
+        f = _mf(
+            make_finding,
             confidence=0.95,
             safe_to_autofix=True,
             quick_win=True,
@@ -464,7 +453,8 @@ class TestRouteFindingsWithIntent:
     def test_non_autofix_goes_to_human_review(self, make_finding):
         from bluei.engine.orchestrator import route_findings_with_intent
 
-        f = _mf(make_finding, 
+        f = _mf(
+            make_finding,
             confidence=0.95,
             safe_to_autofix=False,
             quick_win=False,
@@ -513,7 +503,9 @@ class TestRouteFindingsWithIntent:
         from bluei.engine.orchestrator import route_findings_with_intent
         from bluei.engine.reforge import RefactorClass
 
-        f = _mf(make_finding, rule="xo-complexity", confidence=0.95, safe_to_autofix=False)
+        f = _mf(
+            make_finding, rule="xo-complexity", confidence=0.95, safe_to_autofix=False
+        )
         worktree = tmp_path / "wt"
         worktree.mkdir()
 
@@ -629,7 +621,9 @@ class TestCreateIssuesWithCycleSignals:
         [("not json", "corrupt"), ("", "missing")],
         ids=["corrupt", "missing"],
     )
-    def test_bad_signal_file_does_not_error(self, tmp_path, file_content, label, make_finding):
+    def test_bad_signal_file_does_not_error(
+        self, tmp_path, file_content, label, make_finding
+    ):
         from bluei.engine.orchestrator import create_issues_for_findings
 
         signal_file = tmp_path / "signals.json"

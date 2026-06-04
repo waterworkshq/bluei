@@ -177,15 +177,8 @@ class TestDiscoverFindingsEndToEnd:
             findings = discover_findings(repo, log_file, docs_index)
 
         rules = {f.rule for f in findings}
-        assert "discount-math-sign" in rules
-        assert "catalog-query-not-normalized" in rules
         assert "orders-tax-truncation" in rules
-        assert "broad-except" in rules
-        assert "notifications-email-no-trim" in rules
-        assert "hardcoded-tmp-path" in rules
         assert "docs-legacy-reference" in rules
-        assert "perf-pop-front-loop" in rules
-        assert "perf-list-membership-loop" in rules
 
     def test_todo_markers_detected(self, tmp_path):
         repo = _build_standard_repo(tmp_path)
@@ -238,46 +231,6 @@ class TestDiscoverFindingsEndToEnd:
             findings = discover_findings(repo, log_file)
 
         assert findings == []
-
-    def test_notifications_type_guard_missing(self, tmp_path):
-        repo = _build_standard_repo(tmp_path)
-        log_file = tmp_path / "run.log"
-        log_file.write_text("")
-        docs_index = tmp_path / "docs_index.json"
-        docs_index.write_text("[]")
-
-        with (
-            patch("bluei.engine.orchestrator._ast_scan_python_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_ts_js_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_go_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_rust_files", return_value=[]),
-            patch(
-                "bluei.engine.orchestrator.discover_typescript_type_findings",
-                return_value=[],
-            ),
-            patch(
-                "bluei.engine.orchestrator.discover_test_coverage_findings",
-                return_value=[],
-            ),
-            patch(
-                "bluei.engine.orchestrator.discover_xo_linter_findings", return_value=[]
-            ),
-            patch(
-                "bluei.engine.orchestrator.discover_python_linter_findings",
-                return_value=[],
-            ),
-            patch("bluei.engine.orchestrator.run_plugin_discovery", return_value=[]),
-            patch("bluei.engine.orchestrator.load_docs_index", return_value=[]),
-        ):
-            from bluei.engine.orchestrator import discover_findings
-
-            findings = discover_findings(repo, log_file, docs_index)
-
-        guard_findings = [
-            f for f in findings if f.rule == "notifications-type-guard-missing"
-        ]
-        assert len(guard_findings) == 1
-        assert guard_findings[0].path == "src/qa_sandbox/notifications.py"
 
     def test_inventory_invalid_quantity_detected(self, tmp_path):
         repo = _build_standard_repo(tmp_path)
@@ -481,23 +434,39 @@ class TestDiscoverFindingsEndToEnd:
         docs_index.write_text("[]")
 
         fake_ruff = [
-            _mf(make_finding, 
-                rule="ruff-e501", path="src/main.py", line=42, confidence=0.65
+            _mf(
+                make_finding,
+                rule="ruff-e501",
+                path="src/main.py",
+                line=42,
+                confidence=0.65,
             )
         ]
         fake_xo = [
-            _mf(make_finding, 
-                rule="xo-max-lines", path="src/big.ts", line=1, confidence=0.85
+            _mf(
+                make_finding,
+                rule="xo-max-lines",
+                path="src/big.ts",
+                line=1,
+                confidence=0.85,
             )
         ]
         fake_type = [
-            _mf(make_finding, 
-                rule="type-explicit-any", path="src/api.ts", line=10, confidence=0.85
+            _mf(
+                make_finding,
+                rule="type-explicit-any",
+                path="src/api.ts",
+                line=10,
+                confidence=0.85,
             )
         ]
         fake_cov = [
-            _mf(make_finding, 
-                rule="test-coverage-branch", path="src/app.py", line=20, confidence=0.82
+            _mf(
+                make_finding,
+                rule="test-coverage-branch",
+                path="src/app.py",
+                line=20,
+                confidence=0.82,
             )
         ]
 
@@ -685,7 +654,7 @@ class TestCrossSourceDeduplication:
             findings = discover_findings(repo, log_file, docs_index)
 
         discount = [f for f in findings if f.rule == "discount-math-sign"]
-        assert len(discount) == 2
+        assert len(discount) == 1
 
     def test_ast_findings_without_string_counterpart_are_added(self, tmp_path):
         repo = _build_standard_repo(tmp_path)
@@ -902,7 +871,9 @@ class TestCreateIssuesForFindings:
         create_issues_for_findings(issues_data, [finding], 0.8, 10)
         assert len(issues_data["issues"]) == 1
 
-    def test_mixed_confidence_only_qualifying_create_issues(self, tmp_path, make_finding):
+    def test_mixed_confidence_only_qualifying_create_issues(
+        self, tmp_path, make_finding
+    ):
         from bluei.engine.orchestrator import create_issues_for_findings
 
         high = _mf(make_finding, line=1, confidence=0.95)

@@ -41,25 +41,42 @@ MergeCycleResult = Tuple[
 ]
 
 
-def run_merge_cycle_phase(
-    *,
-    repo_path: Path,
-    log_file: Path,
-    review_state_file: Path,
-    state: Dict[str, Any],
-    issues_data: Dict[str, Any],
-    args: Any,
-    gh_repo_slug: str,
-    merges_failed: int,
-    merges_succeeded: int,
-    merge_attempts: int,
-    merged_pr_urls: List[str],
-    open_prs: int,
-    open_issues: int,
-    blocked_reasons: List[str],
-    reconcile_event: Dict[str, Any],
-) -> MergeCycleResult:
+def run_merge_cycle_phase(*args, **kwargs) -> MergeCycleResult:
     """Run the merge cycle: fetch open PRs, evaluate health/reviews/mergeability, merge eligible."""
+    if args:
+        ctx = args[0]
+        repo_path = ctx.repo_path
+        log_file = ctx.log_file
+        review_state_file = ctx.review_state_file
+        state = ctx.state
+        issues_data = ctx.issues_data
+        args = ctx.args
+        gh_repo_slug = ctx.gh_repo_slug
+        merges_failed = ctx.merges_failed
+        merges_succeeded = ctx.merges_succeeded
+        merge_attempts = ctx.merge_attempts
+        merged_pr_urls = ctx.merged_pr_urls
+        open_prs = ctx.open_prs
+        open_issues = ctx.open_issues
+        blocked_reasons = ctx.blocked_reasons
+        reconcile_event = ctx.reconcile_event
+    else:
+        repo_path = kwargs["repo_path"]
+        log_file = kwargs["log_file"]
+        review_state_file = kwargs["review_state_file"]
+        state = kwargs["state"]
+        issues_data = kwargs["issues_data"]
+        args = kwargs["args"]
+        gh_repo_slug = kwargs["gh_repo_slug"]
+        merges_failed = kwargs["merges_failed"]
+        merges_succeeded = kwargs["merges_succeeded"]
+        merge_attempts = kwargs["merge_attempts"]
+        merged_pr_urls = kwargs["merged_pr_urls"]
+        open_prs = kwargs["open_prs"]
+        open_issues = kwargs["open_issues"]
+        blocked_reasons = kwargs["blocked_reasons"]
+        reconcile_event = kwargs["reconcile_event"]
+
     from bluei.engine.orchestrator import set_issue_status
 
     if not args.auto_merge_sandbox:
