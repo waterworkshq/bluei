@@ -39,8 +39,8 @@ from bluei.engine.validation import (
     choose_validation_baseline,
     run_named_checks,
     run_validation_gate,
-    verify_fix_closed,
 )
+from bluei.engine.verify import verify_fix_closed
 from bluei.engine.utils import (
     branch_suffix,
     is_path_tracked,
@@ -675,12 +675,13 @@ def _process_one_issue(
         )
 
         if files_changed == 0 and loc_diff == 0:
-            verified_without_changes = verify_fix_closed(
+            vfc_result = verify_fix_closed(
                 worktree_path,
                 finding,
                 log_file,
                 docs_index_file=docs_index_file,
             )
+            verified_without_changes = vfc_result.is_closed
             if verified_without_changes:
                 set_issue_status(
                     issue,
@@ -791,9 +792,10 @@ def _process_one_issue(
                 )
             raise _BreakLoop()
 
-        verified = verify_fix_closed(
+        vfc_result = verify_fix_closed(
             worktree_path, finding, log_file, docs_index_file=docs_index_file
         )
+        verified = vfc_result.is_closed
         if not verified:
             run_status = "fix-failed-verification"
             set_issue_status(

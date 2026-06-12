@@ -413,14 +413,14 @@ class TestLinkIssuesToBatchPR:
 
 
 class TestVerifyFindingClosed:
-    @patch("bluei.engine.validation.verify_fix_closed", return_value=True)
+    @patch("bluei.engine.verify._verify_fix_closed", return_value=True)
     def test_returns_true_when_closed(self, mock_vfc, make_finding):
         """verify_finding_closed returns True when lifecycle verify passes."""
         finding = make_finding()
         result = verify_finding_closed(Path("/tmp/wt"), finding, Path("/tmp/log"))
         assert result is True
 
-    @patch("bluei.engine.validation.verify_fix_closed", side_effect=OSError("boom"))
+    @patch("bluei.engine.verify._verify_fix_closed", side_effect=OSError("boom"))
     def test_returns_false_on_exception(self, mock_vfc, make_finding):
         """verify_finding_closed returns False on exception."""
         finding = make_finding()

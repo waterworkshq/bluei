@@ -4,6 +4,7 @@ Tries fix engines in tier order (most deterministic first). First stage that
 both succeeds and passes validation wins. Falls through to LLM only when all
 cheaper stages fail. Saves roughly 65% of LLM calls on typical repos.
 """
+
 import logging
 import shutil
 import time
@@ -23,6 +24,7 @@ from bluei.engine.utils import run_capture
 @dataclass
 class CascadeResult:
     """Outcome of a single cascade stage attempt."""
+
     success: bool
     stage_name: str
     changes_made: List[str] = field(default_factory=list)
@@ -35,6 +37,7 @@ class CascadeResult:
 @dataclass
 class CascadeTelemetry:
     """Structured telemetry for one cascade execution across all stages."""
+
     finding_id: str = ""
     rule: str = ""
     stages_tried: List[str] = field(default_factory=list)
@@ -61,6 +64,7 @@ class CascadeTelemetry:
 @dataclass
 class CascadeContext:
     """Shared configuration and services available to every cascade stage."""
+
     worktree: Path = field(default_factory=Path)
     repo_path: Path = field(default_factory=Path)
     log_file: Path = field(default_factory=Path)
@@ -76,6 +80,7 @@ class CascadeContext:
 
 class CascadeStage(ABC):
     """Abstract base for a single fix strategy within the cascade pipeline."""
+
     name: str = ""
     tier: int = 1
     estimated_cost: float = 0.0
@@ -87,7 +92,9 @@ class CascadeStage(ABC):
         ...
 
     @abstractmethod
-    def attempt(self, finding: Finding, worktree: Path, context: CascadeContext) -> CascadeResult:
+    def attempt(
+        self, finding: Finding, worktree: Path, context: CascadeContext
+    ) -> CascadeResult:
         """Try to fix the finding; return a CascadeResult."""
         ...
 
@@ -115,7 +122,9 @@ class DeterministicCascade:
         self._stages.append(stage)
         self._stages.sort(key=lambda s: s.tier)
 
-    def execute(self, finding: Finding, worktree: Path, context: CascadeContext) -> CascadeResult:
+    def execute(
+        self, finding: Finding, worktree: Path, context: CascadeContext
+    ) -> CascadeResult:
         """Run each applicable stage in tier order; first validated success wins.
 
         Args:
@@ -136,7 +145,10 @@ class DeterministicCascade:
 
         for stage in self._stages:
             if attempts >= context.max_stages:
-                _append_text(context.log_file, f"cascade: max_stages={context.max_stages} reached, stopping")
+                _append_text(
+                    context.log_file,
+                    f"cascade: max_stages={context.max_stages} reached, stopping",
+                )
                 break
 
             if not stage.can_handle(finding, context):
@@ -155,21 +167,33 @@ class DeterministicCascade:
                 if not result.validation_passed:
                     stage.rollback(finding, worktree)
                     result.success = False
-                    telemetry.stages_failed.append({"stage": stage.name, "reason": "validation_failed"})
-                    _append_text(context.log_file, f"cascade: stage={stage.name} validation_failed")
+                    telemetry.stages_failed.append(
+                        {"stage": stage.name, "reason": "validation_failed"}
+                    )
+                    _append_text(
+                        context.log_file,
+                        f"cascade: stage={stage.name} validation_failed",
+                    )
                 else:
                     telemetry.final_stage = stage.name
                     telemetry.success = True
                     telemetry.total_latency_ms = int((time.monotonic() - t0) * 1000)
-                    _append_text(context.log_file, f"cascade: stage={stage.name} succeeded")
+                    _append_text(
+                        context.log_file, f"cascade: stage={stage.name} succeeded"
+                    )
                     self._write_telemetry(context, telemetry)
                     return result
             else:
-                telemetry.stages_failed.append({
-                    "stage": stage.name,
-                    "reason": result.error or "unknown",
-                })
-                _append_text(context.log_file, f"cascade: stage={stage.name} failed error={result.error}")
+                telemetry.stages_failed.append(
+                    {
+                        "stage": stage.name,
+                        "reason": result.error or "unknown",
+                    }
+                )
+                _append_text(
+                    context.log_file,
+                    f"cascade: stage={stage.name} failed error={result.error}",
+                )
 
             attempts += 1
 
@@ -191,11 +215,17 @@ class DeterministicCascade:
             error=f"cascade exhausted after {len(telemetry.stages_tried)} stages",
         )
 
-    def _write_telemetry(self, context: CascadeContext, telemetry: CascadeTelemetry) -> None:
+    def _write_telemetry(
+        self, context: CascadeContext, telemetry: CascadeTelemetry
+    ) -> None:
         """Append a JSON telemetry line to the log file; silently ignores errors."""
         try:
             import json
-            _append_text(context.log_file, f"cascade-telemetry: {json.dumps(telemetry.to_dict())}")
+
+            _append_text(
+                context.log_file,
+                f"cascade-telemetry: {json.dumps(telemetry.to_dict())}",
+            )
         except Exception:
             _logger.debug("Failed to write cascade telemetry")
 
@@ -236,7 +266,10 @@ class LinterFixStage(CascadeStage):
         """Check language match, rule applicability, and that the binary exists on PATH."""
         if context.language.lower() not in self.languages:
             return False
-        if self.applicable_rules is not None and finding.rule not in self.applicable_rules:
+        if (
+            self.applicable_rules is not None
+            and finding.rule not in self.applicable_rules
+        ):
             rule_matches = any(
                 fnmatch(finding.rule, pattern) for pattern in self.applicable_rules
             )
@@ -244,7 +277,9 @@ class LinterFixStage(CascadeStage):
                 return False
         return shutil.which(self.command[0]) is not None
 
-    def attempt(self, finding: Finding, worktree: Path, context: CascadeContext) -> CascadeResult:
+    def attempt(
+        self, finding: Finding, worktree: Path, context: CascadeContext
+    ) -> CascadeResult:
         """Run the linter fix command, then verify the finding is resolved."""
         t0 = time.monotonic()
         file_path = worktree / finding.path
@@ -261,8 +296,10 @@ class LinterFixStage(CascadeStage):
             cmd = [a for a in cmd if a != "--unsafe-fixes"]
         rc, output = run_capture(cmd, cwd=worktree, timeout=60)
 
-        from bluei.engine.validation import verify_fix_closed
-        resolved = verify_fix_closed(worktree, finding, context.log_file)
+        from bluei.engine.verify import verify_fix_closed
+
+        result = verify_fix_closed(worktree, finding, context.log_file)
+        resolved = result.is_closed
 
         latency = int((time.monotonic() - t0) * 1000)
         return CascadeResult(
@@ -279,7 +316,9 @@ class LinterFixStage(CascadeStage):
         """Git-checkout the affected file to discard linter changes."""
         file_path = worktree / finding.path
         if file_path.exists():
-            run_capture(["git", "checkout", "--", str(file_path)], cwd=worktree, timeout=10)
+            run_capture(
+                ["git", "checkout", "--", str(file_path)], cwd=worktree, timeout=10
+            )
 
 
 def default_linter_stages() -> List[CascadeStage]:
@@ -306,7 +345,12 @@ def default_linter_stages() -> List[CascadeStage]:
         ),
         LinterFixStage(
             name="autoflake",
-            command=["autoflake", "--in-place", "--remove-all-unused-imports", "{file}"],
+            command=[
+                "autoflake",
+                "--in-place",
+                "--remove-all-unused-imports",
+                "{file}",
+            ],
             languages=["python"],
             applicable_rules={"ruff-F401"},
         ),
@@ -321,6 +365,7 @@ def default_linter_stages() -> List[CascadeStage]:
 
 class RecipeCascadeStage(CascadeStage):
     """Stage that applies a pre-built recipe fix matched by rule + language."""
+
     name = "recipe-engine"
     tier = 2
     estimated_cost = 0.0
@@ -332,19 +377,29 @@ class RecipeCascadeStage(CascadeStage):
             return False
         try:
             file_path = context.worktree / finding.path
-            file_text = file_path.read_text(encoding="utf-8") if file_path.exists() else ""
-            recipe = context.recipe_engine.match(finding.rule, context.language, file_text=file_text)
+            file_text = (
+                file_path.read_text(encoding="utf-8") if file_path.exists() else ""
+            )
+            recipe = context.recipe_engine.match(
+                finding.rule, context.language, file_text=file_text
+            )
             return recipe is not None
         except Exception:
             return False
 
-    def attempt(self, finding: Finding, worktree: Path, context: CascadeContext) -> CascadeResult:
+    def attempt(
+        self, finding: Finding, worktree: Path, context: CascadeContext
+    ) -> CascadeResult:
         """Look up and apply a matching recipe to the affected file."""
         t0 = time.monotonic()
         try:
             file_path = worktree / finding.path
-            file_text = file_path.read_text(encoding="utf-8") if file_path.exists() else ""
-            recipe = context.recipe_engine.match(finding.rule, context.language, file_text=file_text)
+            file_text = (
+                file_path.read_text(encoding="utf-8") if file_path.exists() else ""
+            )
+            recipe = context.recipe_engine.match(
+                finding.rule, context.language, file_text=file_text
+            )
             if recipe is None:
                 return CascadeResult(
                     success=False,
@@ -352,7 +407,9 @@ class RecipeCascadeStage(CascadeStage):
                     latency_ms=int((time.monotonic() - t0) * 1000),
                     error="no matching recipe",
                 )
-            result = context.recipe_engine.apply(recipe, file_path, worktree, finding=finding)
+            result = context.recipe_engine.apply(
+                recipe, file_path, worktree, finding=finding
+            )
             latency = int((time.monotonic() - t0) * 1000)
             return CascadeResult(
                 success=result.success,
@@ -375,11 +432,14 @@ class RecipeCascadeStage(CascadeStage):
         """Git-checkout the affected file to discard recipe changes."""
         file_path = worktree / finding.path
         if file_path.exists():
-            run_capture(["git", "checkout", "--", str(file_path)], cwd=worktree, timeout=10)
+            run_capture(
+                ["git", "checkout", "--", str(file_path)], cwd=worktree, timeout=10
+            )
 
 
 class PatternReplayCascadeStage(CascadeStage):
     """Stage that replays a previously-learned fix pattern from the pattern store."""
+
     name = "pattern-replay"
     tier = 2
     estimated_cost = 0.0
@@ -400,30 +460,41 @@ class PatternReplayCascadeStage(CascadeStage):
         try:
             from bluei.engine.pattern_store import normalize_snippet
             from bluei.engine.structural_hash import compute_structural_hash
-            overrides = getattr(context, 'replay_threshold_overrides', {})
+
+            overrides = getattr(context, "replay_threshold_overrides", {})
             threshold = overrides.get(finding.rule, self.confidence_threshold)
             normalized = normalize_snippet(finding.snippet)
-            language = getattr(finding, 'language', None) or 'python'
+            language = getattr(finding, "language", None) or "python"
             pattern = context.pattern_store.lookup(finding.rule, normalized)
             if pattern is not None and pattern.confidence >= threshold:
                 return True
-            pattern = context.pattern_store.lookup_structural(finding.rule, normalized, language)
+            pattern = context.pattern_store.lookup_structural(
+                finding.rule, normalized, language
+            )
             if pattern is not None and pattern.confidence >= threshold:
                 return True
-            pattern = context.pattern_store.lookup_fuzzy(finding.rule, normalized, language)
+            pattern = context.pattern_store.lookup_fuzzy(
+                finding.rule, normalized, language
+            )
             return pattern is not None and pattern.confidence >= threshold
         except Exception:
             return False
 
-    def attempt(self, finding: Finding, worktree: Path, context: CascadeContext) -> CascadeResult:
+    def attempt(
+        self, finding: Finding, worktree: Path, context: CascadeContext
+    ) -> CascadeResult:
         """Replay the best-matching pattern against the affected file."""
         t0 = time.monotonic()
         try:
             from bluei.engine.pattern_replay import try_replay
+
             replayed, pattern_id = try_replay(
-                worktree, finding, context.pattern_store,
-                context.baseline_results, context.log_file,
-                shared_library=getattr(context, 'shared_library', None),
+                worktree,
+                finding,
+                context.pattern_store,
+                context.baseline_results,
+                context.log_file,
+                shared_library=getattr(context, "shared_library", None),
             )
             latency = int((time.monotonic() - t0) * 1000)
             return CascadeResult(
@@ -446,11 +517,14 @@ class PatternReplayCascadeStage(CascadeStage):
         """Git-checkout the affected file to discard replay changes."""
         file_path = worktree / finding.path
         if file_path.exists():
-            run_capture(["git", "checkout", "--", str(file_path)], cwd=worktree, timeout=10)
+            run_capture(
+                ["git", "checkout", "--", str(file_path)], cwd=worktree, timeout=10
+            )
 
 
 class ASTTransformCascadeStage(CascadeStage):
     """Stage that applies AST-based code transforms for Python findings."""
+
     name = "ast-transform"
     tier = 2
     estimated_cost = 0.0
@@ -467,7 +541,10 @@ class ASTTransformCascadeStage(CascadeStage):
         self._initialized = True
         try:
             from bluei.engine.ast_engine.transformer import ASTTransformer
-            from bluei.engine.ast_engine.transforms.python_transforms import get_transforms
+            from bluei.engine.ast_engine.transforms.python_transforms import (
+                get_transforms,
+            )
+
             self._transformer = ASTTransformer(get_transforms())
         except Exception:
             self._transformer = None
@@ -482,7 +559,9 @@ class ASTTransformCascadeStage(CascadeStage):
         transform = self._transformer.get_transform(finding.rule)
         return transform is not None
 
-    def attempt(self, finding: Finding, worktree: Path, context: CascadeContext) -> CascadeResult:
+    def attempt(
+        self, finding: Finding, worktree: Path, context: CascadeContext
+    ) -> CascadeResult:
         """Apply the matching AST transform and verify the fix."""
         t0 = time.monotonic()
         self._ensure_init()
@@ -512,6 +591,7 @@ class ASTTransformCascadeStage(CascadeStage):
                 )
             source = file_path.read_text(encoding="utf-8")
             from bluei.engine.ast_engine.models import ASTMatch, ASTPattern
+
             match = ASTMatch(
                 pattern=ASTPattern(id=finding.rule, language="python", node_type=""),
                 node=None,
@@ -522,8 +602,11 @@ class ASTTransformCascadeStage(CascadeStage):
             result = self._transformer.apply(source, match, transform)
             if result.success:
                 file_path.write_text(result.source, encoding="utf-8")
-                from bluei.engine.validation import verify_fix_closed
-                resolved = verify_fix_closed(worktree, finding, context.log_file)
+                from bluei.engine.verify import verify_fix_closed
+
+                result = verify_fix_closed(worktree, finding, context.log_file)
+                resolved = result.is_closed
+
                 latency = int((time.monotonic() - t0) * 1000)
                 return CascadeResult(
                     success=resolved,
@@ -553,11 +636,14 @@ class ASTTransformCascadeStage(CascadeStage):
         """Git-checkout the affected file to discard AST transform changes."""
         file_path = worktree / finding.path
         if file_path.exists():
-            run_capture(["git", "checkout", "--", str(file_path)], cwd=worktree, timeout=10)
+            run_capture(
+                ["git", "checkout", "--", str(file_path)], cwd=worktree, timeout=10
+            )
 
 
 class CompositePatternCascadeStage(CascadeStage):
     """Stage that applies a multi-file composite fix pattern."""
+
     name = "composite-pattern"
     tier = 2
     estimated_cost = 0.0
@@ -576,21 +662,40 @@ class CompositePatternCascadeStage(CascadeStage):
             return False
         try:
             from bluei.engine.composite_pattern import CompositePatternStore
-            store_path = context.pattern_store.store_path if hasattr(context.pattern_store, 'store_path') else None
+
+            store_path = (
+                context.pattern_store.store_path
+                if hasattr(context.pattern_store, "store_path")
+                else None
+            )
             if store_path is None:
                 return False
-            comp_store = CompositePatternStore(store_path.with_name("composite_patterns.jsonl"))
+            comp_store = CompositePatternStore(
+                store_path.with_name("composite_patterns.jsonl")
+            )
             pattern = comp_store.lookup(finding.rule)
-            return pattern is not None and pattern.confidence >= self.confidence_threshold
+            return (
+                pattern is not None and pattern.confidence >= self.confidence_threshold
+            )
         except Exception:
             return False
 
-    def attempt(self, finding: Finding, worktree: Path, context: CascadeContext) -> CascadeResult:
+    def attempt(
+        self, finding: Finding, worktree: Path, context: CascadeContext
+    ) -> CascadeResult:
         """Apply the matched composite pattern and verify the fix."""
         t0 = time.monotonic()
         try:
-            from bluei.engine.composite_pattern import CompositePatternApplier, CompositePatternStore
-            store_path = context.pattern_store.store_path if hasattr(context.pattern_store, 'store_path') else None
+            from bluei.engine.composite_pattern import (
+                CompositePatternApplier,
+                CompositePatternStore,
+            )
+
+            store_path = (
+                context.pattern_store.store_path
+                if hasattr(context.pattern_store, "store_path")
+                else None
+            )
             if store_path is None:
                 return CascadeResult(
                     success=False,
@@ -598,7 +703,9 @@ class CompositePatternCascadeStage(CascadeStage):
                     latency_ms=int((time.monotonic() - t0) * 1000),
                     error="no pattern store path",
                 )
-            comp_store = CompositePatternStore(store_path.with_name("composite_patterns.jsonl"))
+            comp_store = CompositePatternStore(
+                store_path.with_name("composite_patterns.jsonl")
+            )
             pattern = comp_store.lookup(finding.rule)
             if pattern is None:
                 return CascadeResult(
@@ -609,11 +716,15 @@ class CompositePatternCascadeStage(CascadeStage):
                 )
             applier = CompositePatternApplier()
             success, changes, error = applier.apply(
-                pattern, finding.path, worktree, context.log_file,
+                pattern,
+                finding.path,
+                worktree,
+                context.log_file,
             )
             latency = int((time.monotonic() - t0) * 1000)
             if success:
                 from bluei.engine.validation import verify_fix_closed
+
                 resolved = verify_fix_closed(worktree, finding, context.log_file)
                 comp_store.record_result(pattern.pattern_id, resolved)
                 return CascadeResult(
@@ -644,7 +755,9 @@ class CompositePatternCascadeStage(CascadeStage):
         """Git-checkout the affected file to discard composite pattern changes."""
         file_path = worktree / finding.path
         if file_path.exists():
-            run_capture(["git", "checkout", "--", str(file_path)], cwd=worktree, timeout=10)
+            run_capture(
+                ["git", "checkout", "--", str(file_path)], cwd=worktree, timeout=10
+            )
 
 
 def default_cascade_stages() -> List[CascadeStage]:

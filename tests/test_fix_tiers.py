@@ -369,7 +369,22 @@ class TestTieredValidatorT2:
         }
         mock_validation = MagicMock()
         mock_validation.run_validation_gate.return_value = gate_result
-        with patch.dict("sys.modules", {"bluei.engine.validation": mock_validation}):
+        mock_verify = MagicMock()
+        mock_verify.run_validation.return_value = MagicMock(
+            passed=True,
+            message="all good",
+            regressions=[],
+            target_failures=[],
+        )
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "bluei.engine.validation": mock_validation,
+                    "bluei.engine.verify": mock_verify,
+                },
+            ),
+        ):
             result = v.validate(
                 FixTier.T2_VALIDATED,
                 tmp_path,

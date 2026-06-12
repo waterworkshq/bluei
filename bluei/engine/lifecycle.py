@@ -863,20 +863,20 @@ def process_refactor_queue(
                 )
 
                 if rc == 0:
-                    from bluei.engine.validation import run_validation_gate
+                    from bluei.engine.verify import run_validation
 
-                    validation = run_validation_gate(
+                    validation = run_validation(
                         repo_path=repo_path,
                         worktree_path=wt,
                         checks=target_checks,
                         allow_unchanged_baseline_failures=True,
                         log_file=Path("/dev/null"),
                     )
-                    if validation.get("passed"):
+                    if validation.passed:
                         queue.complete(item.work_id)
                         result["processed"].append(item.work_id)
                     else:
-                        error_msg = validation.get("message", "validation failed")
+                        error_msg = validation.message or "validation failed"
                         queue.fail(item.work_id, error_msg)
                         result["failed"].append(item.work_id)
                 else:

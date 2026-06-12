@@ -143,7 +143,7 @@ class TestVerifyFindingClosed:
         f = _mf(make_finding)
         log = tmp_path / "log.txt"
         with patch(
-            "bluei.engine.validation.verify_fix_closed", side_effect=OSError("boom")
+            "bluei.engine.verify._verify_fix_closed", side_effect=OSError("boom")
         ):
             assert verify_finding_closed(tmp_path, f, log) is False
 
@@ -152,7 +152,7 @@ class TestVerifyFindingClosed:
 
         f = _mf(make_finding)
         log = tmp_path / "log.txt"
-        with patch("bluei.engine.validation.verify_fix_closed", return_value=True):
+        with patch("bluei.engine.verify._verify_fix_closed", return_value=True):
             assert verify_finding_closed(tmp_path, f, log) is True
 
 

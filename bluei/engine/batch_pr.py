@@ -391,13 +391,13 @@ def verify_finding_closed(
 ) -> bool:
     """Re-run the specific linter rule for one finding and check it's resolved.
 
-    Uses the existing verify_fix_closed from the validation module when possible,
-    falling back to file-level pattern matching for batch-internal use.
+    Uses the verify module to check if the finding is closed.
     """
-    from bluei.engine.validation import verify_fix_closed as _verify_fix_closed
+    from bluei.engine.verify import verify_fix_closed
 
     try:
-        return _verify_fix_closed(worktree_path, finding, log_file)
+        result = verify_fix_closed(worktree_path, finding, log_file)
+        return result.is_closed
     except (subprocess.CalledProcessError, OSError) as exc:
         logger.debug(
             "verify_finding_closed: lifecycle verify failed for %s: %s %s",

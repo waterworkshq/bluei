@@ -332,7 +332,7 @@ def test_linter_stage_attempt_returns_success_when_resolved(tmp_path):
     with (
         patch("shutil.which", return_value="/usr/bin/ruff"),
         patch("bluei.engine.cascade.run_capture", return_value=(0, "")),
-        patch("bluei.engine.validation.verify_fix_closed", return_value=True),
+        patch("bluei.engine.verify._verify_fix_closed", return_value=True),
     ):
         ctx = CascadeContext(language="python", log_file=log)
         result = stage.attempt(_finding(), tmp_path, ctx)
@@ -357,7 +357,7 @@ def test_linter_stage_attempt_returns_failure_when_not_resolved(tmp_path):
     with (
         patch("shutil.which", return_value="/usr/bin/ruff"),
         patch("bluei.engine.cascade.run_capture", return_value=(1, "error output")),
-        patch("bluei.engine.validation.verify_fix_closed", return_value=False),
+        patch("bluei.engine.verify._verify_fix_closed", return_value=False),
     ):
         ctx = CascadeContext(language="python", log_file=log)
         result = stage.attempt(_finding(), tmp_path, ctx)
@@ -626,7 +626,7 @@ def test_ast_stage_attempt_success(tmp_path):
     )
     stage._transformer = mock_transformer
     ctx = CascadeContext(language="python", log_file=log)
-    with patch("bluei.engine.validation.verify_fix_closed", return_value=True):
+    with patch("bluei.engine.verify._verify_fix_closed", return_value=True):
         result = stage.attempt(
             _finding(rule="broad-except", path="src/app.py"), tmp_path, ctx
         )
@@ -860,7 +860,7 @@ def test_e2e_linter_stage_substitutes_file_arg(tmp_path):
         patch(
             "bluei.engine.cascade.run_capture", return_value=(0, str(target))
         ) as mock_rc,
-        patch("bluei.engine.validation.verify_fix_closed", return_value=True),
+        patch("bluei.engine.verify._verify_fix_closed", return_value=True),
     ):
         ctx = CascadeContext(language="python", log_file=log)
         stage.attempt(_finding(path="src/app.py"), tmp_path, ctx)

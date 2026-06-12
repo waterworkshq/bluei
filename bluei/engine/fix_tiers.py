@@ -392,9 +392,9 @@ class TieredValidator:
         Returns:
             TieredValidationResult including regressions and target failures.
         """
-        from bluei.engine.validation import run_validation_gate
+        from bluei.engine.verify import run_validation
 
-        result = run_validation_gate(
+        result = run_validation(
             repo_path=repo_path,
             worktree_path=worktree_path,
             checks=checks,
@@ -402,10 +402,10 @@ class TieredValidator:
             log_file=log_file,
         )
         return TieredValidationResult(
-            passed=result.get("passed", False),
-            message=result.get("message", ""),
-            regressions=result.get("regressions", []),
-            target_failures=result.get("target_failures", []),
+            passed=result.passed,
+            message=result.message,
+            regressions=result.regressions,
+            target_failures=result.target_failures,
         )
 
     def _validate_t3(
