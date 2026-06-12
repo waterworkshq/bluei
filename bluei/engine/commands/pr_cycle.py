@@ -1,5 +1,6 @@
 """PR cycle phase: queue candidates, apply fixes, create PRs."""
 
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -204,6 +205,208 @@ class _BreakLoop(Exception):
     """Internal signal: ``_process_one_issue`` uses this to break the orchestrator's
     per-issue loop, replicating the original ``break`` statements.
     """
+
+
+@dataclass
+class FinalizeResult:
+    """Result of PR finalization.
+
+    Attributes:
+        success: Whether the PR was created successfully (or no_changes).
+        pr_number: PR number if created.
+        pr_url: PR URL if created.
+        run_status: Human-readable status string.
+        should_break: If True, caller should raise _BreakLoop.
+        fixes_verified_delta: Change to fixes_verified counter.
+        fixes_failed_verification_delta: Change to fixes_failed_verification counter.
+        created_prs_delta: Change to created_prs counter.
+        open_prs_delta: Change to open_prs counter.
+        blocked_reasons_additions: New entries for blocked_reasons list.
+    """
+
+    success: bool
+    pr_number: Optional[int] = None
+    pr_url: str = ""
+    run_status: str = ""
+    should_break: bool = False
+    fixes_verified_delta: int = 0
+    fixes_failed_verification_delta: int = 0
+    created_prs_delta: int = 0
+    open_prs_delta: int = 0
+    blocked_reasons_additions: List[str] = field(default_factory=list)
+
+
+def _finalize_pr_for_issue(
+    *,
+    issue: Dict[str, Any],
+    issue_github: Dict[str, Any],
+    issue_number: Optional[int],
+    issue_url: str,
+    finding: Finding,
+    worktree_path: Path,
+    worktree_branch: str,
+    repo_path: Path,
+    gh_repo_slug: str,
+    log_file: Path,
+    args: Any,
+    state: Dict[str, Any],
+) -> FinalizeResult:
+    """Commit, push, create PR, and link to issue after a successful fix verification.
+
+    Returns a FinalizeResult with counter deltas. The caller updates its own
+    counters from the result and checks should_break before raising _BreakLoop.
+    """
+    set_issue_status(
+        issue,
+        "resolved_verified",
+        "detector no longer firing after fix + validation",
+    )
+
+    pr_number: Optional[int] = None
+    pr_url = ""
+
+    if args.live_github_actions:
+        commit_message = f"fix(bluei): {finding.rule} [{finding.finding_id[:8]}]"
+        commit_result = git_commit_all(
+            worktree_path,
+            commit_message,
+            log_file=log_file,
+            dry_run=args.dry_run,
+        )
+        if commit_result == "no_changes":
+            set_issue_status(
+                issue,
+                "resolved_verified",
+                "detector no longer firing and no repo diff remained to commit",
+            )
+            mark_finding_activity(
+                state=state,
+                finding_ids=[finding.finding_id],
+                action="resolved-verified-noop",
+                failure_count=0,
+                last_error=None,
+            )
+            if (
+                args.live_github_actions
+                and issue_number is not None
+                and not args.dry_run
+            ):
+                gh_issue_comment(
+                    gh_repo_slug,
+                    issue_number,
+                    "Post-fix verification passed and the effective fix was already present, so no new commit/PR was needed.",
+                    cwd=repo_path,
+                )
+            return FinalizeResult(
+                success=True,
+                run_status="resolved-verified-noop",
+                fixes_verified_delta=1,
+            )
+        if commit_result != "committed":
+            run_status = "needs-human-commit-failed"
+            set_issue_status(issue, "fix_failed_verification", run_status)
+            return FinalizeResult(
+                success=False,
+                run_status=run_status,
+                should_break=True,
+                fixes_failed_verification_delta=1,
+                blocked_reasons_additions=[run_status],
+            )
+
+        pushed = git_push_branch(
+            worktree_path,
+            worktree_branch,
+            log_file=log_file,
+            dry_run=args.dry_run,
+        )
+        if not pushed:
+            run_status = "needs-human-push-failed"
+            set_issue_status(issue, "fix_failed_verification", run_status)
+            return FinalizeResult(
+                success=False,
+                run_status=run_status,
+                should_break=True,
+                fixes_failed_verification_delta=1,
+                blocked_reasons_additions=[run_status],
+            )
+
+        pr_result = create_or_update_github_pr(
+            repo_slug=gh_repo_slug,
+            finding=finding,
+            branch=worktree_branch,
+            issue_number=issue_number,
+            dry_run=args.dry_run,
+            log_file=log_file,
+            cwd=worktree_path,
+        )
+        pr_number = (
+            pr_result.get("number") if pr_result.get("number") is not None else None
+        )
+        pr_url = str(pr_result.get("url") or "")
+        if pr_number is not None:
+            issue_github["pr_number"] = pr_number
+        if pr_url:
+            issue_github["pr_url"] = pr_url
+        issue_github["branch"] = worktree_branch
+
+        if issue_number is not None and not args.dry_run:
+            gh_issue_comment(
+                gh_repo_slug,
+                issue_number,
+                f"Post-fix verification passed. PR: {pr_url or '(pending URL)'}",
+                cwd=repo_path,
+            )
+        if pr_number is not None and not args.dry_run:
+            gh_pr_comment(
+                gh_repo_slug,
+                pr_number,
+                f"Automated verification passed for finding {finding.finding_id}.",
+                cwd=worktree_path,
+            )
+
+    if pr_number is not None or not args.live_github_actions:
+        set_issue_status(issue, "pr_opened", "autofix PR created from issue queue")
+
+    entry = {
+        "type": "pr",
+        "repo": str(repo_path),
+        "branch": worktree_branch,
+        "dry_run": args.dry_run,
+        "live_github_actions": bool(args.live_github_actions),
+        "created_at": now_iso(),
+        "linked_issue_ids": [issue.get("id") or issue["issue_id"]],
+        "linked_finding_ids": [finding.finding_id],
+        "github_issue_url": issue_url,
+        "github_issue_number": issue_number,
+        "github_pr_url": pr_url,
+        "github_pr_number": pr_number,
+        "note": "live GitHub PR workflow complete after fix+verify"
+        if args.live_github_actions
+        else "simulated local PR creation after e2e fix+verification gate",
+    }
+    state.setdefault("created", []).append(entry)
+    mark_finding_activity(
+        state=state,
+        finding_ids=[finding.finding_id],
+        action="pr-opened",
+        failure_count=0,
+        last_error=None,
+    )
+
+    run_status = (
+        "pr-live-created"
+        if args.live_github_actions
+        else "pr-simulated-resolved-verified"
+    )
+    return FinalizeResult(
+        success=True,
+        pr_number=pr_number,
+        pr_url=pr_url,
+        run_status=run_status,
+        fixes_verified_delta=1,
+        created_prs_delta=1,
+        open_prs_delta=1,
+    )
 
 
 def _process_one_issue(
@@ -837,149 +1040,28 @@ def _process_one_issue(
                 blocked_reasons,
             )
 
-        set_issue_status(
-            issue,
-            "resolved_verified",
-            "detector no longer firing after fix + validation",
-        )
-        fixes_verified += 1
-
-        pr_number: Optional[int] = None
-        pr_url = ""
-        if args.live_github_actions:
-            commit_message = f"fix(bluei): {finding.rule} [{finding.finding_id[:8]}]"
-            commit_result = git_commit_all(
-                worktree_path,
-                commit_message,
-                log_file=log_file,
-                dry_run=args.dry_run,
-            )
-            if commit_result == "no_changes":
-                run_status = "resolved-verified-noop"
-                set_issue_status(
-                    issue,
-                    "resolved_verified",
-                    "detector no longer firing and no repo diff remained to commit",
-                )
-                mark_finding_activity(
-                    state=state,
-                    finding_ids=[finding.finding_id],
-                    action="resolved-verified-noop",
-                    failure_count=0,
-                    last_error=None,
-                )
-                if (
-                    args.live_github_actions
-                    and issue_number is not None
-                    and not args.dry_run
-                ):
-                    gh_issue_comment(
-                        gh_repo_slug,
-                        issue_number,
-                        "Post-fix verification passed and the effective fix was already present, so no new commit/PR was needed.",
-                        cwd=repo_path,
-                    )
-                return _counter_snapshot(
-                    created_prs,
-                    open_prs,
-                    fix_attempts,
-                    fixes_verified,
-                    fixes_failed_verification,
-                    claude_invocations,
-                    deterministic_invocations,
-                    blocked_reasons,
-                )
-            if commit_result != "committed":
-                run_status = "needs-human-commit-failed"
-                blocked_reasons.append(run_status)
-                set_issue_status(issue, "fix_failed_verification", run_status)
-                fixes_failed_verification += 1
-                raise _BreakLoop()
-
-            pushed = git_push_branch(
-                worktree_path,
-                worktree_branch,
-                log_file=log_file,
-                dry_run=args.dry_run,
-            )
-            if not pushed:
-                run_status = "needs-human-push-failed"
-                blocked_reasons.append(run_status)
-                set_issue_status(issue, "fix_failed_verification", run_status)
-                fixes_failed_verification += 1
-                raise _BreakLoop()
-
-            pr_result = create_or_update_github_pr(
-                repo_slug=gh_repo_slug,
-                finding=finding,
-                branch=worktree_branch,
-                issue_number=issue_number,
-                dry_run=args.dry_run,
-                log_file=log_file,
-                cwd=worktree_path,
-            )
-            pr_number = (
-                pr_result.get("number") if pr_result.get("number") is not None else None
-            )
-            pr_url = str(pr_result.get("url") or "")
-            if pr_number is not None:
-                issue_github["pr_number"] = pr_number
-            if pr_url:
-                issue_github["pr_url"] = pr_url
-            issue_github["branch"] = worktree_branch
-
-            if issue_number is not None and not args.dry_run:
-                gh_issue_comment(
-                    gh_repo_slug,
-                    issue_number,
-                    f"Post-fix verification passed. PR: {pr_url or '(pending URL)'}",
-                    cwd=repo_path,
-                )
-            if pr_number is not None and not args.dry_run:
-                gh_pr_comment(
-                    gh_repo_slug,
-                    pr_number,
-                    f"Automated verification passed for finding {finding.finding_id}.",
-                    cwd=worktree_path,
-                )
-        else:
-            pr_url = ""
-
-        if pr_number is not None or not args.live_github_actions:
-            set_issue_status(issue, "pr_opened", "autofix PR created from issue queue")
-
-        entry = {
-            "type": "pr",
-            "repo": str(repo_path),
-            "branch": worktree_branch,
-            "dry_run": args.dry_run,
-            "live_github_actions": bool(args.live_github_actions),
-            "created_at": now_iso(),
-            "linked_issue_ids": [issue.get("id") or issue["issue_id"]],
-            "linked_finding_ids": [finding.finding_id],
-            "github_issue_url": issue_url,
-            "github_issue_number": issue_number,
-            "github_pr_url": pr_url,
-            "github_pr_number": pr_number,
-            "note": "live GitHub PR workflow complete after fix+verify"
-            if args.live_github_actions
-            else "simulated local PR creation after e2e fix+verification gate",
-        }
-        state.setdefault("created", []).append(entry)
-        mark_finding_activity(
+        finalize_result = _finalize_pr_for_issue(
+            issue=issue,
+            issue_github=issue_github,
+            issue_number=issue_number,
+            issue_url=issue_url,
+            finding=finding,
+            worktree_path=worktree_path,
+            worktree_branch=worktree_branch,
+            repo_path=repo_path,
+            gh_repo_slug=gh_repo_slug,
+            log_file=log_file,
+            args=args,
             state=state,
-            finding_ids=[finding.finding_id],
-            action="pr-opened",
-            failure_count=0,
-            last_error=None,
         )
-        open_prs += 1
-        created_prs += 1
-        run_status = (
-            "pr-live-created"
-            if args.live_github_actions
-            else "pr-simulated-resolved-verified"
-        )
+        fixes_verified += finalize_result.fixes_verified_delta
+        fixes_failed_verification += finalize_result.fixes_failed_verification_delta
+        created_prs += finalize_result.created_prs_delta
+        open_prs += finalize_result.open_prs_delta
+        blocked_reasons.extend(finalize_result.blocked_reasons_additions)
+        run_status = finalize_result.run_status
+        if finalize_result.should_break:
+            raise _BreakLoop()
 
     finally:
         remove_worktree(
