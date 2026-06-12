@@ -238,24 +238,6 @@ def _load_batch_rules_for_args(args: argparse.Namespace) -> List[Any]:
     ]
 
 
-def _hydrate_worktree_dependencies(
-    repo_path: Path, worktree_path: Path, log_file: Path
-) -> None:
-    """Best-effort link shared dependency folders into a fresh git worktree."""
-    for dirname in ("node_modules",):
-        source = repo_path / dirname
-        target = worktree_path / dirname
-        if not source.exists() or target.exists():
-            continue
-        try:
-            os.symlink(source, target, target_is_directory=True)
-            _append_text(
-                log_file, f"worktree-deps: linked {dirname} from repo into worktree"
-            )
-        except Exception as exc:
-            _append_text(log_file, f"worktree-deps: failed to link {dirname}: {exc}")
-
-
 def _reconcile_issue_pr_link(
     *,
     issue: Dict[str, Any],

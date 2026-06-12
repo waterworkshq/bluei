@@ -28,6 +28,11 @@ from bluei.engine.models import (
     FixStatus,
     now_iso,
 )
+from bluei.engine.worktree import (
+    create_worktree,
+    hydrate_worktree,
+    remove_worktree,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -370,29 +375,15 @@ def _create_worktree(
     """Create a git worktree for batch fixes.
 
     Returns True if the worktree was created successfully.
+    Delegates to bluei.engine.worktree.create_worktree.
     """
-    from bluei.engine.utils import run_capture, run_no_capture
-    from bluei.engine.state import _append_text
-
-    # Prune stale worktree metadata
-    run_no_capture(["git", "worktree", "prune"], cwd=repo_path)
-    if worktree_path.exists():
-        run_no_capture(["rm", "-rf", str(worktree_path)], cwd=repo_path)
-
-    rc, out = run_capture(
-        ["git", "worktree", "add", "-B", branch, str(worktree_path)],
-        cwd=repo_path,
+    result = create_worktree(
+        repo_path=repo_path,
+        branch=branch,
+        worktree_path=worktree_path,
+        log_file=log_file,
     )
-    if rc != 0:
-        _append_text(
-            log_file,
-            f"batch-worktree: failed to create worktree output={(out or '<empty>')[:300]}",
-        )
-        return False
-    _append_text(
-        log_file, f"batch-worktree: created worktree={worktree_path} branch={branch}"
-    )
-    return True
+    return result.success
 
 
 def verify_finding_closed(
@@ -1167,11 +1158,10 @@ def recover_interrupted_batch(
             new_status = BatchStatus.ABORTED.value
             # Clean up worktree
             try:
-                run_no_capture(
-                    ["git", "worktree", "remove", "--force", str(worktree_path)],
-                    cwd=worktree_root,
+                remove_worktree(
+                    worktree_path=worktree_path,
+                    repo_path=worktree_root,
                 )
-                run_no_capture(["git", "worktree", "prune"], cwd=worktree_root)
             except (subprocess.CalledProcessError, OSError):
                 logging.debug(
                     "worktree force-remove failed during batch recovery for %s",
@@ -1322,9 +1312,7 @@ def process_batch(
 
     try:
         # Hydrate dependencies (e.g. node_modules symlink)
-        from bluei.engine.commands.helpers import _hydrate_worktree_dependencies
-
-        _hydrate_worktree_dependencies(repo_path, worktree_path, log_file)
+        hydrate_worktree(repo_path, worktree_path, log_file=log_file)
 
         # Apply all fixes sequentially
         successes, failures = apply_batch_fixes(
@@ -1444,14 +1432,11 @@ def process_batch(
 
     finally:
         # Cleanup worktree
-        from bluei.engine.utils import run_no_capture
-
-        if worktree_path.exists():
-            run_no_capture(
-                ["git", "worktree", "remove", "--force", str(worktree_path)],
-                cwd=repo_path,
-            )
-            run_no_capture(["git", "worktree", "prune"], cwd=repo_path)
-        if not getattr(args, "live_github_actions", False):
-            run_no_capture(["git", "branch", "-D", branch], cwd=repo_path)
+        remove_worktree(
+            worktree_path=worktree_path,
+            repo_path=repo_path,
+            branch=branch,
+            delete_branch=not getattr(args, "live_github_actions", False),
+            log_file=log_file,
+        )
         _append_text(log_file, f"batch-cleanup: branch={branch}")

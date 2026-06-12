@@ -433,7 +433,7 @@ class TestVerifyFindingClosed:
 
 class TestProcessBatch:
     @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies")
+    @patch("bluei.engine.worktree.hydrate_worktree")
     @patch("bluei.engine.batch_pr._create_worktree")
     @patch("bluei.engine.state._append_text")
     def test_worktree_created_for_batch(
@@ -450,6 +450,7 @@ class TestProcessBatch:
             patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
             patch("bluei.engine.git_ops.git_push_branch", return_value=True),
             patch("bluei.engine.utils.run_no_capture"),
+            patch("bluei.engine.worktree.run_no_capture"),
         ):
             success, detail = process_batch(batch, Path("/tmp/repo"), args, log_file)
 
@@ -460,7 +461,7 @@ class TestProcessBatch:
         assert f"qa-batch-{batch.batch_id}" in str(create_call[0][1])
 
     @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies")
+    @patch("bluei.engine.worktree.hydrate_worktree")
     @patch("bluei.engine.batch_pr._create_worktree")
     @patch("bluei.engine.state._append_text")
     def test_no_successes_returns_false(
@@ -473,7 +474,11 @@ class TestProcessBatch:
         args = FakeArgs()
         log_file = Path("/tmp/test.log")
 
-        with patch("bluei.engine.utils.run_no_capture"):
+        with (
+            patch("bluei.engine.utils.run_no_capture"),
+            patch("bluei.engine.worktree.run_no_capture"),
+            patch("bluei.engine.worktree.run_no_capture"),
+        ):
             success, detail = process_batch(batch, Path("/tmp/repo"), args, log_file)
 
         assert success is False
@@ -493,7 +498,7 @@ class TestProcessBatch:
         assert "worktree" in detail
 
     @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies")
+    @patch("bluei.engine.worktree.hydrate_worktree")
     @patch("bluei.engine.batch_pr._create_worktree")
     @patch("bluei.engine.state._append_text")
     def test_partial_success_still_creates_pr(
@@ -521,6 +526,7 @@ class TestProcessBatch:
             patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
             patch("bluei.engine.git_ops.git_push_branch", return_value=True),
             patch("bluei.engine.utils.run_no_capture"),
+            patch("bluei.engine.worktree.run_no_capture"),
         ):
             success, detail = process_batch(batch, Path("/tmp/repo"), args, log_file)
 
@@ -529,7 +535,7 @@ class TestProcessBatch:
         assert len(batch.fix_results) == 3
 
     @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies")
+    @patch("bluei.engine.worktree.hydrate_worktree")
     @patch("bluei.engine.batch_pr._create_worktree")
     @patch("bluei.engine.state._append_text")
     def test_branch_naming_convention(
@@ -545,6 +551,7 @@ class TestProcessBatch:
             patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
             patch("bluei.engine.git_ops.git_push_branch", return_value=True),
             patch("bluei.engine.utils.run_no_capture"),
+            patch("bluei.engine.worktree.run_no_capture"),
         ):
             process_batch(batch, Path("/tmp/repo"), args, log_file)
 
@@ -649,7 +656,7 @@ class TestB7PRCreationFailureSetsBatchFailed:
         side_effect=RuntimeError("gh pr create failed"),
     )
     @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies")
+    @patch("bluei.engine.worktree.hydrate_worktree")
     @patch("bluei.engine.batch_pr._create_worktree")
     @patch("bluei.engine.state._append_text")
     @patch("bluei.engine.gh.find_batch_pr_by_rule", return_value=None)
@@ -661,8 +668,10 @@ class TestB7PRCreationFailureSetsBatchFailed:
     @patch("bluei.engine.git_ops.git_push_branch", return_value=True)
     @patch("bluei.engine.git_ops.git_commit_all", return_value="committed")
     @patch("bluei.engine.utils.run_no_capture")
+    @patch("bluei.engine.worktree.run_no_capture")
     def test_runtime_error_sets_batch_failed(
         self,
+        mock_wt_run_no_capture,
         mock_run,
         mock_commit,
         mock_push,
@@ -694,7 +703,7 @@ class TestB7PRCreationFailureSetsBatchFailed:
 
 class TestB9BranchNameUniqueness:
     @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies")
+    @patch("bluei.engine.worktree.hydrate_worktree")
     @patch("bluei.engine.batch_pr._create_worktree")
     @patch("bluei.engine.state._append_text")
     def test_two_batches_same_second_get_different_branches(
@@ -712,9 +721,10 @@ class TestB9BranchNameUniqueness:
                 patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
                 patch("bluei.engine.git_ops.git_push_branch", return_value=True),
                 patch("bluei.engine.utils.run_no_capture"),
+                patch("bluei.engine.worktree.run_no_capture"),
             ):
                 process_batch(batch, Path("/tmp/repo"), args, log_file)
-            branches.append(batch.branch)
+                branches.append(batch.branch)
 
         assert branches[0] != branches[1]
         for b in branches:

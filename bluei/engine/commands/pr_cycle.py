@@ -44,8 +44,6 @@ from bluei.engine.validation import (
 from bluei.engine.utils import (
     branch_suffix,
     is_path_tracked,
-    run_capture,
-    run_no_capture,
 )
 from bluei.engine.reforge import RefactorClass
 from bluei.engine.git_utils import get_branch
@@ -57,9 +55,13 @@ from bluei.engine.constants import (
 )
 from bluei.engine.commands.helpers import (
     _get_llm_fixable_rules,
-    _hydrate_worktree_dependencies,
     _load_batch_rules_for_args,
     _reconcile_issue_pr_link,
+)
+from bluei.engine.worktree import (
+    create_worktree,
+    hydrate_worktree,
+    remove_worktree,
 )
 
 
@@ -330,20 +332,14 @@ def _process_one_issue(
         worktree_branch = f"bluei/{ts}-{idx}"
     worktree_path = worktree_root.resolve() / f"bluei-{ts}-{idx}-{finding_suffix}"
 
-    run_no_capture(["git", "worktree", "prune"], cwd=repo_path)
-    if worktree_path.exists():
-        run_no_capture(["rm", "-rf", str(worktree_path)], cwd=repo_path)
-
-    add_rc, add_out = run_capture(
-        ["git", "worktree", "add", "-B", worktree_branch, str(worktree_path)],
-        cwd=repo_path,
+    wt_result = create_worktree(
+        repo_path=repo_path,
+        branch=worktree_branch,
+        worktree_path=worktree_path,
+        log_file=log_file,
     )
-    if add_rc != 0:
+    if not wt_result.success:
         blocked_reasons.append("failed-to-create-worktree")
-        _append_text(
-            log_file,
-            f"error: failed to create worktree output={(add_out or '<empty>')[:300]}",
-        )
         return _counter_snapshot(
             created_prs,
             open_prs,
@@ -355,7 +351,7 @@ def _process_one_issue(
             blocked_reasons,
         )
 
-    _hydrate_worktree_dependencies(
+    hydrate_worktree(
         repo_path=repo_path, worktree_path=worktree_path, log_file=log_file
     )
 
@@ -984,13 +980,13 @@ def _process_one_issue(
         )
 
     finally:
-        run_no_capture(
-            ["git", "worktree", "remove", "--force", str(worktree_path)],
-            cwd=repo_path,
+        remove_worktree(
+            worktree_path=worktree_path,
+            repo_path=repo_path,
+            branch=worktree_branch,
+            delete_branch=not args.live_github_actions,
+            log_file=log_file,
         )
-        run_no_capture(["git", "worktree", "prune"], cwd=repo_path)
-        if not args.live_github_actions:
-            run_no_capture(["git", "branch", "-D", worktree_branch], cwd=repo_path)
         _append_text(log_file, f"cleanup: branch={worktree_branch} status={run_status}")
 
     return _counter_snapshot(

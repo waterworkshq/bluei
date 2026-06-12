@@ -15,6 +15,7 @@ _logger = logging.getLogger(__name__)
 
 from bluei.app.models import now_iso, ReviewMode
 from bluei.review.types import ReviewCycleResult
+from bluei.engine.worktree import get_worktree_branch
 
 
 class WorktreeMixin:
@@ -34,7 +35,7 @@ class WorktreeMixin:
                 "dry_run": True,
             }
         if path.exists():
-            worktree_branch = self._get_worktree_branch(path)
+            worktree_branch = get_worktree_branch(path)
             if worktree_branch != local_branch:
                 _logger.warning(
                     f"worktree-stale: path={path} expected_branch={local_branch} "
@@ -226,21 +227,6 @@ class WorktreeMixin:
             "stdout": (result.stdout or "").strip()[-2000:],
             "stderr": (result.stderr or "").strip()[-2000:],
         }
-
-    def _get_worktree_branch(self, worktree_path: Path) -> str:
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=str(worktree_path),
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-        except Exception:
-            pass
-        return ""
 
     def _cleanup_worktree(self, worktree_path: Path) -> Dict[str, Any]:
         result = subprocess.run(

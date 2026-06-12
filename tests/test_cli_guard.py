@@ -116,9 +116,9 @@ class TestSymbolImports:
         assert callable(_compute_health_score)
 
     def test_import_hydrate_worktree_deps(self):
-        from bluei.engine.commands.helpers import _hydrate_worktree_dependencies
+        from bluei.engine.worktree import hydrate_worktree
 
-        assert callable(_hydrate_worktree_dependencies)
+        assert callable(hydrate_worktree)
 
     def test_import_reconcile_issue_pr_link(self):
         from bluei.engine.commands.helpers import _reconcile_issue_pr_link

@@ -633,7 +633,7 @@ class TestRecoverInterruptedBatch:
 class TestProcessBatchSplitWiring:
     @patch("bluei.engine.batch_pr.handle_batch_failure")
     @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies")
+    @patch("bluei.engine.worktree.hydrate_worktree")
     @patch("bluei.engine.batch_pr._create_worktree")
     @patch("bluei.engine.state._append_text")
     def test_process_batch_calls_split_on_high_failure_rate(
@@ -674,7 +674,10 @@ class TestProcessBatchSplitWiring:
             max_loc_diff = 200
             live_github_actions = False
 
-        with patch("bluei.engine.utils.run_no_capture"):
+        with (
+            patch("bluei.engine.utils.run_no_capture"),
+            patch("bluei.engine.worktree.run_no_capture"),
+        ):
             ok, reason = process_batch(
                 batch, Path("/tmp/repo"), FakeArgs(), Path("/tmp/batch.log")
             )
@@ -684,7 +687,7 @@ class TestProcessBatchSplitWiring:
         assert reason == "split-and-retried"
 
     @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies")
+    @patch("bluei.engine.worktree.hydrate_worktree")
     @patch("bluei.engine.batch_pr._create_worktree")
     @patch("bluei.engine.state._append_text")
     def test_process_batch_max_depth_aborts(
@@ -714,7 +717,10 @@ class TestProcessBatchSplitWiring:
             max_loc_diff = 200
             live_github_actions = False
 
-        with patch("bluei.engine.utils.run_no_capture"):
+        with (
+            patch("bluei.engine.utils.run_no_capture"),
+            patch("bluei.engine.worktree.run_no_capture"),
+        ):
             ok, reason = process_batch(
                 batch, Path("/tmp/repo"), FakeArgs(), Path("/tmp/batch.log")
             )

@@ -94,11 +94,12 @@ def _live_patches():
         patch("bluei.engine.gh.parse_github_repo", return_value=("acme", "widget")),
         patch("bluei.engine.gh.find_batch_pr_by_rule", return_value=None),
         patch("bluei.engine.batch_pr._create_worktree", return_value=True),
-        patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies"),
+        patch("bluei.engine.worktree.hydrate_worktree"),
         patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
         patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
         patch("bluei.engine.git_ops.git_push_branch", return_value=True),
         patch("bluei.engine.utils.run_no_capture"),
+        patch("bluei.engine.worktree.run_no_capture"),
         patch("bluei.engine.state._append_text"),
     ]
 
@@ -171,7 +172,7 @@ class TestLiveGHHappyPath:
         }
 
         with _PatchStack(_live_patches()) as mocks:
-            mock_run_no_capture = mocks[8]
+            mock_run_no_capture = mocks[9]  # worktree module's run_no_capture
             mock_create_wt = mocks[3]
             batch = make_batch_group(n_findings=2)
             args = LiveArgs()

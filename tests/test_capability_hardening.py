@@ -6,9 +6,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from bluei.engine import gh, linters
 from bluei.engine.commands.helpers import (
-    _hydrate_worktree_dependencies,
     _reconcile_issue_pr_link,
 )
+from bluei.engine.worktree import hydrate_worktree
 from bluei.engine.validation import choose_validation_baseline, _normalize_check_output
 from bluei.engine.orchestrator import count_failed_fix_attempts
 
@@ -212,7 +212,7 @@ def test_hydrate_worktree_dependencies_links_node_modules(tmp_path):
     (repo_path / "node_modules").mkdir(parents=True)
     worktree_path.mkdir()
 
-    _hydrate_worktree_dependencies(repo_path, worktree_path, tmp_path / "run.log")
+    hydrate_worktree(repo_path, worktree_path, log_file=tmp_path / "run.log")
 
     linked = worktree_path / "node_modules"
     assert linked.is_symlink()
