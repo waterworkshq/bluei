@@ -9,6 +9,7 @@ import logging
 import re
 import shlex
 import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -194,66 +195,62 @@ def _extract_fix_pattern(
             _logger.debug("Failed to log pattern-extract error")
 
 
-def apply_claude_fix(
-    worktree_path: Path,
-    finding: Finding,
-    baseline_checks: Dict[str, List[str]],
-    target_checks: Dict[str, List[str]],
-    claude_cmd_template: str,
-    max_files_changed: int,
-    max_loc_diff: int,
-    log_file: Path,
-    findings_file: Optional[Path] = None,
-    lessons_file: Optional[Path] = None,
-    repo_path: Optional[Path] = None,  # Mnemo integration (reserved)
-    extra_prompt: Optional[str] = None,  # LLM rule prompt hint (reserved)
-    prompt: Optional[str] = None,  # context_fix inline prompt (reserved)
-    pattern_store_path: Optional[Path] = None,
-    learned_patterns: Optional[
-        str
-    ] = None,  # pattern replay hint from format_pattern_hint()
-) -> Tuple[int, str, str]:
-    """Apply a fix using the Claude fix engine.
+# ── Claude fix engine ──────────────────────────────────────────────────
 
-    Args:
-        worktree_path: Path to the worktree.
-        finding: The Finding to fix.
-        baseline_checks: Checks to run before the fix (for fingerprinting).
-        target_checks: Checks that must pass after the fix.
-        claude_cmd_template: Shell command template with {prompt_file},
-            {finding_id}, {rule}, {path} placeholders.
-        max_files_changed: Safety cap on files changed per fix.
-        max_loc_diff: Safety cap on lines changed per fix.
-        log_file: Path to the run log.
 
-    Returns:
-        Tuple of (return_code, output_text, prompt_path_str).
-        return_code 0 = success, 2 = template error, non-zero = Claude failed.
+@dataclass
+class ClaudeFixRequest:
+    """Bundle of parameters for ``apply_claude_fix``.
+
+    Replaces the former 15-param signature; two reserved params
+    (``repo_path``, ``prompt``) were never read and are removed.
     """
+
+    worktree_path: Path
+    finding: Finding
+    baseline_checks: Dict[str, List[str]]
+    target_checks: Dict[str, List[str]]
+    claude_cmd_template: str
+    max_files_changed: int
+    max_loc_diff: int
+    log_file: Path
+    findings_file: Optional[Path] = None
+    lessons_file: Optional[Path] = None
+    extra_prompt: Optional[str] = None
+    pattern_store_path: Optional[Path] = None
+    learned_patterns: Optional[str] = None
+
+
+def apply_claude_fix(req: ClaudeFixRequest) -> Tuple[int, str, str]:
+    """Apply a fix using the Claude fix engine."""
     # --- Directive seeding: load prior context from LESSONS_LOG + findings.jsonl ---
     fix_history: Optional[List[Dict[str, Any]]] = None
     finding_record: Optional[Dict[str, Any]] = None
     rule_history: Optional[List[Dict[str, Any]]] = None
     failure_clusters: Optional[str] = None
 
-    if lessons_file is not None:
-        fix_history = load_lessons_for_finding(finding.finding_id, lessons_file)
-        rule_history = load_lessons_for_rule(finding.rule, lessons_file, limit=5)
-        failure_clusters = load_failure_clusters_for_rule(finding.rule, lessons_file)
-    if findings_file is not None:
-        finding_record = load_finding_record(finding.finding_id, findings_file)
+    if req.lessons_file is not None:
+        fix_history = load_lessons_for_finding(req.finding.finding_id, req.lessons_file)
+        rule_history = load_lessons_for_rule(
+            req.finding.rule, req.lessons_file, limit=5
+        )
+        failure_clusters = load_failure_clusters_for_rule(
+            req.finding.rule, req.lessons_file
+        )
+    if req.findings_file is not None:
+        finding_record = load_finding_record(req.finding.finding_id, req.findings_file)
 
-    prompt_path = worktree_path / QA_FIX_PROMPT_FILENAME
+    prompt_path = req.worktree_path / QA_FIX_PROMPT_FILENAME
     prompt_text = render_claude_fix_prompt(
-        finding=finding,
-        baseline_checks=baseline_checks,
-        target_checks=target_checks,
-        max_files_changed=max_files_changed,
-        max_loc_diff=max_loc_diff,
+        finding=req.finding,
+        baseline_checks=req.baseline_checks,
+        target_checks=req.target_checks,
+        max_files_changed=req.max_files_changed,
+        max_loc_diff=req.max_loc_diff,
         fix_history=fix_history,
         finding_record=finding_record,
-        extra_prompt=extra_prompt,
-        learned_patterns=learned_patterns,
+        extra_prompt=req.extra_prompt,
+        learned_patterns=req.learned_patterns,
         rule_history=rule_history,
         failure_clusters=failure_clusters,
     )
@@ -261,26 +258,26 @@ def apply_claude_fix(
 
     try:
         try:
-            command = claude_cmd_template.format(
+            command = req.claude_cmd_template.format(
                 prompt_file=shlex.quote(str(prompt_path)),
-                finding_id=shlex.quote(finding.finding_id),
-                rule=shlex.quote(finding.rule),
-                path=shlex.quote(finding.path),
+                finding_id=shlex.quote(req.finding.finding_id),
+                rule=shlex.quote(req.finding.rule),
+                path=shlex.quote(req.finding.path),
             )
         except KeyError as exc:
             error = f"invalid claude command template placeholder: {exc}"
-            _append_text(log_file, f"claude-fix: {error}")
+            _append_text(req.log_file, f"claude-fix: {error}")
             return 2, error, str(prompt_path)
 
         _append_text(
-            log_file,
+            req.log_file,
             "claude-fix: "
-            f"finding_id={finding.finding_id} prompt_file={prompt_path} "
+            f"finding_id={req.finding.finding_id} prompt_file={prompt_path} "
             f"cmd={sanitize_command_template(command)}",
         )
         res = subprocess.run(
             ["bash", "-l", "-c", command],
-            cwd=str(worktree_path),
+            cwd=str(req.worktree_path),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -288,43 +285,49 @@ def apply_claude_fix(
         )
         output = (res.stdout or "").strip()
         _append_text(
-            log_file,
+            req.log_file,
             "claude-fix-result: "
-            f"finding_id={finding.finding_id} rc={res.returncode} output={(output or '<empty>')[:1000]}",
+            f"finding_id={req.finding.finding_id} rc={res.returncode} output={(output or '<empty>')[:1000]}",
         )
 
         # --- Directive seeding: record fix attempt outcome ---
-        if findings_file is not None:
+        if req.findings_file is not None:
             success = res.returncode == 0
             increment_fix_attempt(
-                finding.finding_id,
-                findings_file,
+                req.finding.finding_id,
+                req.findings_file,
                 error=None if success else (output or "fix failed")[:500],
             )
             if success:
                 update_finding_record(
-                    finding.finding_id, findings_file, {"fix_success": True}
+                    req.finding.finding_id,
+                    req.findings_file,
+                    {"fix_success": True},
                 )
-        if lessons_file is not None:
-            location = f"{finding.path}:{finding.line}"
+        if req.lessons_file is not None:
+            location = f"{req.finding.path}:{req.finding.line}"
             if res.returncode == 0:
                 append_lesson(
-                    lessons_file,
+                    req.lessons_file,
                     "fix",
-                    finding_id=finding.finding_id,
-                    what_changed=f"fix succeeded rule={finding.rule} path={location}",
+                    finding_id=req.finding.finding_id,
+                    what_changed=f"fix succeeded rule={req.finding.rule} path={location}",
                 )
             else:
                 error_summary = (output or "fix failed")[:200].split("\n")[-1]
                 append_lesson(
-                    lessons_file,
+                    req.lessons_file,
                     "fix",
-                    finding_id=finding.finding_id,
-                    what_broke=f"fix failed rc={res.returncode} rule={finding.rule} path={location}: {error_summary}",
+                    finding_id=req.finding.finding_id,
+                    what_broke=f"fix failed rc={res.returncode} rule={req.finding.rule} path={location}: {error_summary}",
                 )
         if res.returncode == 0:
             _extract_fix_pattern(
-                worktree_path, finding, "claude", pattern_store_path, log_file
+                req.worktree_path,
+                req.finding,
+                "claude",
+                req.pattern_store_path,
+                req.log_file,
             )
 
         return res.returncode, output, str(prompt_path)
@@ -759,15 +762,17 @@ def apply_cascade_fix(
         )
 
         rc, _output, _prompt = apply_claude_fix(
-            worktree_path,
-            finding,
-            dict(BASELINE_VALIDATION_CHECKS),
-            {},
-            DEFAULT_CLAUDE_CMD_TEMPLATE,
-            5,
-            200,
-            log_file,
-            pattern_store_path=pattern_store_path,
+            ClaudeFixRequest(
+                worktree_path=worktree_path,
+                finding=finding,
+                baseline_checks=dict(BASELINE_VALIDATION_CHECKS),
+                target_checks={},
+                claude_cmd_template=DEFAULT_CLAUDE_CMD_TEMPLATE,
+                max_files_changed=5,
+                max_loc_diff=200,
+                log_file=log_file,
+                pattern_store_path=pattern_store_path,
+            ),
         )
         return rc == 0
 
@@ -845,14 +850,16 @@ def process_refactor_queue(
 
                 # Apply the fix via Claude fix engine
                 rc, output, _ = apply_claude_fix(
-                    worktree_path=wt,
-                    finding=finding,
-                    baseline_checks=BASELINE_VALIDATION_CHECKS,
-                    target_checks=target_checks,
-                    claude_cmd_template=DEFAULT_CLAUDE_CMD_TEMPLATE,
-                    max_files_changed=20,
-                    max_loc_diff=500,
-                    log_file=Path("/dev/null"),
+                    ClaudeFixRequest(
+                        worktree_path=wt,
+                        finding=finding,
+                        baseline_checks=BASELINE_VALIDATION_CHECKS,
+                        target_checks=target_checks,
+                        claude_cmd_template=DEFAULT_CLAUDE_CMD_TEMPLATE,
+                        max_files_changed=20,
+                        max_loc_diff=500,
+                        log_file=Path("/dev/null"),
+                    ),
                 )
 
                 if rc == 0:

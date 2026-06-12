@@ -20,6 +20,7 @@ from bluei.engine.lifecycle import (
     apply_autofix,
     apply_cascade_fix,
     apply_claude_fix,
+    ClaudeFixRequest,
     process_refactor_queue,
     route_to_human_review,
 )
@@ -69,7 +70,16 @@ class TestApplyClaudeFix:
         log = tmp_path / "log.txt"
         log.write_text("")
         rc, output, _ = apply_claude_fix(
-            tmp_path, make_finding(), {}, {}, "echo {prompt_file}", 5, 200, log
+            ClaudeFixRequest(
+                worktree_path=tmp_path,
+                finding=make_finding(),
+                baseline_checks={},
+                target_checks={},
+                claude_cmd_template="echo {prompt_file}",
+                max_files_changed=5,
+                max_loc_diff=200,
+                log_file=log,
+            ),
         )
         assert rc == 0
         assert output == "fixed!"
@@ -80,7 +90,16 @@ class TestApplyClaudeFix:
         log = tmp_path / "log.txt"
         log.write_text("")
         rc, output, _ = apply_claude_fix(
-            tmp_path, make_finding(), {}, {}, "echo {prompt_file}", 5, 200, log
+            ClaudeFixRequest(
+                worktree_path=tmp_path,
+                finding=make_finding(),
+                baseline_checks={},
+                target_checks={},
+                claude_cmd_template="echo {prompt_file}",
+                max_files_changed=5,
+                max_loc_diff=200,
+                log_file=log,
+            ),
         )
         assert rc == 1
         assert "error details" in output
@@ -89,14 +108,16 @@ class TestApplyClaudeFix:
         log = tmp_path / "log.txt"
         log.write_text("")
         rc, output, _ = apply_claude_fix(
-            tmp_path,
-            make_finding(),
-            {},
-            {},
-            "claude --print {bad_placeholder}",
-            5,
-            200,
-            log,
+            ClaudeFixRequest(
+                worktree_path=tmp_path,
+                finding=make_finding(),
+                baseline_checks={},
+                target_checks={},
+                claude_cmd_template="claude --print {bad_placeholder}",
+                max_files_changed=5,
+                max_loc_diff=200,
+                log_file=log,
+            ),
         )
         assert rc == 2
         assert "invalid claude command template placeholder" in output
@@ -107,7 +128,16 @@ class TestApplyClaudeFix:
         log = tmp_path / "log.txt"
         log.write_text("")
         _, _, prompt_path = apply_claude_fix(
-            tmp_path, make_finding(), {}, {}, "echo {prompt_file}", 5, 200, log
+            ClaudeFixRequest(
+                worktree_path=tmp_path,
+                finding=make_finding(),
+                baseline_checks={},
+                target_checks={},
+                claude_cmd_template="echo {prompt_file}",
+                max_files_changed=5,
+                max_loc_diff=200,
+                log_file=log,
+            ),
         )
         assert not Path(prompt_path).exists()
 
@@ -125,15 +155,17 @@ class TestApplyClaudeFix:
         log = tmp_path / "log.txt"
         log.write_text("")
         apply_claude_fix(
-            tmp_path,
-            make_finding(),
-            {},
-            {},
-            "echo {prompt_file}",
-            5,
-            200,
-            log,
-            lessons_file=lessons,
+            ClaudeFixRequest(
+                worktree_path=tmp_path,
+                finding=make_finding(),
+                baseline_checks={},
+                target_checks={},
+                claude_cmd_template="echo {prompt_file}",
+                max_files_changed=5,
+                max_loc_diff=200,
+                log_file=log,
+                lessons_file=lessons,
+            ),
         )
         assert mock_lesson.call_count == 1
 
@@ -149,15 +181,17 @@ class TestApplyClaudeFix:
         log = tmp_path / "log.txt"
         log.write_text("")
         apply_claude_fix(
-            tmp_path,
-            make_finding(),
-            {},
-            {},
-            "echo {prompt_file}",
-            5,
-            200,
-            log,
-            findings_file=findings,
+            ClaudeFixRequest(
+                worktree_path=tmp_path,
+                finding=make_finding(),
+                baseline_checks={},
+                target_checks={},
+                claude_cmd_template="echo {prompt_file}",
+                max_files_changed=5,
+                max_loc_diff=200,
+                log_file=log,
+                findings_file=findings,
+            ),
         )
         mock_inc.assert_called_once()
         mock_update.assert_called_once()

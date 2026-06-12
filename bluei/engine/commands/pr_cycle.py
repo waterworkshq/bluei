@@ -30,6 +30,7 @@ from bluei.engine.orchestrator import (
 )
 from bluei.engine.git_ops import diff_stats, git_commit_all, git_push_branch
 from bluei.engine.lifecycle import (
+    ClaudeFixRequest,
     apply_autofix,
     apply_claude_fix,
 )
@@ -493,22 +494,23 @@ def _process_one_issue(
 
                 if use_claude_engine:
                     rc, claude_output, prompt_file = apply_claude_fix(
-                        worktree_path=worktree_path,
-                        finding=finding,
-                        baseline_checks=BASELINE_VALIDATION_CHECKS,
-                        target_checks=target_checks,
-                        claude_cmd_template=args.claude_cmd_template,
-                        max_files_changed=args.max_files_changed,
-                        max_loc_diff=args.max_loc_diff,
-                        log_file=log_file,
-                        findings_file=findings_file,
-                        lessons_file=lessons_file,
-                        repo_path=repo_path,
-                        extra_prompt=extra_prompt,
-                        pattern_store_path=Path(args.pattern_store_path)
-                        if args.pattern_store_path
-                        else None,
-                        learned_patterns=learned_patterns,
+                        ClaudeFixRequest(
+                            worktree_path=worktree_path,
+                            finding=finding,
+                            baseline_checks=BASELINE_VALIDATION_CHECKS,
+                            target_checks=target_checks,
+                            claude_cmd_template=args.claude_cmd_template,
+                            max_files_changed=args.max_files_changed,
+                            max_loc_diff=args.max_loc_diff,
+                            log_file=log_file,
+                            findings_file=findings_file,
+                            lessons_file=lessons_file,
+                            extra_prompt=extra_prompt,
+                            pattern_store_path=Path(args.pattern_store_path)
+                            if args.pattern_store_path
+                            else None,
+                            learned_patterns=learned_patterns,
+                        ),
                     )
                     model_name = "claude-sonnet-4"
                     cost_tracker.record_invocation(

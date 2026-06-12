@@ -28,25 +28,33 @@ def _load_lifecycle_functions():
     modules = []
     try:
         from bluei.engine import lifecycle as core_lifecycle
+
         modules.append(core_lifecycle)
     except (ImportError, AttributeError):
         _logger.debug("Failed to import lifecycle functions")
 
     for module in modules:
-        apply_autofix = getattr(module, 'apply_autofix', None)
-        apply_claude_fix = getattr(module, 'apply_claude_fix', None)
-        if hasattr(apply_autofix, 'mock_calls') or hasattr(apply_claude_fix, 'mock_calls'):
-            return apply_autofix, apply_claude_fix
+        apply_autofix = getattr(module, "apply_autofix", None)
+        apply_claude_fix = getattr(module, "apply_claude_fix", None)
+        if hasattr(apply_autofix, "mock_calls") or hasattr(
+            apply_claude_fix, "mock_calls"
+        ):
+            return (
+                apply_autofix,
+                apply_claude_fix,
+                getattr(module, "ClaudeFixRequest", None),
+            )
 
     if not modules:
-        raise ModuleNotFoundError('bluei engine lifecycle module not found')
+        raise ModuleNotFoundError("bluei engine lifecycle module not found")
     module = modules[0]
-    return module.apply_autofix, module.apply_claude_fix
+    return module.apply_autofix, module.apply_claude_fix, module.ClaudeFixRequest
 
 
 @dataclass
 class ContextFailure:
     """Tracks repeated fix failures for a rule+file+framework combination."""
+
     rule: str
     file_path: str
     framework: str
@@ -54,7 +62,9 @@ class ContextFailure:
     count: int = 0
 
 
-def record_context_failure(failures_path: Path, rule: str, file_path: str, framework: str, strategy: str) -> None:
+def record_context_failure(
+    failures_path: Path, rule: str, file_path: str, framework: str, strategy: str
+) -> None:
     """Append or increment a failure record for a rule+file+framework triple.
 
     Args:
@@ -70,10 +80,26 @@ def record_context_failure(failures_path: Path, rule: str, file_path: str, frame
     if key in records:
         records[key].count += 1
     else:
-        records[key] = ContextFailure(rule=rule, file_path=file_path, framework=framework, strategy=strategy, count=1)
+        records[key] = ContextFailure(
+            rule=rule,
+            file_path=file_path,
+            framework=framework,
+            strategy=strategy,
+            count=1,
+        )
     lines = []
     for cf in records.values():
-        lines.append(json.dumps({"rule": cf.rule, "file_path": cf.file_path, "framework": cf.framework, "strategy": cf.strategy, "count": cf.count}))
+        lines.append(
+            json.dumps(
+                {
+                    "rule": cf.rule,
+                    "file_path": cf.file_path,
+                    "framework": cf.framework,
+                    "strategy": cf.strategy,
+                    "count": cf.count,
+                }
+            )
+        )
     failures_path.write_text("\n".join(lines) + "\n" if lines else "", encoding="utf-8")
 
 
@@ -96,13 +122,21 @@ def load_context_failures(failures_path: Path) -> Dict[str, ContextFailure]:
         try:
             d = json.loads(line)
             key = f"{d['rule']}::{d['file_path']}::{d['framework']}"
-            records[key] = ContextFailure(rule=d["rule"], file_path=d["file_path"], framework=d.get("framework", ""), strategy=d.get("strategy", ""), count=d.get("count", 1))
+            records[key] = ContextFailure(
+                rule=d["rule"],
+                file_path=d["file_path"],
+                framework=d.get("framework", ""),
+                strategy=d.get("strategy", ""),
+                count=d.get("count", 1),
+            )
         except (json.JSONDecodeError, KeyError):
             continue
     return records
 
 
-def should_skip_due_to_failures(failures_path: Path, rule: str, file_path: str, framework: str) -> bool:
+def should_skip_due_to_failures(
+    failures_path: Path, rule: str, file_path: str, framework: str
+) -> bool:
     """Check whether a rule+file+framework has failed enough times to skip.
 
     Args:
@@ -200,28 +234,85 @@ def apply_contextual_fix(
     Returns:
         True if the fix was applied successfully.
     """
-    apply_autofix, apply_claude_fix = _load_lifecycle_functions()
+    apply_autofix, apply_claude_fix, ClaudeFixRequest = _load_lifecycle_functions()
 
     context_rule = get_context_rule(finding.rule)
     if not context_rule:
-        _append_text(log_file, f'contextual-fix: no context rule for {finding.rule}')
-        return apply_autofix(worktree_path, finding, log_file, pattern_store_path=pattern_store_path, detected_frameworks=detected_frameworks)
+        _append_text(log_file, f"contextual-fix: no context rule for {finding.rule}")
+        return apply_autofix(
+            worktree_path,
+            finding,
+            log_file,
+            pattern_store_path=pattern_store_path,
+            detected_frameworks=detected_frameworks,
+        )
 
     matched = match_context(finding.path, context_rule, detected_frameworks)
     if not matched:
         # No context match → use default strategy from the rule
         strategy = context_rule.default_strategy
-        _append_text(log_file, f'contextual-fix: no context match for {finding.path}, using default strategy={strategy}')
-        if strategy in ('deterministic', 'deterministic_safe'):
-            return apply_autofix(worktree_path, finding, log_file, pattern_store_path=pattern_store_path, detected_frameworks=detected_frameworks)
-        if strategy == 'llm_with_context':
-            prompt = build_contextual_prompt(finding, ContextOverride(
-                file_patterns=[],
-                framework=context_rule.rule,
-                fix_strategy='llm_with_context',
-                prompt_hint=context_rule.contexts[0].prompt_hint if context_rule.contexts else None,
-            ))
+        _append_text(
+            log_file,
+            f"contextual-fix: no context match for {finding.path}, using default strategy={strategy}",
+        )
+        if strategy in ("deterministic", "deterministic_safe"):
+            return apply_autofix(
+                worktree_path,
+                finding,
+                log_file,
+                pattern_store_path=pattern_store_path,
+                detected_frameworks=detected_frameworks,
+            )
+        if strategy == "llm_with_context":
+            prompt = build_contextual_prompt(
+                finding,
+                ContextOverride(
+                    file_patterns=[],
+                    framework=context_rule.rule,
+                    fix_strategy="llm_with_context",
+                    prompt_hint=context_rule.contexts[0].prompt_hint
+                    if context_rule.contexts
+                    else None,
+                ),
+            )
             rc, _output, _prompt_file = apply_claude_fix(
+                ClaudeFixRequest(
+                    worktree_path=worktree_path,
+                    finding=finding,
+                    baseline_checks=baseline_checks or {},
+                    target_checks=target_checks or {},
+                    claude_cmd_template=claude_cmd_template or "",
+                    max_files_changed=max_files_changed,
+                    max_loc_diff=max_loc_diff,
+                    log_file=log_file,
+                    pattern_store_path=pattern_store_path,
+                ),
+            )
+            return rc == 0
+        # skip or unknown
+        _append_text(
+            log_file, f"contextual-fix: default strategy={strategy} — skipping"
+        )
+        return False
+
+    _append_text(
+        log_file,
+        f"contextual-fix: rule={finding.rule} context={matched.framework} strategy={matched.fix_strategy}",
+    )
+
+    if matched.fix_strategy in ("deterministic", "deterministic_safe"):
+        return apply_autofix(
+            worktree_path,
+            finding,
+            log_file,
+            pattern_store_path=pattern_store_path,
+            detected_frameworks=detected_frameworks,
+        )
+
+    if matched.fix_strategy == "llm_with_context":
+        prompt = build_contextual_prompt(finding, matched)
+        rc, _output, _prompt_file = apply_claude_fix(
+            ClaudeFixRequest(
                 worktree_path=worktree_path,
                 finding=finding,
                 baseline_checks=baseline_checks or {},
@@ -230,37 +321,15 @@ def apply_contextual_fix(
                 max_files_changed=max_files_changed,
                 max_loc_diff=max_loc_diff,
                 log_file=log_file,
-                prompt=prompt,
                 pattern_store_path=pattern_store_path,
-            )
-            return rc == 0
-        # skip or unknown
-        _append_text(log_file, f'contextual-fix: default strategy={strategy} — skipping')
-        return False
-
-    _append_text(log_file, f'contextual-fix: rule={finding.rule} context={matched.framework} strategy={matched.fix_strategy}')
-
-    if matched.fix_strategy in ("deterministic", "deterministic_safe"):
-        return apply_autofix(worktree_path, finding, log_file, pattern_store_path=pattern_store_path, detected_frameworks=detected_frameworks)
-
-    if matched.fix_strategy == "llm_with_context":
-        prompt = build_contextual_prompt(finding, matched)
-        rc, _output, _prompt_file = apply_claude_fix(
-            worktree_path=worktree_path,
-            finding=finding,
-            baseline_checks=baseline_checks or {},
-            target_checks=target_checks or {},
-            claude_cmd_template=claude_cmd_template or "",
-            max_files_changed=max_files_changed,
-            max_loc_diff=max_loc_diff,
-            log_file=log_file,
-            prompt=prompt,
-            pattern_store_path=pattern_store_path,
+            ),
         )
         return rc == 0
 
     # skip or unknown
-    _append_text(log_file, f'contextual-fix: strategy={matched.fix_strategy} — skipping fix')
+    _append_text(
+        log_file, f"contextual-fix: strategy={matched.fix_strategy} — skipping fix"
+    )
     return False
 
 

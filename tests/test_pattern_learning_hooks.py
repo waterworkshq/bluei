@@ -29,6 +29,8 @@ def commit_file(repo, relative_path, content):
 
 
 def claude_kwargs(make_finding_fn, tmp_path, worktree, log_file, **overrides):
+    from bluei.engine.lifecycle import ClaudeFixRequest
+
     kwargs = {
         "worktree_path": worktree,
         "finding": make_finding_fn(
@@ -48,7 +50,7 @@ def claude_kwargs(make_finding_fn, tmp_path, worktree, log_file, **overrides):
         "log_file": log_file,
     }
     kwargs.update(overrides)
-    return kwargs
+    return ClaudeFixRequest(**kwargs)
 
 
 def test_apply_claude_fix_with_no_pattern_store_keeps_backward_compat(
@@ -65,7 +67,7 @@ def test_apply_claude_fix_with_no_pattern_store_keeps_backward_compat(
     )
 
     rc, output, _ = lifecycle.apply_claude_fix(
-        **claude_kwargs(make_finding, tmp_path, worktree, log_file)
+        claude_kwargs(make_finding, tmp_path, worktree, log_file)
     )
 
     assert rc == 0
@@ -119,7 +121,7 @@ def test_apply_claude_fix_success_extracts_with_correct_args(
     monkeypatch.setattr("bluei.engine.pattern_extractor.extract", fake_extract)
 
     rc, _, _ = lifecycle.apply_claude_fix(
-        **claude_kwargs(
+        claude_kwargs(
             make_finding, tmp_path, worktree, log_file, pattern_store_path=store_path
         )
     )
@@ -187,7 +189,7 @@ def test_apply_claude_fix_failure_does_not_extract(tmp_path, monkeypatch, make_f
     )
 
     rc, _, _ = lifecycle.apply_claude_fix(
-        **claude_kwargs(
+        claude_kwargs(
             make_finding,
             tmp_path,
             worktree,
@@ -327,7 +329,7 @@ def test_apply_contextual_fix_propagates_pattern_store_path_to_claude(
         )
 
     assert result is True
-    assert mock_claude.call_args.kwargs["pattern_store_path"] == store_path
+    assert mock_claude.call_args[0][0].pattern_store_path == store_path
 
 
 def test_integration_apply_autofix_writes_pattern_to_store_jsonl(

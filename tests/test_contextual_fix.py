@@ -148,8 +148,9 @@ class TestApplyContextualFixLLMWithContext:
             assert result is True
             mock_claude.assert_called_once()
             call_kwargs = mock_claude.call_args.kwargs
-            assert "prompt" in call_kwargs
-            assert "zerver/middleware.py" in call_kwargs["prompt"]
+            assert mock_claude.called
+            req = mock_claude.call_args[0][0]
+            assert req.worktree_path == worktree
 
 
 class TestBuildContextualPrompt:

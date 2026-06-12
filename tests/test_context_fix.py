@@ -36,11 +36,18 @@ class TestLoadLifecycleFunctions:
                 _load_lifecycle_functions()
 
     def test_returns_real_functions_when_no_mocks(self):
-        from bluei.engine.lifecycle import apply_autofix, apply_claude_fix
+        from bluei.engine.lifecycle import (
+            ClaudeFixRequest,
+            apply_autofix,
+            apply_claude_fix,
+        )
 
-        result_autofix, result_claude_fix = _load_lifecycle_functions()
+        result_autofix, result_claude_fix, result_claude_req = (
+            _load_lifecycle_functions()
+        )
         assert result_autofix is apply_autofix
         assert result_claude_fix is apply_claude_fix
+        assert result_claude_req is ClaudeFixRequest
 
 
 class TestLoadContextFailuresEmptyLine:

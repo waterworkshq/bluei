@@ -488,6 +488,7 @@ def _apply_single_fix(
     3. Otherwise → skip
     """
     from bluei.engine.lifecycle import (
+        ClaudeFixRequest,
         apply_autofix,
         apply_claude_fix,
     )
@@ -599,14 +600,16 @@ def _apply_single_fix(
 
     try:
         rc, output, prompt_file = apply_claude_fix(
-            worktree_path=worktree_path,
-            finding=finding,
-            baseline_checks=BASELINE_VALIDATION_CHECKS,
-            target_checks=target_checks,
-            claude_cmd_template=args.claude_cmd_template,
-            max_files_changed=args.max_files_changed,
-            max_loc_diff=args.max_loc_diff,
-            log_file=log_file,
+            ClaudeFixRequest(
+                worktree_path=worktree_path,
+                finding=finding,
+                baseline_checks=BASELINE_VALIDATION_CHECKS,
+                target_checks=target_checks,
+                claude_cmd_template=args.claude_cmd_template,
+                max_files_changed=args.max_files_changed,
+                max_loc_diff=args.max_loc_diff,
+                log_file=log_file,
+            ),
         )
     except (subprocess.CalledProcessError, OSError, ValueError) as exc:
         _append_text(

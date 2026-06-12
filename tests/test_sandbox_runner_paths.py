@@ -12,7 +12,7 @@ from bluei.engine.constants import (
     RUNNER_PATH,
 )
 from bluei.engine.git_ops import git_commit_all
-from bluei.engine.lifecycle import apply_claude_fix
+from bluei.engine.lifecycle import ClaudeFixRequest, apply_claude_fix
 from bluei.engine.validation import verify_fix_closed
 from bluei.engine.models import Finding
 from bluei.engine.orchestrator import (
@@ -99,15 +99,16 @@ def test_apply_claude_fix_cleans_up_prompt_file(tmp_path, monkeypatch):
 
     monkeypatch.setattr(apply_claude_fix.__globals__["subprocess"], "run", fake_run)
     rc, output, prompt_file = apply_claude_fix(
-        worktree_path=worktree,
-        repo_path=main_repo,
-        finding=finding,
-        baseline_checks={"baseline": ["pytest", "-q"]},
-        target_checks={},
-        claude_cmd_template="echo ready",
-        max_files_changed=5,
-        max_loc_diff=200,
-        log_file=log_file,
+        ClaudeFixRequest(
+            worktree_path=worktree,
+            finding=finding,
+            baseline_checks={"baseline": ["pytest", "-q"]},
+            target_checks={},
+            claude_cmd_template="echo ready",
+            max_files_changed=5,
+            max_loc_diff=200,
+            log_file=log_file,
+        ),
     )
 
     assert rc == 0
