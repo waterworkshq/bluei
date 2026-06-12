@@ -792,29 +792,6 @@ def link_issues_to_batch_pr(
         )
 
 
-def _hydrate_batch_worktree_deps(
-    repo_path: Path, worktree_path: Path, log_file: Path
-) -> None:
-    """Best-effort link shared dependency folders into a fresh git worktree.
-
-    Duplicated from cli.py to avoid circular imports.
-    """
-    from bluei.engine.state import _append_text
-
-    for dirname in ("node_modules",):
-        source = repo_path / dirname
-        target = worktree_path / dirname
-        if not source.exists() or target.exists():
-            continue
-        try:
-            os.symlink(source, target, target_is_directory=True)
-            _append_text(
-                log_file, f"worktree-deps: linked {dirname} from repo into worktree"
-            )
-        except OSError as exc:
-            _append_text(log_file, f"worktree-deps: failed to link {dirname}: {exc}")
-
-
 # ────────────────────────────────────────────────────────────────
 # Phase 3: Split/Recovery Logic and Conflict Detection
 # ────────────────────────────────────────────────────────────────
@@ -1342,7 +1319,9 @@ def process_batch(
 
     try:
         # Hydrate dependencies (e.g. node_modules symlink)
-        _hydrate_batch_worktree_deps(repo_path, worktree_path, log_file)
+        from bluei.engine.commands.helpers import _hydrate_worktree_dependencies
+
+        _hydrate_worktree_dependencies(repo_path, worktree_path, log_file)
 
         # Apply all fixes sequentially
         successes, failures = apply_batch_fixes(

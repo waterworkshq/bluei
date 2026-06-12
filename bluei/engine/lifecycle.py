@@ -573,29 +573,6 @@ def apply_autofix(
     text = file_path.read_text(encoding="utf-8")
     updated = text
 
-    if (
-        finding.rule == "test-gap-missing-case"
-        and finding.path == "tests/test_orders.py"
-    ):
-        marker = "test_apply_coupon_invalid_code_returns_original_total"
-        if marker not in updated:
-            updated = updated.rstrip() + (
-                "\n\n\ndef test_apply_coupon_invalid_code_returns_original_total() -> None:\n"
-                '    assert apply_coupon(100.0, "INVALID") == 100.0\n'
-            )
-    elif (
-        finding.rule == "test-gap-missing-case"
-        and finding.path == "tests/test_inventory.py"
-    ):
-        marker = "test_reserve_stock_rejects_negative_quantity"
-        if marker not in updated:
-            updated = updated.rstrip() + (
-                "\n\n\ndef test_reserve_stock_rejects_negative_quantity() -> None:\n"
-                '    stock = {"SKU-1": 5}\n'
-                '    assert reserve_stock(stock, "SKU-1", -1) is False\n'
-                '    assert stock["SKU-1"] == 5\n'
-            )
-
     # Performance fixes - deterministic patterns (not yet migrated to recipes)
     if finding.rule == "perf-pop-front-loop":
         if "from collections import deque" not in updated:
@@ -627,16 +604,6 @@ def apply_autofix(
             updated = re.sub(
                 rf"({list_name}\s*=\s*\[[^\]]+\])", rf"\1\n{set_declaration}", updated
             )
-
-    # --- Cascade fallback: test coverage and max-lines findings require Claude ---
-    # These cannot be fixed deterministically; return False so the caller falls to LLM.
-    if finding.rule in ("test-coverage-branch", "test-coverage-function"):
-        _append_text(
-            log_file,
-            f"autofix: test coverage finding requires Claude fix engine finding_id={finding.finding_id} rule={finding.rule}",
-        )
-        # Add to CLAUDE_REQUIRED_RULES equivalent check in fix workflow
-        return False
 
     # Max-lines refactor: files exceeding the auto-refactor limit are skipped;
     # caller should fall to the Claude fix engine for supervised refactoring.

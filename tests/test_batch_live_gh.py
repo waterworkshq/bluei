@@ -94,7 +94,7 @@ def _live_patches():
         patch("bluei.engine.gh.parse_github_repo", return_value=("acme", "widget")),
         patch("bluei.engine.gh.find_batch_pr_by_rule", return_value=None),
         patch("bluei.engine.batch_pr._create_worktree", return_value=True),
-        patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps"),
+        patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies"),
         patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
         patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
         patch("bluei.engine.git_ops.git_push_branch", return_value=True),

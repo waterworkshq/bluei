@@ -633,7 +633,7 @@ class TestRecoverInterruptedBatch:
 class TestProcessBatchSplitWiring:
     @patch("bluei.engine.batch_pr.handle_batch_failure")
     @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps")
+    @patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies")
     @patch("bluei.engine.batch_pr._create_worktree")
     @patch("bluei.engine.state._append_text")
     def test_process_batch_calls_split_on_high_failure_rate(
@@ -684,7 +684,7 @@ class TestProcessBatchSplitWiring:
         assert reason == "split-and-retried"
 
     @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps")
+    @patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies")
     @patch("bluei.engine.batch_pr._create_worktree")
     @patch("bluei.engine.state._append_text")
     def test_process_batch_max_depth_aborts(

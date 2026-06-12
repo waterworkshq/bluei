@@ -433,7 +433,7 @@ class TestVerifyFindingClosed:
 
 class TestProcessBatch:
     @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps")
+    @patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies")
     @patch("bluei.engine.batch_pr._create_worktree")
     @patch("bluei.engine.state._append_text")
     def test_worktree_created_for_batch(
@@ -460,7 +460,7 @@ class TestProcessBatch:
         assert f"qa-batch-{batch.batch_id}" in str(create_call[0][1])
 
     @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps")
+    @patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies")
     @patch("bluei.engine.batch_pr._create_worktree")
     @patch("bluei.engine.state._append_text")
     def test_no_successes_returns_false(
@@ -493,7 +493,7 @@ class TestProcessBatch:
         assert "worktree" in detail
 
     @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps")
+    @patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies")
     @patch("bluei.engine.batch_pr._create_worktree")
     @patch("bluei.engine.state._append_text")
     def test_partial_success_still_creates_pr(
@@ -529,7 +529,7 @@ class TestProcessBatch:
         assert len(batch.fix_results) == 3
 
     @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps")
+    @patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies")
     @patch("bluei.engine.batch_pr._create_worktree")
     @patch("bluei.engine.state._append_text")
     def test_branch_naming_convention(
@@ -649,7 +649,7 @@ class TestB7PRCreationFailureSetsBatchFailed:
         side_effect=RuntimeError("gh pr create failed"),
     )
     @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps")
+    @patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies")
     @patch("bluei.engine.batch_pr._create_worktree")
     @patch("bluei.engine.state._append_text")
     @patch("bluei.engine.gh.find_batch_pr_by_rule", return_value=None)
@@ -694,7 +694,7 @@ class TestB7PRCreationFailureSetsBatchFailed:
 
 class TestB9BranchNameUniqueness:
     @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps")
+    @patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies")
     @patch("bluei.engine.batch_pr._create_worktree")
     @patch("bluei.engine.state._append_text")
     def test_two_batches_same_second_get_different_branches(

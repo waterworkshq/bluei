@@ -887,7 +887,7 @@ class TestProcessBatch:
 
         with (
             patch("bluei.engine.batch_pr._create_worktree", return_value=True),
-            patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps"),
+            patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies"),
             patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(0, 3)),
             patch("bluei.engine.utils.run_no_capture"),
         ):
@@ -907,7 +907,7 @@ class TestProcessBatch:
 
         with (
             patch("bluei.engine.batch_pr._create_worktree", return_value=True),
-            patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps"),
+            patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies"),
             patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
             patch("bluei.engine.git_ops.git_commit_all", return_value="no_changes"),
             patch("bluei.engine.utils.run_no_capture"),
@@ -928,7 +928,7 @@ class TestProcessBatch:
 
         with (
             patch("bluei.engine.batch_pr._create_worktree", return_value=True),
-            patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps"),
+            patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies"),
             patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
             patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
             patch("bluei.engine.git_ops.git_push_branch", return_value=False),
@@ -950,7 +950,7 @@ class TestProcessBatch:
 
         with (
             patch("bluei.engine.batch_pr._create_worktree", return_value=True),
-            patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps"),
+            patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies"),
             patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
             patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
             patch("bluei.engine.git_ops.git_push_branch", return_value=True),
@@ -972,7 +972,7 @@ class TestProcessBatch:
 
         with (
             patch("bluei.engine.batch_pr._create_worktree", return_value=True),
-            patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps"),
+            patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies"),
             patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
             patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
             patch("bluei.engine.git_ops.git_push_branch", return_value=True),
@@ -1003,7 +1003,7 @@ class TestProcessBatch:
 
         with (
             patch("bluei.engine.batch_pr._create_worktree", return_value=True),
-            patch("bluei.engine.batch_pr._hydrate_batch_worktree_deps"),
+            patch("bluei.engine.commands.helpers._hydrate_worktree_dependencies"),
             patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
             patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
             patch("bluei.engine.git_ops.git_push_branch", return_value=True),
