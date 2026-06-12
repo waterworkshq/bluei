@@ -150,6 +150,35 @@ class StateManager:
     def _get_state_dir(self, repo_name: str) -> Path:
         return self._get_repo_dir(repo_name) / "state"
 
+    # === Generic versioned JSON load/save ===
+
+    def _load_versioned_json(
+        self,
+        path: Path,
+        defaults: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Load a JSON file with versioned defaults merging."""
+        if not path.exists():
+            return copy.deepcopy(defaults)
+        with open(path) as f:
+            data = json.load(f)
+        for k, v in defaults.items():
+            data.setdefault(k, copy.deepcopy(v))
+        return data
+
+    def _save_versioned_json(
+        self,
+        path: Path,
+        data: Dict[str, Any],
+        defaults: Dict[str, Any],
+    ) -> None:
+        """Save a JSON file atomically with versioned defaults merging."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = dict(defaults)
+        payload.update(data or {})
+        payload["updated_at"] = now_iso()
+        _atomic_json_write(path, payload)
+
     # === Findings ===
 
     def get_findings_file(self, repo_name: str) -> Path:
@@ -251,45 +280,27 @@ class StateManager:
         return self._get_state_dir(repo_name) / "active_prs.json"
 
     def load_active_prs(self, repo_name: str) -> Dict[str, Any]:
-        path = self.get_active_prs_file(repo_name)
-        if not path.exists():
-            return copy.deepcopy(DEFAULT_ACTIVE_PRS_STATE)
-        with open(path) as f:
-            data = json.load(f)
-        data.setdefault("version", 1)
-        data.setdefault("updated_at", None)
-        data.setdefault("prs", {})
-        return data
+        return self._load_versioned_json(
+            self.get_active_prs_file(repo_name), DEFAULT_ACTIVE_PRS_STATE
+        )
 
     def save_active_prs(self, repo_name: str, data: Dict[str, Any]) -> None:
-        path = self.get_active_prs_file(repo_name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = dict(DEFAULT_ACTIVE_PRS_STATE)
-        payload.update(data or {})
-        payload["updated_at"] = now_iso()
-        _atomic_json_write(path, payload)
+        self._save_versioned_json(
+            self.get_active_prs_file(repo_name), data, DEFAULT_ACTIVE_PRS_STATE
+        )
 
     def get_review_state_file(self, repo_name: str) -> Path:
         return self._get_state_dir(repo_name) / "review_state.json"
 
     def load_review_state(self, repo_name: str) -> Dict[str, Any]:
-        path = self.get_review_state_file(repo_name)
-        if not path.exists():
-            return copy.deepcopy(DEFAULT_REVIEW_STATE)
-        with open(path) as f:
-            data = json.load(f)
-        data.setdefault("version", 1)
-        data.setdefault("updated_at", None)
-        data.setdefault("prs", {})
-        return data
+        return self._load_versioned_json(
+            self.get_review_state_file(repo_name), DEFAULT_REVIEW_STATE
+        )
 
     def save_review_state(self, repo_name: str, data: Dict[str, Any]) -> None:
-        path = self.get_review_state_file(repo_name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = dict(DEFAULT_REVIEW_STATE)
-        payload.update(data or {})
-        payload["updated_at"] = now_iso()
-        _atomic_json_write(path, payload)
+        self._save_versioned_json(
+            self.get_review_state_file(repo_name), data, DEFAULT_REVIEW_STATE
+        )
 
     def get_review_events_file(self, repo_name: str) -> Path:
         return self._get_state_dir(repo_name) / "review_events.jsonl"
@@ -515,23 +526,15 @@ class StateManager:
 
     def load_learned_rules(self, repo_name: str) -> Dict[str, Any]:
         """Load learned rules; returns versioned default if file absent."""
-        path = self.get_learned_rules_file(repo_name)
-        if not path.exists():
-            return copy.deepcopy(DEFAULT_LEARNED_RULES)
-        with open(path) as f:
-            data = json.load(f)
-        for k, v in DEFAULT_LEARNED_RULES.items():
-            data.setdefault(k, copy.deepcopy(v))
-        return data
+        return self._load_versioned_json(
+            self.get_learned_rules_file(repo_name), DEFAULT_LEARNED_RULES
+        )
 
     def save_learned_rules(self, repo_name: str, data: Dict[str, Any]) -> None:
         """Save learned rules atomically."""
-        path = self.get_learned_rules_file(repo_name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = dict(DEFAULT_LEARNED_RULES)
-        payload.update(data or {})
-        payload["updated_at"] = now_iso()
-        _atomic_json_write(path, payload)
+        self._save_versioned_json(
+            self.get_learned_rules_file(repo_name), data, DEFAULT_LEARNED_RULES
+        )
 
     # --- review_publish_state.json ---
 
@@ -540,23 +543,17 @@ class StateManager:
 
     def load_review_publish_state(self, repo_name: str) -> Dict[str, Any]:
         """Load publish state; returns versioned default if file absent."""
-        path = self.get_review_publish_state_file(repo_name)
-        if not path.exists():
-            return copy.deepcopy(DEFAULT_REVIEW_PUBLISH_STATE)
-        with open(path) as f:
-            data = json.load(f)
-        for k, v in DEFAULT_REVIEW_PUBLISH_STATE.items():
-            data.setdefault(k, copy.deepcopy(v))
-        return data
+        return self._load_versioned_json(
+            self.get_review_publish_state_file(repo_name), DEFAULT_REVIEW_PUBLISH_STATE
+        )
 
     def save_review_publish_state(self, repo_name: str, data: Dict[str, Any]) -> None:
         """Save publish state atomically."""
-        path = self.get_review_publish_state_file(repo_name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = dict(DEFAULT_REVIEW_PUBLISH_STATE)
-        payload.update(data or {})
-        payload["updated_at"] = now_iso()
-        _atomic_json_write(path, payload)
+        self._save_versioned_json(
+            self.get_review_publish_state_file(repo_name),
+            data,
+            DEFAULT_REVIEW_PUBLISH_STATE,
+        )
 
     # --- monitored_safety_state.json (Phase G7) ---
 
@@ -565,23 +562,18 @@ class StateManager:
 
     def load_monitored_safety_state(self, repo_name: str) -> Dict[str, Any]:
         """Load monitored safety state; returns versioned default if file absent."""
-        path = self.get_monitored_safety_state_file(repo_name)
-        if not path.exists():
-            return copy.deepcopy(DEFAULT_MONITORED_SAFETY_STATE)
-        with open(path) as f:
-            data = json.load(f)
-        for k, v in DEFAULT_MONITORED_SAFETY_STATE.items():
-            data.setdefault(k, copy.deepcopy(v))
-        return data
+        return self._load_versioned_json(
+            self.get_monitored_safety_state_file(repo_name),
+            DEFAULT_MONITORED_SAFETY_STATE,
+        )
 
     def save_monitored_safety_state(self, repo_name: str, data: Dict[str, Any]) -> None:
         """Save monitored safety state atomically."""
-        path = self.get_monitored_safety_state_file(repo_name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = dict(DEFAULT_MONITORED_SAFETY_STATE)
-        payload.update(data or {})
-        payload["updated_at"] = now_iso()
-        _atomic_json_write(path, payload)
+        self._save_versioned_json(
+            self.get_monitored_safety_state_file(repo_name),
+            data,
+            DEFAULT_MONITORED_SAFETY_STATE,
+        )
 
     # --- fix_patterns.jsonl ---
 
