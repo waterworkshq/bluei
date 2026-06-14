@@ -764,14 +764,20 @@ def test_bluei_repo_dir_idempotent():
         assert dir1 == dir2
 
 
+def _recent_date() -> str:
+    """A date string within the lesson decay window (not older than _LESSON_DECAY_WARN_DAYS)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
 def test_load_lessons_for_rule_returns_matching_entries():
+    _d = _recent_date()
     content = (
-        "\n## 2026-04-08 | fix\nfinding_id: fid-a\n"
-        "- **Changed:** fix succeeded rule=ruff-b904 path=src/a.py:1\n"
-        "\n## 2026-04-08 | fix\nfinding_id: fid-b\n"
-        "- **Changed:** fix succeeded rule=xo-complexity path=src/b.py:1\n"
-        "\n## 2026-04-08 | fix\nfinding_id: fid-c\n"
-        "- **Changed:** fix succeeded rule=ruff-b904 path=src/c.py:1\n"
+        f"\n## {_d} | fix\nfinding_id: fid-a\n"
+        f"- **Changed:** fix succeeded rule=ruff-b904 path=src/a.py:1\n"
+        f"\n## {_d} | fix\nfinding_id: fid-b\n"
+        f"- **Changed:** fix succeeded rule=xo-complexity path=src/b.py:1\n"
+        f"\n## {_d} | fix\nfinding_id: fid-c\n"
+        f"- **Changed:** fix succeeded rule=ruff-b904 path=src/c.py:1\n"
     )
     p = _write_lessons(content)
     try:
@@ -785,11 +791,12 @@ def test_load_lessons_for_rule_returns_matching_entries():
 
 
 def test_load_lessons_for_rule_excludes_non_matching():
+    _d = _recent_date()
     content = (
-        "\n## 2026-04-08 | fix\nfinding_id: fid-a\n"
-        "- **Changed:** fix succeeded rule=ruff-b904\n"
-        "\n## 2026-04-08 | fix\nfinding_id: fid-b\n"
-        "- **Changed:** fix succeeded rule=xo-complexity\n"
+        f"\n## {_d} | fix\nfinding_id: fid-a\n"
+        f"- **Changed:** fix succeeded rule=ruff-b904\n"
+        f"\n## {_d} | fix\nfinding_id: fid-b\n"
+        f"- **Changed:** fix succeeded rule=xo-complexity\n"
     )
     p = _write_lessons(content)
     try:
@@ -801,10 +808,11 @@ def test_load_lessons_for_rule_excludes_non_matching():
 
 
 def test_load_lessons_for_rule_respects_limit():
+    _d = _recent_date()
     entries = []
     for i in range(10):
         entries.append(
-            f"\n## 2026-04-08 | fix\nfinding_id: fid-{i}\n- **Changed:** fix succeeded rule=ruff-b904 path=src/{i}.py:1\n"
+            f"\n## {_d} | fix\nfinding_id: fid-{i}\n- **Changed:** fix succeeded rule=ruff-b904 path=src/{i}.py:1\n"
         )
     p = _write_lessons("".join(entries))
     try:
@@ -1027,10 +1035,11 @@ def test_load_failure_clusters_empty_file():
 def test_load_failure_clusters_detects_pattern():
     from bluei.engine.utils import load_failure_clusters_for_rule
 
+    _d = _recent_date()
     content = []
     for i in range(5):
         content.append(
-            f"\n## 2026-04-08 | fix\nfinding_id: fid-{i}\n"
+            f"\n## {_d} | fix\nfinding_id: fid-{i}\n"
             f"- **Broke:** fix failed rc=1 rule=ruff-b904 path=src/{i}.py:1: TypeError: expected str\n"
         )
     p = _write_lessons("".join(content))
@@ -1046,10 +1055,11 @@ def test_load_failure_clusters_detects_pattern():
 def test_load_failure_clusters_below_threshold():
     from bluei.engine.utils import load_failure_clusters_for_rule
 
+    _d = _recent_date()
     content = []
     for i in range(5):
         content.append(
-            f"\n## 2026-04-08 | fix\nfinding_id: fid-{i}\n"
+            f"\n## {_d} | fix\nfinding_id: fid-{i}\n"
             f"- **Broke:** fix failed rc=1 rule=ruff-b904 path=src/{i}.py:1: error-{i}\n"
         )
     p = _write_lessons("".join(content))
@@ -1065,10 +1075,11 @@ def test_load_failure_clusters_below_threshold():
 def test_load_failure_clusters_respects_min_count():
     from bluei.engine.utils import load_failure_clusters_for_rule
 
+    _d = _recent_date()
     content = []
     for i in range(2):
         content.append(
-            f"\n## 2026-04-08 | fix\nfinding_id: fid-{i}\n"
+            f"\n## {_d} | fix\nfinding_id: fid-{i}\n"
             f"- **Broke:** fix failed rc=1 rule=ruff-b904 path=src/{i}.py:1: SameError\n"
         )
     p = _write_lessons("".join(content))
