@@ -5,7 +5,7 @@ from pathlib import Path
 
 from bluei.app.models import Repo, RepoConfig
 from bluei.review.cycle import ReviewCycleEngine
-from bluei.review.provider import GitHubReviewProvider
+from bluei.review.provider import GitHubReviewProvider, GRAPHQL_QUERY
 from bluei.app.state import StateManager
 
 
@@ -155,6 +155,81 @@ def test_ignore_comment_filters_status_chatter(tmp_path):
     )
     assert provider._should_ignore_comment("**tip:** try greploops") is True
     assert provider._should_ignore_comment("please add a regression test") is False
+
+
+def test_ignore_comment_markers_configurable_via_constructor():
+    """L3: _should_ignore_comment markers should be overridable."""
+
+    # Bypass __init__ (which calls git) to test the marker attribute directly
+    def make_provider(markers=None):
+        provider = GitHubReviewProvider.__new__(GitHubReviewProvider)
+        provider.ignored_comment_markers = (
+            list(markers)
+            if markers is not None
+            else list(GitHubReviewProvider._DEFAULT_IGNORED_COMMENT_MARKERS)
+        )
+        return provider
+
+    # Default markers
+    default = make_provider()
+    assert default._should_ignore_comment("is reviewing your pr") is True
+    assert default._should_ignore_comment("my-custom-marker") is False
+
+    # Custom markers replace the defaults
+    custom = make_provider(["my-custom-marker", "another-pattern"])
+    assert custom._should_ignore_comment("my-custom-marker") is True
+    assert custom._should_ignore_comment("another-pattern") is True
+    assert custom._should_ignore_comment("is reviewing your pr") is False
+
+    # Markers list is copied (not shared via reference)
+    markers_ref = ["shared-marker"]
+    sharing = make_provider(markers_ref)
+    markers_ref.append("mutated-marker")
+    assert sharing._should_ignore_comment("mutated-marker") is False
+
+
+def test_build_graphql_query_uses_defaults():
+    """L4: _build_graphql_query returns the default GRAPHQL_QUERY when limits match defaults."""
+    provider = GitHubReviewProvider.__new__(GitHubReviewProvider)
+    provider.graphql_reviews_limit = 100
+    provider.graphql_threads_limit = 100
+    provider.graphql_comments_limit = 50
+    provider.graphql_thread_comments_limit = 20
+
+    assert provider._build_graphql_query() == GRAPHQL_QUERY
+
+
+def test_build_graphql_query_parameterized_limits():
+    """L4: _build_graphql_query substitutes custom page sizes when limits differ from defaults."""
+    provider = GitHubReviewProvider.__new__(GitHubReviewProvider)
+    provider.graphql_reviews_limit = 250
+    provider.graphql_threads_limit = 150
+    provider.graphql_comments_limit = 75
+    provider.graphql_thread_comments_limit = 30
+
+    query = provider._build_graphql_query()
+    assert "reviews(last: 250)" in query
+    assert "reviewThreads(first: 150)" in query
+    assert "comments(last: 75)" in query
+    assert "comments(last: 30)" in query
+    # Should NOT contain the default values
+    assert "reviews(last: 100)" not in query
+    assert "reviewThreads(first: 100)" not in query
+
+
+def test_build_graphql_query_partial_custom_limits():
+    """L4: Even changing just one limit triggers the dynamic query path."""
+    provider = GitHubReviewProvider.__new__(GitHubReviewProvider)
+    provider.graphql_reviews_limit = 500
+    provider.graphql_threads_limit = 100
+    provider.graphql_comments_limit = 50
+    provider.graphql_thread_comments_limit = 20
+
+    query = provider._build_graphql_query()
+    assert "reviews(last: 500)" in query
+    # Other limits keep defaults
+    assert "reviewThreads(first: 100)" in query
+    assert "comments(last: 50)" in query
 
 
 def test_is_bot_recognizes_review_automation_accounts(tmp_path):

@@ -73,12 +73,41 @@ query($owner: String!, $name: String!, $number: Int!) {
 class GitHubReviewProvider:
     """Observation-only GitHub review provider for managed PRs."""
 
-    def __init__(self, repo: Repo, state: StateManager):
+    # Default markers for bot-generated and automated-review comment filtering
+    _DEFAULT_IGNORED_COMMENT_MARKERS: List[str] = [
+        "<!-- bluei-review-cycle:",
+        "automated verification passed for finding",
+        "is reviewing your pr",
+        "finished reviewing your pr",
+        "is running incremental review",
+        "thanks for using codeant",
+        "**tip:**",
+    ]
+
+    def __init__(
+        self,
+        repo: Repo,
+        state: StateManager,
+        ignored_comment_markers: Optional[List[str]] = None,
+        graphql_reviews_limit: int = 100,
+        graphql_threads_limit: int = 100,
+        graphql_comments_limit: int = 50,
+        graphql_thread_comments_limit: int = 20,
+    ):
         self.repo = repo
         self.state = state
         self.repo_path = Path(repo.config.path)
         self.repo_slug = self._get_repo_slug()
         self.current_login = self._get_current_login()
+        self.ignored_comment_markers = (
+            list(ignored_comment_markers)
+            if ignored_comment_markers is not None
+            else list(self._DEFAULT_IGNORED_COMMENT_MARKERS)
+        )
+        self.graphql_reviews_limit = graphql_reviews_limit
+        self.graphql_threads_limit = graphql_threads_limit
+        self.graphql_comments_limit = graphql_comments_limit
+        self.graphql_thread_comments_limit = graphql_thread_comments_limit
 
     def _run(self, cmd: List[str], *, retries: int = 2, backoff: float = 1.0) -> str:
         """Run a subprocess command with optional retry/backoff for transient failures."""
@@ -212,7 +241,7 @@ class GitHubReviewProvider:
                     "-F",
                     f"number={pr_number}",
                     "-f",
-                    f"query={GRAPHQL_QUERY}",
+                    f"query={self._build_graphql_query()}",
                 ]
             )
         )
@@ -321,17 +350,78 @@ class GitHubReviewProvider:
         return text[:400]
 
     def _should_ignore_comment(self, body: str) -> bool:
-        """Filter out bot-generated and automated-review comments."""
-        ignored_markers = [
-            "<!-- bluei-review-cycle:",
-            "automated verification passed for finding",
-            "is reviewing your pr",
-            "finished reviewing your pr",
-            "is running incremental review",
-            "thanks for using codeant",
-            "**tip:**",
-        ]
-        return any(marker in body for marker in ignored_markers)
+        """Filter out bot-generated and automated-review comments.
+
+        Markers are configurable via the `ignored_comment_markers` constructor
+        parameter; defaults to ``_DEFAULT_IGNORED_COMMENT_MARKERS``.
+        """
+        markers = (
+            getattr(self, "ignored_comment_markers", None)
+            or self._DEFAULT_IGNORED_COMMENT_MARKERS
+        )
+        return any(marker in body for marker in markers)
+
+    def _build_graphql_query(self) -> str:
+        """Build the GraphQL query with configured page sizes (L4).
+
+        Returns the default ``GRAPHQL_QUERY`` when limits match the defaults;
+        otherwise formats a query string with custom limits to handle PRs
+        with more than the default number of reviews or threads.
+        """
+        if (
+            self.graphql_reviews_limit == 100
+            and self.graphql_threads_limit == 100
+            and self.graphql_comments_limit == 50
+            and self.graphql_thread_comments_limit == 20
+        ):
+            return GRAPHQL_QUERY
+        return (
+            f"query($owner: String!, $name: String!, $number: Int!) {{\n"
+            f"  repository(owner: $owner, name: $name) {{\n"
+            f"    pullRequest(number: $number) {{\n"
+            f"      number\n"
+            f"      url\n"
+            f"      title\n"
+            f"      isDraft\n"
+            f"      state\n"
+            f"      reviewDecision\n"
+            f"      createdAt\n"
+            f"      updatedAt\n"
+            f"      author {{ login }}\n"
+            f"      headRefName\n"
+            f"      headRepositoryOwner {{ login }}\n"
+            f"      mergeStateStatus\n"
+            f"      reviews(last: {self.graphql_reviews_limit}) {{\n"
+            f"        nodes {{\n"
+            f"          author {{ login }}\n"
+            f"          state\n"
+            f"          submittedAt\n"
+            f"        }}\n"
+            f"      }}\n"
+            f"      reviewThreads(first: {self.graphql_threads_limit}) {{\n"
+            f"        nodes {{\n"
+            f"          isResolved\n"
+            f"          isOutdated\n"
+            f"          comments(last: {self.graphql_thread_comments_limit}) {{\n"
+            f"            nodes {{\n"
+            f"              author {{ login }}\n"
+            f"              body\n"
+            f"              createdAt\n"
+            f"            }}\n"
+            f"          }}\n"
+            f"        }}\n"
+            f"      }}\n"
+            f"      comments(last: {self.graphql_comments_limit}) {{\n"
+            f"        nodes {{\n"
+            f"          author {{ login }}\n"
+            f"          body\n"
+            f"          createdAt\n"
+            f"        }}\n"
+            f"      }}\n"
+            f"    }}\n"
+            f"  }}\n"
+            f"}}\n"
+        )
 
     def _is_bot(self, login: str) -> bool:
         login = (login or "").lower()
