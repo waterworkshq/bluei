@@ -49,11 +49,11 @@ from bluei.app.models import (
     LiveRolloutMode,
     generate_id,
 )
-from bluei.review.cycle import (
-    ReviewCycleEngine,
-    GitHubReviewProvider,
-    PublishFilterResult,
-    _build_pass_filter_result,
+from bluei.review.cycle import ReviewCycleEngine
+from bluei.review.provider import GitHubReviewProvider
+from bluei.review.types import PublishFilterResult
+from bluei.review.publisher import _build_pass_filter_result
+from bluei.review.normalization import (
     normalize_candidate,
     assign_finding_identity,
 )
@@ -214,6 +214,7 @@ def _stub_candidates(engine, findings_list):
 # PublishFilterResult dataclass tests
 # ---------------------------------------------------------------------------
 
+
 class TestPublishFilterResultDataclass:
     def test_pass_result(self):
         r = PublishFilterResult(passed=True, decision="pass", failed_reason="")
@@ -242,8 +243,8 @@ class TestPublishFilterResultDataclass:
 # Filter method tests
 # ---------------------------------------------------------------------------
 
-class TestCheckLimitedPublishFilters:
 
+class TestCheckLimitedPublishFilters:
     def test_passes_when_all_filters_pass(self):
         tmp = _isolated_tmp()
         engine, _, _ = _make_engine(
@@ -259,8 +260,15 @@ class TestCheckLimitedPublishFilters:
         _stub_candidates(engine, STUB_FINDINGS__LOW_ONLY)
 
         # Normalize the stub findings
-        from bluei.review.cycle import normalize_candidate, assign_finding_identity
-        normalized = [assign_finding_identity(normalize_candidate(f)) for f in STUB_FINDINGS__LOW_ONLY]
+        from bluei.review.normalization import (
+            normalize_candidate,
+            assign_finding_identity,
+        )
+
+        normalized = [
+            assign_finding_identity(normalize_candidate(f))
+            for f in STUB_FINDINGS__LOW_ONLY
+        ]
 
         pr_context = {"pr_number": 42, "pr_url": None, "resolution": "explicit"}
         result = engine._check_limited_publish_filters(
@@ -283,7 +291,10 @@ class TestCheckLimitedPublishFilters:
         )
         _stub_candidates(engine, STUB_FINDINGS__LOW_ONLY)
 
-        from bluei.review.cycle import normalize_candidate, assign_finding_identity
+        from bluei.review.normalization import (
+            normalize_candidate,
+            assign_finding_identity,
+        )
 
         # STUB_FINDINGS__LOW_ONLY has 2 findings. Make 5 findings to exceed limit of 2.
         many_findings = []
@@ -292,7 +303,9 @@ class TestCheckLimitedPublishFilters:
             f["line"] = i
             f["header"] = f"finding-{i}"
             many_findings.append(f)
-        normalized_many = [assign_finding_identity(normalize_candidate(f)) for f in many_findings]
+        normalized_many = [
+            assign_finding_identity(normalize_candidate(f)) for f in many_findings
+        ]
         assert len(normalized_many) == 5
 
         pr_context = {"pr_number": 42, "pr_url": None, "resolution": "explicit"}
@@ -317,8 +330,15 @@ class TestCheckLimitedPublishFilters:
         )
         _stub_candidates(engine, STUB_FINDINGS__LOW_ONLY)
 
-        from bluei.review.cycle import normalize_candidate, assign_finding_identity
-        normalized = [assign_finding_identity(normalize_candidate(f)) for f in STUB_FINDINGS__LOW_ONLY]
+        from bluei.review.normalization import (
+            normalize_candidate,
+            assign_finding_identity,
+        )
+
+        normalized = [
+            assign_finding_identity(normalize_candidate(f))
+            for f in STUB_FINDINGS__LOW_ONLY
+        ]
 
         # pr_context is None
         result = engine._check_limited_publish_filters(
@@ -341,8 +361,15 @@ class TestCheckLimitedPublishFilters:
         )
         _stub_candidates(engine, STUB_FINDINGS__LOW_ONLY)
 
-        from bluei.review.cycle import normalize_candidate, assign_finding_identity
-        normalized = [assign_finding_identity(normalize_candidate(f)) for f in STUB_FINDINGS__LOW_ONLY]
+        from bluei.review.normalization import (
+            normalize_candidate,
+            assign_finding_identity,
+        )
+
+        normalized = [
+            assign_finding_identity(normalize_candidate(f))
+            for f in STUB_FINDINGS__LOW_ONLY
+        ]
 
         # pr_context with pr_number=None
         pr_context = {"pr_number": None, "pr_url": None, "resolution": "some-reason"}
@@ -365,8 +392,15 @@ class TestCheckLimitedPublishFilters:
         )
         _stub_candidates(engine, STUB_FINDINGS__MIXED_SEVERITY)
 
-        from bluei.review.cycle import normalize_candidate, assign_finding_identity
-        normalized = [assign_finding_identity(normalize_candidate(f)) for f in STUB_FINDINGS__MIXED_SEVERITY]
+        from bluei.review.normalization import (
+            normalize_candidate,
+            assign_finding_identity,
+        )
+
+        normalized = [
+            assign_finding_identity(normalize_candidate(f))
+            for f in STUB_FINDINGS__MIXED_SEVERITY
+        ]
 
         pr_context = {"pr_number": 42, "pr_url": None, "resolution": "explicit"}
         result = engine._check_limited_publish_filters(
@@ -385,13 +419,22 @@ class TestCheckLimitedPublishFilters:
             tmp,
             live_actions=True,
             guarded_live_review=True,
-            limited_allowed_headers=["outstanding-todo"],  # security-vulnerability not allowed
+            limited_allowed_headers=[
+                "outstanding-todo"
+            ],  # security-vulnerability not allowed
             github_pr_number=42,
         )
         _stub_candidates(engine, STUB_FINDINGS__MIXED_HEADERS)
 
-        from bluei.review.cycle import normalize_candidate, assign_finding_identity
-        normalized = [assign_finding_identity(normalize_candidate(f)) for f in STUB_FINDINGS__MIXED_HEADERS]
+        from bluei.review.normalization import (
+            normalize_candidate,
+            assign_finding_identity,
+        )
+
+        normalized = [
+            assign_finding_identity(normalize_candidate(f))
+            for f in STUB_FINDINGS__MIXED_HEADERS
+        ]
 
         pr_context = {"pr_number": 42, "pr_url": None, "resolution": "explicit"}
         result = engine._check_limited_publish_filters(
@@ -415,8 +458,15 @@ class TestCheckLimitedPublishFilters:
         )
         _stub_candidates(engine, STUB_FINDINGS__LOW_ONLY)
 
-        from bluei.review.cycle import normalize_candidate, assign_finding_identity
-        normalized = [assign_finding_identity(normalize_candidate(f)) for f in STUB_FINDINGS__LOW_ONLY]
+        from bluei.review.normalization import (
+            normalize_candidate,
+            assign_finding_identity,
+        )
+
+        normalized = [
+            assign_finding_identity(normalize_candidate(f))
+            for f in STUB_FINDINGS__LOW_ONLY
+        ]
 
         result = engine._check_limited_publish_filters(
             findings_total=len(normalized),
@@ -431,8 +481,8 @@ class TestCheckLimitedPublishFilters:
 # Integration: limited mode + passing filters → publishes
 # ---------------------------------------------------------------------------
 
-class TestLimitedModePublishFilterIntegration:
 
+class TestLimitedModePublishFilterIntegration:
     def test_limited_pass_filter_rollout_eligible(self):
         """Passing filters in limited+guarded mode → rollout_eligible=True."""
         tmp = _isolated_tmp()
@@ -459,12 +509,15 @@ class TestLimitedModePublishFilterIntegration:
                 "comment_url": "https://github.com/test/repo/pull/42#issuecomment-123",
             }
             return "https://github.com/test/repo/pull/42#issuecomment-123"
+
         engine._post_summary_to_github = MagicMock(side_effect=mock_post)
 
         prior_publish = state.load_review_publish_state(repo.config.name)
         prior_publish.setdefault("runs", {})
 
-        result = engine._run_autonomous_review_cycle(dry_run=False, allow_review_push=False)
+        result = engine._run_autonomous_review_cycle(
+            dry_run=False, allow_review_push=False
+        )
 
         # _run_autonomous_review_cycle uses its own prior_publish via
         # state.load_review_publish_state() — reload from disk to see it.
@@ -510,12 +563,15 @@ class TestLimitedModePublishFilterIntegration:
                 "targeted_pr_number": None,
             }
             return None
+
         engine._post_summary_to_github = MagicMock(side_effect=mock_post)
 
         prior_publish = state.load_review_publish_state(repo.config.name)
         prior_publish.setdefault("runs", {})
 
-        result = engine._run_autonomous_review_cycle(dry_run=False, allow_review_push=False)
+        result = engine._run_autonomous_review_cycle(
+            dry_run=False, allow_review_push=False
+        )
 
         # Cycle uses its own prior_publish via state.load_review_publish_state;
         # reload from disk to read it back.
@@ -553,9 +609,12 @@ class TestLimitedModePublishFilterIntegration:
                 "targeted_pr_number": None,
             }
             return None
+
         engine._post_summary_to_github = MagicMock(side_effect=mock_post)
 
-        result = engine._run_autonomous_review_cycle(dry_run=False, allow_review_push=False)
+        result = engine._run_autonomous_review_cycle(
+            dry_run=False, allow_review_push=False
+        )
 
         reloaded = state.load_review_publish_state(repo.config.name)
         run_ids = list(reloaded["runs"].keys())
@@ -593,9 +652,12 @@ class TestLimitedModePublishFilterIntegration:
                 "rollout_mode": LiveRolloutMode.SHADOW.value,
             }
             return None
+
         engine._post_summary_to_github = MagicMock(side_effect=mock_post)
 
-        result = engine._run_autonomous_review_cycle(dry_run=False, allow_review_push=False)
+        result = engine._run_autonomous_review_cycle(
+            dry_run=False, allow_review_push=False
+        )
 
         reloaded = state.load_review_publish_state(repo.config.name)
         run_ids = list(reloaded["runs"].keys())
@@ -632,9 +694,12 @@ class TestLimitedModePublishFilterIntegration:
                 "targeted_pr_number": None,
             }
             return None
+
         engine._post_summary_to_github = MagicMock(side_effect=mock_post)
 
-        result = engine._run_autonomous_review_cycle(dry_run=False, allow_review_push=False)
+        result = engine._run_autonomous_review_cycle(
+            dry_run=False, allow_review_push=False
+        )
 
         reloaded = state.load_review_publish_state(repo.config.name)
         run_ids = list(reloaded["runs"].keys())
@@ -670,9 +735,12 @@ class TestLimitedModePublishFilterIntegration:
                 "comment_url": "https://github.com/test/repo/pull/42#issuecomment-123",
             }
             return "https://github.com/test/repo/pull/42#issuecomment-123"
+
         engine._post_summary_to_github = MagicMock(side_effect=mock_post)
 
-        result = engine._run_autonomous_review_cycle(dry_run=False, allow_review_push=False)
+        result = engine._run_autonomous_review_cycle(
+            dry_run=False, allow_review_push=False
+        )
 
         reloaded = state.load_review_publish_state(repo.config.name)
         run_ids = list(reloaded["runs"].keys())
@@ -680,7 +748,9 @@ class TestLimitedModePublishFilterIntegration:
         run_id = run_ids[0]
 
         # The review_run artifact is persisted to disk by the cycle.
-        run_file = state._get_state_dir(repo.config.name) / "review_runs" / f"{run_id}.json"
+        run_file = (
+            state._get_state_dir(repo.config.name) / "review_runs" / f"{run_id}.json"
+        )
         assert run_file.exists(), f"review_run file not found: {run_file}"
         run_data = json.loads(run_file.read_text())
 
@@ -717,7 +787,9 @@ class TestLimitedModePublishFilterIntegration:
         engine.provider = MagicMock(spec=GitHubReviewProvider)
 
         # Observation mode should not raise, should return empty result
-        result = engine._run_autonomous_review_cycle(dry_run=False, allow_review_push=False)
+        result = engine._run_autonomous_review_cycle(
+            dry_run=False, allow_review_push=False
+        )
         assert result is not None
 
 
@@ -727,4 +799,5 @@ class TestLimitedModePublishFilterIntegration:
 
 if __name__ == "__main__":
     import pytest
+
     sys.exit(pytest.main([__file__, "-v"]))

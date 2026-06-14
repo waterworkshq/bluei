@@ -44,7 +44,8 @@ from bluei.app.models import (
     LiveRolloutMode,
     generate_id,
 )
-from bluei.review.cycle import ReviewCycleEngine, GitHubReviewProvider
+from bluei.review.cycle import ReviewCycleEngine
+from bluei.review.provider import GitHubReviewProvider
 from bluei.app.state import StateManager
 
 
@@ -73,7 +74,10 @@ STUB_CANDIDATES = [
 # Fixtures
 # ---------------------------------------------------------------------------
 
-def make_engine(tmp: Path, github_overrides: dict = None, review_care_overrides: dict = None):
+
+def make_engine(
+    tmp: Path, github_overrides: dict = None, review_care_overrides: dict = None
+):
     repo_path = tmp / "repo"
     repo_path.mkdir()
     github = {"live_actions": False, "auto_merge": False}
@@ -116,6 +120,7 @@ def make_engine(tmp: Path, github_overrides: dict = None, review_care_overrides:
 # MonitoredSafetyState unit tests
 # ---------------------------------------------------------------------------
 
+
 class TestMonitoredSafetyState(unittest.TestCase):
     """Unit tests for MonitoredSafetyState model."""
 
@@ -136,28 +141,36 @@ class TestMonitoredSafetyState(unittest.TestCase):
         self.assertIsNone(state.last_failure_at)
 
     def test_from_dict_restores_auto_rollback_fields(self):
-        state = MonitoredSafetyState.from_dict({
-            "auto_rollback_active": True,
-            "auto_rollback_reason": "negative-feedback-ratio-0.50-over-threshold-0.30",
-            "auto_rollback_triggered_at": "2026-03-30T00:00:00+00:00",
-        })
+        state = MonitoredSafetyState.from_dict(
+            {
+                "auto_rollback_active": True,
+                "auto_rollback_reason": "negative-feedback-ratio-0.50-over-threshold-0.30",
+                "auto_rollback_triggered_at": "2026-03-30T00:00:00+00:00",
+            }
+        )
         self.assertTrue(state.auto_rollback_active)
         self.assertIn("negative-feedback-ratio", state.auto_rollback_reason)
         self.assertEqual(state.auto_rollback_triggered_at, "2026-03-30T00:00:00+00:00")
 
     def test_check_cooldown_ready_false_when_in_cooldown(self):
         from datetime import datetime, timezone, timedelta
+
         state = MonitoredSafetyState(
             circuit_open=True,
-            cooldown_until=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            cooldown_until=(
+                datetime.now(timezone.utc) + timedelta(hours=1)
+            ).isoformat(),
         )
         self.assertFalse(state.check_cooldown_ready())
 
     def test_check_cooldown_ready_true_when_expired(self):
         from datetime import datetime, timezone, timedelta
+
         state = MonitoredSafetyState(
             circuit_open=True,
-            cooldown_until=(datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+            cooldown_until=(
+                datetime.now(timezone.utc) - timedelta(hours=1)
+            ).isoformat(),
         )
         self.assertTrue(state.check_cooldown_ready())
 
@@ -185,6 +198,7 @@ class TestMonitoredSafetyState(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # State persistence tests
 # ---------------------------------------------------------------------------
+
 
 class TestMonitoredSafetyStatePersistence(unittest.TestCase):
     """Tests for monitored safety state persistence via StateManager."""
@@ -223,6 +237,7 @@ class TestMonitoredSafetyStatePersistence(unittest.TestCase):
 # Circuit-breaker logic tests (internal methods)
 # ---------------------------------------------------------------------------
 
+
 class TestCircuitBreakerLogic(unittest.TestCase):
     """Tests for _check_monitored_safety and _record_publish_failure_for_safety."""
 
@@ -241,15 +256,21 @@ class TestCircuitBreakerLogic(unittest.TestCase):
         tmp = _isolated_tmp()
         try:
             from datetime import datetime, timezone, timedelta
+
             engine = make_engine(tmp)
             # Pre-set circuit open with future cooldown
-            future_cooldown = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
-            engine.state.save_monitored_safety_state("test-repo", {
-                "circuit_open": True,
-                "failure_count": 3,
-                "cooldown_until": future_cooldown,
-                "last_failure_reason": "rate limit",
-            })
+            future_cooldown = (
+                datetime.now(timezone.utc) + timedelta(hours=1)
+            ).isoformat()
+            engine.state.save_monitored_safety_state(
+                "test-repo",
+                {
+                    "circuit_open": True,
+                    "failure_count": 3,
+                    "cooldown_until": future_cooldown,
+                    "last_failure_reason": "rate limit",
+                },
+            )
             allows, reason, safety_state = engine._check_monitored_safety()
             self.assertFalse(allows)
             self.assertIn("cooldown-active", reason)
@@ -261,16 +282,22 @@ class TestCircuitBreakerLogic(unittest.TestCase):
         tmp = _isolated_tmp()
         try:
             from datetime import datetime, timezone, timedelta
+
             engine = make_engine(tmp)
             # Pre-set circuit open with past cooldown (expired)
-            past_cooldown = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+            past_cooldown = (
+                datetime.now(timezone.utc) - timedelta(hours=1)
+            ).isoformat()
             state_mgr = StateManager(tmp / "repos")
-            state_mgr.save_monitored_safety_state("test-repo", {
-                "circuit_open": True,
-                "failure_count": 3,
-                "cooldown_until": past_cooldown,
-                "last_failure_reason": "rate limit",
-            })
+            state_mgr.save_monitored_safety_state(
+                "test-repo",
+                {
+                    "circuit_open": True,
+                    "failure_count": 3,
+                    "cooldown_until": past_cooldown,
+                    "last_failure_reason": "rate limit",
+                },
+            )
             allows, reason, safety_state = engine._check_monitored_safety()
             # Circuit should close but still not allow (must pass filters independently)
             self.assertFalse(allows)
@@ -284,9 +311,12 @@ class TestCircuitBreakerLogic(unittest.TestCase):
     def test_record_failure_increments_and_opens_circuit_at_threshold(self):
         tmp = _isolated_tmp()
         try:
-            engine = make_engine(tmp, review_care_overrides={
-                "monitored_failure_threshold": 3,
-            })
+            engine = make_engine(
+                tmp,
+                review_care_overrides={
+                    "monitored_failure_threshold": 3,
+                },
+            )
             # Record 2 failures (below threshold)
             engine._record_publish_failure_for_safety("run1", "rate limit")
             engine._record_publish_failure_for_safety("run2", "network error")
@@ -307,11 +337,14 @@ class TestCircuitBreakerLogic(unittest.TestCase):
         try:
             engine = make_engine(tmp)
             # Pre-set some failures
-            engine.state.save_monitored_safety_state("test-repo", {
-                "circuit_open": False,
-                "failure_count": 2,
-                "last_failure_reason": "rate limit",
-            })
+            engine.state.save_monitored_safety_state(
+                "test-repo",
+                {
+                    "circuit_open": False,
+                    "failure_count": 2,
+                    "last_failure_reason": "rate limit",
+                },
+            )
             updated = engine._record_publish_success_for_safety("run-success")
             self.assertEqual(updated.failure_count, 0)
             self.assertFalse(updated.circuit_open)
@@ -326,6 +359,7 @@ class TestCircuitBreakerLogic(unittest.TestCase):
 # Integration tests for safety-blocked publish path
 # ---------------------------------------------------------------------------
 
+
 class TestSafetyBlockedPublishPath(unittest.TestCase):
     """Tests verifying that circuit-breaker blocks live publication in limited+guarded mode."""
 
@@ -333,12 +367,17 @@ class TestSafetyBlockedPublishPath(unittest.TestCase):
         tmp = _isolated_tmp()
         try:
             from datetime import datetime, timezone, timedelta
+
             # Set up engine with circuit open
-            engine = make_engine(tmp, github_overrides={"live_actions": True}, review_care_overrides={
-                "guarded_live_review": True,
-                "live_rollout_mode": LiveRolloutMode.LIMITED.value,
-                "monitored_failure_threshold": 2,
-            })
+            engine = make_engine(
+                tmp,
+                github_overrides={"live_actions": True},
+                review_care_overrides={
+                    "guarded_live_review": True,
+                    "live_rollout_mode": LiveRolloutMode.LIMITED.value,
+                    "monitored_failure_threshold": 2,
+                },
+            )
             # Open the circuit (record 2 failures to meet threshold)
             engine._record_publish_failure_for_safety("run1", "rate limit")
             engine._record_publish_failure_for_safety("run2", "network error")
@@ -357,12 +396,17 @@ class TestSafetyBlockedPublishPath(unittest.TestCase):
         tmp = _isolated_tmp()
         try:
             from datetime import datetime, timezone, timedelta
+
             # Set up observation mode engine with circuit open
-            engine = make_engine(tmp, github_overrides={"live_actions": True}, review_care_overrides={
-                "guarded_live_review": False,
-                "live_rollout_mode": LiveRolloutMode.LOCAL_ONLY.value,
-                "monitored_failure_threshold": 1,  # Very low threshold
-            })
+            engine = make_engine(
+                tmp,
+                github_overrides={"live_actions": True},
+                review_care_overrides={
+                    "guarded_live_review": False,
+                    "live_rollout_mode": LiveRolloutMode.LOCAL_ONLY.value,
+                    "monitored_failure_threshold": 1,  # Very low threshold
+                },
+            )
             # Open the circuit
             engine._record_publish_failure_for_safety("run1", "rate limit")
             # In observation mode, _check_monitored_safety is never consulted
@@ -379,12 +423,17 @@ class TestSafetyBlockedPublishPath(unittest.TestCase):
         tmp = _isolated_tmp()
         try:
             from datetime import datetime, timezone, timedelta
+
             # Set up local_only mode engine with circuit open
-            engine = make_engine(tmp, github_overrides={"live_actions": True}, review_care_overrides={
-                "guarded_live_review": False,
-                "live_rollout_mode": LiveRolloutMode.LOCAL_ONLY.value,
-                "monitored_failure_threshold": 1,
-            })
+            engine = make_engine(
+                tmp,
+                github_overrides={"live_actions": True},
+                review_care_overrides={
+                    "guarded_live_review": False,
+                    "live_rollout_mode": LiveRolloutMode.LOCAL_ONLY.value,
+                    "monitored_failure_threshold": 1,
+                },
+            )
             # Open the circuit
             engine._record_publish_failure_for_safety("run1", "rate limit")
             safety_data = engine.state.load_monitored_safety_state("test-repo")
@@ -392,7 +441,7 @@ class TestSafetyBlockedPublishPath(unittest.TestCase):
             # local_only never attempts live publication, so safety state is irrelevant
             self.assertEqual(
                 engine.repo.config.review_care.get("live_rollout_mode"),
-                LiveRolloutMode.LOCAL_ONLY.value
+                LiveRolloutMode.LOCAL_ONLY.value,
             )
         finally:
             shutil.rmtree(tmp)
@@ -402,16 +451,21 @@ class TestSafetyBlockedPublishPath(unittest.TestCase):
 # Run artifact / event capture tests
 # ---------------------------------------------------------------------------
 
+
 class TestSafetyStateInArtifacts(unittest.TestCase):
     """Tests verifying safety state is captured in run artifacts and events."""
 
     def test_review_run_data_contains_safety_fields(self):
         tmp = _isolated_tmp()
         try:
-            engine = make_engine(tmp, github_overrides={"live_actions": True}, review_care_overrides={
-                "guarded_live_review": True,
-                "live_rollout_mode": LiveRolloutMode.LIMITED.value,
-            })
+            engine = make_engine(
+                tmp,
+                github_overrides={"live_actions": True},
+                review_care_overrides={
+                    "guarded_live_review": True,
+                    "live_rollout_mode": LiveRolloutMode.LIMITED.value,
+                },
+            )
             # Record a failure to have non-default safety state
             engine._record_publish_failure_for_safety("test-run", "test failure")
             safety_data = engine.state.load_monitored_safety_state("test-repo")
@@ -426,15 +480,20 @@ class TestSafetyStateInArtifacts(unittest.TestCase):
     def test_monitored_safety_event_emitted_on_circuit_open(self):
         tmp = _isolated_tmp()
         try:
-            engine = make_engine(tmp, review_care_overrides={
-                "monitored_failure_threshold": 2,
-            })
+            engine = make_engine(
+                tmp,
+                review_care_overrides={
+                    "monitored_failure_threshold": 2,
+                },
+            )
             # Record failures to open circuit
             engine._record_publish_failure_for_safety("run1", "rate limit")
             engine._record_publish_failure_for_safety("run2", "network error")
             # Check review events were emitted
             events_file = tmp / "repos" / "test-repo" / "state" / "review_events.jsonl"
-            self.assertTrue(events_file.exists(), f"Events file not found: {events_file}")
+            self.assertTrue(
+                events_file.exists(), f"Events file not found: {events_file}"
+            )
             with open(events_file) as f:
                 events_content = f.read()
             self.assertIn("monitored-safety-failure-recorded", events_content)
@@ -446,20 +505,26 @@ class TestSafetyStateInArtifacts(unittest.TestCase):
 # Cooldown expiration behavior
 # ---------------------------------------------------------------------------
 
+
 class TestFeedbackAutoRollback(unittest.TestCase):
     """Tests for feedback-driven fail-closed rollback in monitored rollout."""
 
-    def test_feedback_auto_rollback_activates_when_negative_ratio_exceeds_threshold(self):
+    def test_feedback_auto_rollback_activates_when_negative_ratio_exceeds_threshold(
+        self,
+    ):
         tmp = _isolated_tmp()
         try:
-            engine = make_engine(tmp, review_care_overrides={
-                "guarded_live_review": True,
-                "live_rollout_mode": LiveRolloutMode.LIMITED.value,
-                "monitored_auto_rollback_enabled": True,
-                "monitored_negative_feedback_threshold": 0.5,
-                "monitored_feedback_min_events": 3,
-                "monitored_feedback_window": 10,
-            })
+            engine = make_engine(
+                tmp,
+                review_care_overrides={
+                    "guarded_live_review": True,
+                    "live_rollout_mode": LiveRolloutMode.LIMITED.value,
+                    "monitored_auto_rollback_enabled": True,
+                    "monitored_negative_feedback_threshold": 0.5,
+                    "monitored_feedback_min_events": 3,
+                    "monitored_feedback_window": 10,
+                },
+            )
             for signal in ("negative", "request_change", "approve"):
                 engine.state.append_feedback_event("test-repo", {"signal": signal})
 
@@ -482,14 +547,17 @@ class TestFeedbackAutoRollback(unittest.TestCase):
     def test_feedback_auto_rollback_does_not_activate_below_threshold(self):
         tmp = _isolated_tmp()
         try:
-            engine = make_engine(tmp, review_care_overrides={
-                "guarded_live_review": True,
-                "live_rollout_mode": LiveRolloutMode.LIMITED.value,
-                "monitored_auto_rollback_enabled": True,
-                "monitored_negative_feedback_threshold": 0.8,
-                "monitored_feedback_min_events": 3,
-                "monitored_feedback_window": 10,
-            })
+            engine = make_engine(
+                tmp,
+                review_care_overrides={
+                    "guarded_live_review": True,
+                    "live_rollout_mode": LiveRolloutMode.LIMITED.value,
+                    "monitored_auto_rollback_enabled": True,
+                    "monitored_negative_feedback_threshold": 0.8,
+                    "monitored_feedback_min_events": 3,
+                    "monitored_feedback_window": 10,
+                },
+            )
             for signal in ("negative", "approve", "approve"):
                 engine.state.append_feedback_event("test-repo", {"signal": signal})
 
@@ -510,16 +578,25 @@ class TestAutonomousRunSafetyFields(unittest.TestCase):
     def test_run_artifact_marks_attention_when_auto_rollback_active(self):
         tmp = _isolated_tmp()
         try:
-            engine = make_engine(tmp, github_overrides={"live_actions": True}, review_care_overrides={
-                "guarded_live_review": True,
-                "live_rollout_mode": LiveRolloutMode.LIMITED.value,
-                "monitored_auto_rollback_enabled": True,
-                "monitored_negative_feedback_threshold": 0.5,
-                "monitored_feedback_min_events": 3,
-                "monitored_feedback_window": 10,
-            })
-            engine._generate_local_candidates = lambda pr_context=None: list(STUB_CANDIDATES)
-            engine._resolve_pr_context_for_autonomous_run = lambda prior_publish: (123, "explicit-test")
+            engine = make_engine(
+                tmp,
+                github_overrides={"live_actions": True},
+                review_care_overrides={
+                    "guarded_live_review": True,
+                    "live_rollout_mode": LiveRolloutMode.LIMITED.value,
+                    "monitored_auto_rollback_enabled": True,
+                    "monitored_negative_feedback_threshold": 0.5,
+                    "monitored_feedback_min_events": 3,
+                    "monitored_feedback_window": 10,
+                },
+            )
+            engine._generate_local_candidates = lambda pr_context=None: list(
+                STUB_CANDIDATES
+            )
+            engine._resolve_pr_context_for_autonomous_run = lambda prior_publish: (
+                123,
+                "explicit-test",
+            )
             engine._post_summary_to_github = lambda **kwargs: None
             for signal in ("negative", "request_change", "approve"):
                 engine.state.append_feedback_event("test-repo", {"signal": signal})
@@ -531,6 +608,7 @@ class TestAutonomousRunSafetyFields(unittest.TestCase):
             run_files = sorted(runs_dir.glob("*.json"))
             self.assertTrue(run_files)
             import json
+
             run_data = json.loads(run_files[-1].read_text())
             self.assertTrue(run_data["attention_recommended"])
             self.assertTrue(run_data["auto_rollback_active"])
@@ -556,18 +634,27 @@ class TestCooldownExpiration(unittest.TestCase):
         tmp = _isolated_tmp()
         try:
             from datetime import datetime, timezone, timedelta
-            engine = make_engine(tmp, review_care_overrides={
-                "monitored_failure_threshold": 2,
-                "monitored_cooldown_seconds": 300,
-            })
+
+            engine = make_engine(
+                tmp,
+                review_care_overrides={
+                    "monitored_failure_threshold": 2,
+                    "monitored_cooldown_seconds": 300,
+                },
+            )
             # Open the circuit with a near-expired cooldown
-            near_expired = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
-            engine.state.save_monitored_safety_state("test-repo", {
-                "circuit_open": True,
-                "failure_count": 2,
-                "cooldown_until": near_expired,
-                "last_failure_reason": "rate limit",
-            })
+            near_expired = (
+                datetime.now(timezone.utc) - timedelta(seconds=10)
+            ).isoformat()
+            engine.state.save_monitored_safety_state(
+                "test-repo",
+                {
+                    "circuit_open": True,
+                    "failure_count": 2,
+                    "cooldown_until": near_expired,
+                    "last_failure_reason": "rate limit",
+                },
+            )
             # Check should close circuit since cooldown expired
             allows, reason, safety_state = engine._check_monitored_safety()
             self.assertFalse(allows)  # Still False - filters must pass independently
@@ -582,10 +669,14 @@ class TestCooldownExpiration(unittest.TestCase):
         tmp = _isolated_tmp()
         try:
             from datetime import datetime, timezone, timedelta
-            engine = make_engine(tmp, review_care_overrides={
-                "monitored_failure_threshold": 1,
-                "monitored_cooldown_seconds": 3600,  # 1 hour
-            })
+
+            engine = make_engine(
+                tmp,
+                review_care_overrides={
+                    "monitored_failure_threshold": 1,
+                    "monitored_cooldown_seconds": 3600,  # 1 hour
+                },
+            )
             # Open circuit
             engine._record_publish_failure_for_safety("run1", "rate limit")
             safety_data = engine.state.load_monitored_safety_state("test-repo")
@@ -595,7 +686,9 @@ class TestCooldownExpiration(unittest.TestCase):
             now = datetime.now(timezone.utc)
             # Cooldown should be approximately 1 hour from now
             diff = (cooldown_until - now).total_seconds()
-            self.assertGreater(diff, 3500)  # At least ~3500 seconds (allowing some tolerance)
+            self.assertGreater(
+                diff, 3500
+            )  # At least ~3500 seconds (allowing some tolerance)
             self.assertLessEqual(diff, 3700)  # At most ~3700 seconds
         finally:
             shutil.rmtree(tmp)

@@ -35,9 +35,9 @@ from bluei.app.models import (
     ReviewMode,
     generate_id,
 )
-from bluei.review.cycle import (
-    ReviewCycleEngine,
-    GitHubReviewProvider,
+from bluei.review.cycle import ReviewCycleEngine
+from bluei.review.provider import GitHubReviewProvider
+from bluei.review.chunking import (
     order_files_for_chunking,
     build_chunk_manifest,
     ChunkManifest,
@@ -48,6 +48,7 @@ from bluei.app.state import StateManager
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 def make_repo(tmp_path: Path) -> Repo:
     repo_path = tmp_path / "repo"
@@ -108,6 +109,7 @@ STUB_CANDIDATES = [
 # Test: CompressionMode enum values
 # ---------------------------------------------------------------------------
 
+
 class TestCompressionModeEnum:
     def test_compression_mode_has_expected_values(self):
         assert CompressionMode.FULL_DIFF.value == "full_diff"
@@ -122,6 +124,7 @@ class TestCompressionModeEnum:
 # ---------------------------------------------------------------------------
 # Test: order_files_for_chunking — deterministic file ordering
 # ---------------------------------------------------------------------------
+
 
 class TestOrderFilesForChunking:
     def test_empty_list_returns_empty(self):
@@ -207,6 +210,7 @@ class TestOrderFilesForChunking:
 # Test: ChunkManifest structure and serialization
 # ---------------------------------------------------------------------------
 
+
 class TestChunkManifest:
     def test_default_manifest_single_chunk(self):
         manifest = ChunkManifest()
@@ -274,6 +278,7 @@ class TestChunkManifest:
 # ---------------------------------------------------------------------------
 # Test: build_chunk_manifest helper
 # ---------------------------------------------------------------------------
+
 
 class TestBuildChunkManifest:
     def test_empty_files_returns_empty_chunks(self):
@@ -349,6 +354,7 @@ class TestBuildChunkManifest:
 # Test: compression_mode persisted in ReviewRun artifact
 # ---------------------------------------------------------------------------
 
+
 class TestCompressionModeInReviewRun:
     def test_review_run_contains_compression_mode_field(self):
         tmp = _isolated_tmp()
@@ -415,6 +421,7 @@ class TestCompressionModeInReviewRun:
 # Test: chunk manifest shape / stability via build_chunk_manifest
 # ---------------------------------------------------------------------------
 
+
 class TestChunkManifestStability:
     def test_manifest_stable_across_calls(self):
         files = ["src/z.ts", "src/a.ts", "src/m.ts"]
@@ -438,4 +445,5 @@ class TestChunkManifestStability:
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])

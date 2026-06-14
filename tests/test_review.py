@@ -4,7 +4,8 @@
 from pathlib import Path
 
 from bluei.app.models import Repo, RepoConfig
-from bluei.review.cycle import GitHubReviewProvider, ReviewCycleEngine
+from bluei.review.cycle import ReviewCycleEngine
+from bluei.review.provider import GitHubReviewProvider
 from bluei.app.state import StateManager
 
 
@@ -121,9 +122,14 @@ def test_classify_comment_treats_blocking_language_as_actionable(tmp_path):
     provider.repo_slug = "owner/repo"
     provider.current_login = "sound"
 
-    assert provider._classify_comment("suggestion: not safe to merge as-is") == "actionable"
-    assert provider._classify_comment("optional: consider renaming this variable") == "informational"
-
+    assert (
+        provider._classify_comment("suggestion: not safe to merge as-is")
+        == "actionable"
+    )
+    assert (
+        provider._classify_comment("optional: consider renaming this variable")
+        == "informational"
+    )
 
 
 def test_ignore_comment_filters_status_chatter(tmp_path):
@@ -136,9 +142,17 @@ def test_ignore_comment_filters_status_chatter(tmp_path):
     provider.current_login = "sound"
 
     assert provider._should_ignore_comment("codeant ai is reviewing your pr") is True
-    assert provider._should_ignore_comment("codeant ai finished reviewing your pr") is True
-    assert provider._should_ignore_comment("codeant ai is running incremental review") is True
-    assert provider._should_ignore_comment("automated verification passed for finding abc") is True
+    assert (
+        provider._should_ignore_comment("codeant ai finished reviewing your pr") is True
+    )
+    assert (
+        provider._should_ignore_comment("codeant ai is running incremental review")
+        is True
+    )
+    assert (
+        provider._should_ignore_comment("automated verification passed for finding abc")
+        is True
+    )
     assert provider._should_ignore_comment("**tip:** try greploops") is True
     assert provider._should_ignore_comment("please add a regression test") is False
 
@@ -185,7 +199,9 @@ def test_render_remediation_prompt_includes_mnemo_context_when_available(tmp_pat
     engine = ReviewCycleEngine.__new__(ReviewCycleEngine)
     engine.repo = repo
     engine.state = StateManager(tmp_path / "repos")
-    engine._build_mnemo_review_context = lambda **kwargs: "## Mnemo context\n\n### Mnemo query: `please add tests`\nrelated files"
+    engine._build_mnemo_review_context = lambda **kwargs: (
+        "## Mnemo context\n\n### Mnemo query: `please add tests`\nrelated files"
+    )
 
     prompt = engine._render_remediation_prompt(
         {
@@ -257,7 +273,6 @@ def test_prepare_worktree_dry_run_returns_path(tmp_path):
     assert worktree["dry_run"] is True
     assert worktree["prepared"] is False
     assert worktree["local_branch"] == "qa-review-pr-77"
-
 
 
 def test_prepare_worktree_prefers_pull_ref_head(tmp_path):
@@ -389,7 +404,6 @@ def test_execute_prepared_remediation_validation_failure_beats_no_changes(tmp_pa
     assert result["status"] == "retry_failed_validation"
     assert result["attempts_used"] == 2
     assert result["validation"]["ok"] is False
-
 
 
 def test_execute_prepared_remediation_respects_max_attempts(tmp_path):

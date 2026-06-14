@@ -32,13 +32,15 @@ from bluei.app.models import (
     LiveRolloutMode,
     generate_id,
 )
-from bluei.review.cycle import ReviewCycleEngine, GitHubReviewProvider
+from bluei.review.cycle import ReviewCycleEngine
+from bluei.review.provider import GitHubReviewProvider
 from bluei.app.state import StateManager
 
 
 # ---------------------------------------------------------------------------
 # Isolation helper — unique directory per test
 # ---------------------------------------------------------------------------
+
 
 def _isolated_tmp() -> Path:
     base = Path(f"/tmp/qa_rollout_{uuid.uuid4().hex[:8]}")
@@ -73,7 +75,10 @@ STUB_CANDIDATES = [
 # Fixtures
 # ---------------------------------------------------------------------------
 
-def make_engine(tmp: Path, github_overrides: dict = None, review_care_overrides: dict = None):
+
+def make_engine(
+    tmp: Path, github_overrides: dict = None, review_care_overrides: dict = None
+):
     repo_path = tmp / "repo"
     repo_path.mkdir()
     github = {"live_actions": False, "auto_merge": False}
@@ -110,6 +115,7 @@ def make_engine(tmp: Path, github_overrides: dict = None, review_care_overrides:
 # Test: _get_live_rollout_mode — mode resolution
 # ---------------------------------------------------------------------------
 
+
 class TestRolloutModeResolution:
     """_get_live_rollout_mode returns correct mode and reason."""
 
@@ -124,7 +130,9 @@ class TestRolloutModeResolution:
         tmp = _isolated_tmp()
         engine, _, _ = make_engine(
             tmp,
-            review_care_overrides={"live_rollout_mode": LiveRolloutMode.LOCAL_ONLY.value},
+            review_care_overrides={
+                "live_rollout_mode": LiveRolloutMode.LOCAL_ONLY.value
+            },
         )
         mode, reason = engine._get_live_rollout_mode()
         assert mode == LiveRolloutMode.LOCAL_ONLY
@@ -211,6 +219,7 @@ class TestRolloutModeResolution:
 # Test: local_only behavior (default)
 # ---------------------------------------------------------------------------
 
+
 class TestLocalOnlyBehavior:
     """local_only mode: no backend when live_actions=True, no live publish."""
 
@@ -220,7 +229,9 @@ class TestLocalOnlyBehavior:
         engine, repo, state = make_engine(
             tmp,
             github_overrides={"live_actions": True},
-            review_care_overrides={"live_rollout_mode": LiveRolloutMode.LOCAL_ONLY.value},
+            review_care_overrides={
+                "live_rollout_mode": LiveRolloutMode.LOCAL_ONLY.value
+            },
         )
         engine._generate_local_candidates = lambda: list(STUB_CANDIDATES)
         backend_called = False
@@ -234,7 +245,9 @@ class TestLocalOnlyBehavior:
 
         result = engine._run_autonomous_review_cycle(dry_run=False)
 
-        assert backend_called is False, "Backend should NOT be called in local_only mode with live_actions=True"
+        assert backend_called is False, (
+            "Backend should NOT be called in local_only mode with live_actions=True"
+        )
         assert result.findings_detected == 1
 
     def test_local_only_allows_backend_when_live_actions_false(self):
@@ -243,7 +256,9 @@ class TestLocalOnlyBehavior:
         engine, repo, state = make_engine(
             tmp,
             github_overrides={"live_actions": False},
-            review_care_overrides={"live_rollout_mode": LiveRolloutMode.LOCAL_ONLY.value},
+            review_care_overrides={
+                "live_rollout_mode": LiveRolloutMode.LOCAL_ONLY.value
+            },
         )
         backend_called = False
 
@@ -257,7 +272,9 @@ class TestLocalOnlyBehavior:
 
         result = engine._run_autonomous_review_cycle(dry_run=False)
 
-        assert backend_called is True, "Backend should be called in local_only mode when live_actions=False"
+        assert backend_called is True, (
+            "Backend should be called in local_only mode when live_actions=False"
+        )
 
     def test_local_only_no_gh_api_call(self):
         """local_only never calls gh API (publish is skipped).
@@ -271,7 +288,9 @@ class TestLocalOnlyBehavior:
         engine, repo, state = make_engine(
             tmp,
             github_overrides={"live_actions": True},
-            review_care_overrides={"live_rollout_mode": LiveRolloutMode.LOCAL_ONLY.value},
+            review_care_overrides={
+                "live_rollout_mode": LiveRolloutMode.LOCAL_ONLY.value
+            },
         )
         engine._generate_local_candidates = lambda: list(STUB_CANDIDATES)
 
@@ -288,7 +307,9 @@ class TestLocalOnlyBehavior:
         with unittest.mock.patch.object(subprocess, "run", side_effect=track_run):
             result = engine._run_autonomous_review_cycle(dry_run=False)
 
-        assert comment_called is False, "gh pr comment should NOT be called in local_only mode"
+        assert comment_called is False, (
+            "gh pr comment should NOT be called in local_only mode"
+        )
 
     def test_local_only_lifecycle_phase_is_guard_disabled(self):
         """local_only lifecycle_phase is guard-disabled."""
@@ -296,7 +317,9 @@ class TestLocalOnlyBehavior:
         engine, repo, state = make_engine(
             tmp,
             github_overrides={"live_actions": True},
-            review_care_overrides={"live_rollout_mode": LiveRolloutMode.LOCAL_ONLY.value},
+            review_care_overrides={
+                "live_rollout_mode": LiveRolloutMode.LOCAL_ONLY.value
+            },
         )
         engine._generate_local_candidates = lambda: list(STUB_CANDIDATES)
 
@@ -312,6 +335,7 @@ class TestLocalOnlyBehavior:
 # ---------------------------------------------------------------------------
 # Test: shadow mode behavior
 # ---------------------------------------------------------------------------
+
 
 class TestShadowModeBehavior:
     """shadow mode: backend generates, targeting resolves, but NO actual publish."""
@@ -429,7 +453,9 @@ class TestShadowModeBehavior:
 
         events_file = state.get_review_events_file(repo.config.name)
         assert events_file.exists()
-        events = [json.loads(line) for line in events_file.read_text().strip().splitlines()]
+        events = [
+            json.loads(line) for line in events_file.read_text().strip().splitlines()
+        ]
         shadow_events = [e for e in events if "shadow" in e.get("event", "")]
         assert len(shadow_events) >= 1, "Should have at least one shadow event"
         latest_shadow = shadow_events[-1]
@@ -461,6 +487,7 @@ class TestShadowModeBehavior:
 # Test: limited mode behavior
 # ---------------------------------------------------------------------------
 
+
 class TestLimitedModeBehavior:
     """limited mode: full guarded path when guard conditions are met."""
 
@@ -487,7 +514,9 @@ class TestLimitedModeBehavior:
 
         result = engine._run_autonomous_review_cycle(dry_run=False)
 
-        assert backend_called is True, "Backend SHOULD be called in limited mode when guard passes"
+        assert backend_called is True, (
+            "Backend SHOULD be called in limited mode when guard passes"
+        )
 
     def test_limited_guard_disabled_blocks_backend(self):
         """limited + guarded_live_review=False + live_actions=True → backend blocked."""
@@ -512,7 +541,9 @@ class TestLimitedModeBehavior:
 
         result = engine._run_autonomous_review_cycle(dry_run=False)
 
-        assert backend_called is False, "Backend should NOT be called in limited mode when guard fails"
+        assert backend_called is False, (
+            "Backend should NOT be called in limited mode when guard fails"
+        )
 
     def test_limited_publishes_when_guard_passes(self):
         """limited + guard passed → actually publishes to GitHub."""
@@ -545,6 +576,7 @@ class TestLimitedModeBehavior:
 # ---------------------------------------------------------------------------
 # Test: bad/ambiguous combinations fall back safely
 # ---------------------------------------------------------------------------
+
 
 class TestFallbackBehavior:
     """Unsafe or ambiguous config falls back to local_only with explicit reason."""
@@ -615,6 +647,7 @@ class TestFallbackBehavior:
 # Test: observation mode behavior is unchanged
 # ---------------------------------------------------------------------------
 
+
 class TestObservationModeUnchanged:
     """observation mode still uses its own path (not autonomous-review)."""
 
@@ -649,14 +682,22 @@ class TestObservationModeUnchanged:
         events_file = state.get_review_events_file(repo.config.name)
         rollout_events = []
         if events_file.exists():
-            events = [json.loads(line) for line in events_file.read_text().strip().splitlines()]
-            rollout_events = [e for e in events if "rollout" in str(e.get("details", {}))]
-        assert len(rollout_events) == 0, "Observation mode should not emit rollout events"
+            events = [
+                json.loads(line)
+                for line in events_file.read_text().strip().splitlines()
+            ]
+            rollout_events = [
+                e for e in events if "rollout" in str(e.get("details", {}))
+            ]
+        assert len(rollout_events) == 0, (
+            "Observation mode should not emit rollout events"
+        )
 
 
 # ---------------------------------------------------------------------------
 # Test: run artifacts capture rollout mode and shadow state
 # ---------------------------------------------------------------------------
+
 
 class TestArtifactsCaptureRolloutMode:
     """ReviewRun and publish-state capture live_rollout_mode and shadow state."""
@@ -692,10 +733,17 @@ class TestArtifactsCaptureRolloutMode:
         engine._run_autonomous_review_cycle(dry_run=False)
 
         events_file = state.get_review_events_file(repo.config.name)
-        events = [json.loads(line) for line in events_file.read_text().strip().splitlines()]
-        completed = [e for e in events if e.get("event") == "autonomous-review-completed"]
+        events = [
+            json.loads(line) for line in events_file.read_text().strip().splitlines()
+        ]
+        completed = [
+            e for e in events if e.get("event") == "autonomous-review-completed"
+        ]
         assert len(completed) >= 1
-        assert completed[-1]["details"]["live_rollout_mode"] == LiveRolloutMode.SHADOW.value
+        assert (
+            completed[-1]["details"]["live_rollout_mode"]
+            == LiveRolloutMode.SHADOW.value
+        )
         assert completed[-1]["details"]["rollout_reason"] == "shadow-mode-active"
 
     def test_shadow_entry_has_target_pr_and_summary(self):
@@ -717,13 +765,17 @@ class TestArtifactsCaptureRolloutMode:
         run_id = list(pstate["runs"].keys())[0]
         entry = pstate["runs"][run_id]
         assert entry.get("shadow") is True
-        assert entry.get("targeted_pr_number") is not None or entry.get("status") == "pending"
+        assert (
+            entry.get("targeted_pr_number") is not None
+            or entry.get("status") == "pending"
+        )
         assert len(entry.get("shadow_summary_text", "")) > 0
 
 
 # ---------------------------------------------------------------------------
 # Test: dry_run skips rollout mode evaluation
 # ---------------------------------------------------------------------------
+
 
 class TestDryRunSkipsRollout:
     """dry_run=True returns before rollout mode evaluation."""
@@ -739,6 +791,7 @@ class TestDryRunSkipsRollout:
         original_get_mode = engine._get_live_rollout_mode
 
         mode_called = False
+
         def track_get_mode():
             nonlocal mode_called
             mode_called = True
@@ -748,10 +801,13 @@ class TestDryRunSkipsRollout:
 
         result = engine.run(dry_run=True)
 
-        assert mode_called is False, "_get_live_rollout_mode should not be called on dry_run"
+        assert mode_called is False, (
+            "_get_live_rollout_mode should not be called on dry_run"
+        )
         assert result.findings_detected == 0
 
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])

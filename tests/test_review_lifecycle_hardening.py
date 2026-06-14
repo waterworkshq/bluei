@@ -29,7 +29,8 @@ from bluei.app.models import (
     RepoConfig,
     ReviewMode,
 )
-from bluei.review.cycle import ReviewCycleEngine, GitHubReviewProvider
+from bluei.review.cycle import ReviewCycleEngine
+from bluei.review.provider import GitHubReviewProvider
 from bluei.app.state import StateManager
 
 
@@ -56,6 +57,7 @@ STUB_CANDIDATES = [
 
 def _isolated_tmp():
     import tempfile
+
     return Path(tempfile.mkdtemp(prefix="qa_lifecycle_"))
 
 
@@ -89,6 +91,7 @@ def make_engine(repo: Repo, state: StateManager) -> ReviewCycleEngine:
 # Tests
 # ---------------------------------------------------------------------------
 
+
 class TestLifecyclePhaseGuardDisabled:
     """guard_enabled=False → lifecycle_phase='guard-disabled', run_completion_reason set."""
 
@@ -107,7 +110,9 @@ class TestLifecyclePhaseGuardDisabled:
 
             publish = state.load_review_publish_state(repo.config.name)
             runs = publish.get("runs", {})
-            latest = next((r for rid, r in runs.items() if rid.startswith("arun-")), None)
+            latest = next(
+                (r for rid, r in runs.items() if rid.startswith("arun-")), None
+            )
             assert latest is not None, "No run found in publish state"
             assert latest.get("lifecycle_phase") == "guard-disabled", (
                 f"Expected lifecycle_phase='guard-disabled', got {latest.get('lifecycle_phase')}"
@@ -128,12 +133,17 @@ class TestLifecyclePhaseGuardDisabled:
             engine._run_autonomous_review_cycle(dry_run=False)
 
             review_run_files = list(
-                (state._get_state_dir(repo.config.name) / "review_runs").glob("arun-*.json")
+                (state._get_state_dir(repo.config.name) / "review_runs").glob(
+                    "arun-*.json"
+                )
             )
             assert review_run_files, "No review run file created"
             import json
+
             run_data = json.loads(review_run_files[0].read_text())
-            assert "run_completion_reason" in run_data, "run_completion_reason missing from artifact"
+            assert "run_completion_reason" in run_data, (
+                "run_completion_reason missing from artifact"
+            )
             assert "guard-disabled" in run_data["run_completion_reason"].lower(), (
                 f"run_completion_reason should mention 'guard-disabled': "
                 f"{run_data.get('run_completion_reason')}"
@@ -179,7 +189,9 @@ class TestLifecyclePhaseGuardedLivePublished:
 
             publish = state.load_review_publish_state(repo.config.name)
             runs = publish.get("runs", {})
-            latest = next((r for rid, r in runs.items() if rid.startswith("arun-")), None)
+            latest = next(
+                (r for rid, r in runs.items() if rid.startswith("arun-")), None
+            )
             assert latest is not None
             assert latest.get("lifecycle_phase") == "guarded-live-published", (
                 f"Expected lifecycle_phase='guarded-live-published', got {latest.get('lifecycle_phase')}"
@@ -222,7 +234,9 @@ class TestLifecyclePhaseGuardedLiveFailed:
 
             publish = state.load_review_publish_state(repo.config.name)
             runs = publish.get("runs", {})
-            latest = next((r for rid, r in runs.items() if rid.startswith("arun-")), None)
+            latest = next(
+                (r for rid, r in runs.items() if rid.startswith("arun-")), None
+            )
             assert latest is not None
             assert latest.get("lifecycle_phase") == "guarded-live-failed", (
                 f"Expected lifecycle_phase='guarded-live-failed', got {latest.get('lifecycle_phase')}"
@@ -253,16 +267,21 @@ class TestCandidateSourceField:
             engine._run_autonomous_review_cycle(dry_run=False)
 
             review_run_files = list(
-                (state._get_state_dir(repo.config.name) / "review_runs").glob("arun-*.json")
+                (state._get_state_dir(repo.config.name) / "review_runs").glob(
+                    "arun-*.json"
+                )
             )
             assert review_run_files, "No review run file created"
             import json
+
             run_data = json.loads(review_run_files[0].read_text())
             assert "candidate_source" in run_data, (
                 f"candidate_source missing from run artifact. Keys: {list(run_data.keys())}"
             )
             assert run_data["candidate_source"] in (
-                "local-stub", "backend", "local-stub-fallback"
+                "local-stub",
+                "backend",
+                "local-stub-fallback",
             ), f"Unexpected candidate_source: {run_data.get('candidate_source')}"
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -284,13 +303,21 @@ class TestReviewRunArtifactFields:
             engine._run_autonomous_review_cycle(dry_run=False)
 
             review_run_files = list(
-                (state._get_state_dir(repo.config.name) / "review_runs").glob("arun-*.json")
+                (state._get_state_dir(repo.config.name) / "review_runs").glob(
+                    "arun-*.json"
+                )
             )
             assert review_run_files, "No review run file created"
             import json
+
             run_data = json.loads(review_run_files[0].read_text())
 
-            for field in ("run_completion_reason", "lifecycle_phase", "candidate_source", "comment_url"):
+            for field in (
+                "run_completion_reason",
+                "lifecycle_phase",
+                "candidate_source",
+                "comment_url",
+            ):
                 assert field in run_data, f"Field '{field}' missing from run artifact"
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -343,11 +370,19 @@ class TestEventLifecycleFields:
                 for line in events_file.read_text().strip().split("\n"):
                     if line.strip():
                         events.append(json.loads(line))
-            completed_events = [e for e in events if e.get("event") == "autonomous-review-completed"]
-            assert completed_events, f"No autonomous-review-completed events found. Events: {events}"
+            completed_events = [
+                e for e in events if e.get("event") == "autonomous-review-completed"
+            ]
+            assert completed_events, (
+                f"No autonomous-review-completed events found. Events: {events}"
+            )
             evt = completed_events[0]["details"]
-            assert "lifecycle_phase" in evt, f"lifecycle_phase missing from event. Keys: {list(evt.keys())}"
-            assert "candidate_source" in evt, f"candidate_source missing from event. Keys: {list(evt.keys())}"
+            assert "lifecycle_phase" in evt, (
+                f"lifecycle_phase missing from event. Keys: {list(evt.keys())}"
+            )
+            assert "candidate_source" in evt, (
+                f"candidate_source missing from event. Keys: {list(evt.keys())}"
+            )
             assert evt["lifecycle_phase"] == "guard-disabled", (
                 f"Expected lifecycle_phase='guard-disabled', got {evt.get('lifecycle_phase')}"
             )
@@ -357,10 +392,12 @@ class TestEventLifecycleFields:
 
 if __name__ == "__main__":
     import shutil, tempfile
+
     # Run tests manually
     tmp = Path(tempfile.mkdtemp())
     try:
         import pytest
+
         sys.exit(pytest.main([__file__, "-v", "--tb=short"]))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

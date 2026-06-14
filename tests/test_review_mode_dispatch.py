@@ -14,7 +14,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from bluei.app.models import Repo, RepoConfig, ReviewMode
-from bluei.review.cycle import ReviewCycleEngine, GitHubReviewProvider
+from bluei.review.cycle import ReviewCycleEngine
+from bluei.review.provider import GitHubReviewProvider
 from bluei.app.state import StateManager
 
 
@@ -50,6 +51,7 @@ def make_engine(tmp_path: Path, mode: str = None) -> ReviewCycleEngine:
 # _get_review_mode
 # ---------------------------------------------------------------------------
 
+
 class TestGetReviewMode:
     def test_explicit_observation(self, tmp_path):
         engine = make_engine(tmp_path, mode="observation")
@@ -84,6 +86,7 @@ class TestGetReviewMode:
 # ---------------------------------------------------------------------------
 # run() dispatch — observation mode
 # ---------------------------------------------------------------------------
+
 
 class TestRunDispatch:
     def test_observation_mode_calls_observation_cycle(self, tmp_path):
@@ -155,6 +158,7 @@ class TestRunDispatch:
 # Stub methods return neutral results and log events
 # ---------------------------------------------------------------------------
 
+
 class TestAutonomousReviewStub:
     def test_returns_neutral_result(self, tmp_path):
         engine = make_engine(tmp_path, mode="autonomous-review")
@@ -182,7 +186,11 @@ class TestAutonomousReviewStub:
         assert events_file.exists()
         lines = events_file.read_text().strip().splitlines()
         # Phase J may emit learned-rule-log events before the completion event
-        completion_events = [json.loads(l) for l in lines if json.loads(l)["event"] == "autonomous-review-completed"]
+        completion_events = [
+            json.loads(l)
+            for l in lines
+            if json.loads(l)["event"] == "autonomous-review-completed"
+        ]
         assert len(completion_events) == 1
         event = completion_events[0]
         assert event["details"]["mode"] == "autonomous-review"
@@ -202,6 +210,7 @@ class TestAutonomousReviewStub:
         fixture pollution in TestAutonomousReviewStub.
         """
         import shutil, uuid
+
         # Use uuid to guarantee a unique path that won't collide with pytest's tmp_path
         base = Path(f"/tmp/qa_dispatch_dryrun_{uuid.uuid4().hex[:8]}")
         base.mkdir(parents=True)
@@ -274,6 +283,7 @@ class TestRemediationStub:
 # Observation cycle preserves existing behavior (smoke test with mocks)
 # ---------------------------------------------------------------------------
 
+
 class TestObservationCycleSmoke:
     def test_observation_cycle_does_not_fall_through_to_stub(self, tmp_path):
         """run() with observation mode must call _run_observation_cycle."""
@@ -289,4 +299,5 @@ class TestObservationCycleSmoke:
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])

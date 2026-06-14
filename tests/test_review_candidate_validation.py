@@ -17,21 +17,24 @@ from bluei.review.models import (
 from bluei.app.models import (
     RepoConfig,
 )
-from bluei.review.cycle import (
-    CandidateValidationError,
+from bluei.review.normalization import (
     normalize_candidate,
     assign_finding_identity,
     dedupe_findings,
+)
+from bluei.review.eligibility import (
     is_remediation_eligible,
     RemediationEligibility,
     _DEFAULT_MIN_CONFIDENCE,
     _DEFAULT_MIN_ACTIONABILITY,
 )
+from bluei.review.types import CandidateValidationError
 
 
 # ---------------------------------------------------------------------------
 # normalize_candidate: valid candidate normalization
 # ---------------------------------------------------------------------------
+
 
 class TestNormalizeCandidateValid:
     """Valid candidates are normalized correctly."""
@@ -127,6 +130,7 @@ class TestNormalizeCandidateValid:
 # normalize_candidate: invalid candidate rejection
 # ---------------------------------------------------------------------------
 
+
 class TestNormalizeCandidateInvalid:
     """Malformed candidates raise CandidateValidationError with useful messages."""
 
@@ -176,12 +180,24 @@ class TestNormalizeCandidateInvalid:
         assert "non-negative" in str(err)
 
     def test_non_integer_line_raises(self):
-        raw = {"repo": "ky", "path": "a.ts", "line": "oops", "header": "r", "source": "llm"}
+        raw = {
+            "repo": "ky",
+            "path": "a.ts",
+            "line": "oops",
+            "header": "r",
+            "source": "llm",
+        }
         err = _assert_validation_error(raw)
         assert "integer" in str(err)
 
     def test_invalid_source_raises(self):
-        raw = {"repo": "ky", "path": "a.ts", "line": 1, "header": "r", "source": "neither"}
+        raw = {
+            "repo": "ky",
+            "path": "a.ts",
+            "line": 1,
+            "header": "r",
+            "source": "neither",
+        }
         err = _assert_validation_error(raw)
         assert "Invalid source value" in str(err)
 
@@ -210,6 +226,7 @@ def _assert_validation_error(raw):
 # ---------------------------------------------------------------------------
 # assign_finding_identity: deterministic identity assignment
 # ---------------------------------------------------------------------------
+
 
 class TestAssignFindingIdentity:
     """Identity assignment is deterministic and uses QA-owned helpers."""
@@ -319,6 +336,7 @@ class TestAssignFindingIdentity:
 # dedupe_findings: duplicate collapse behavior
 # ---------------------------------------------------------------------------
 
+
 class TestDedupFindings:
     """Exact structural duplicates are collapsed."""
 
@@ -394,6 +412,7 @@ class TestDedupFindings:
 # is_remediation_eligible: remediation eligibility gate behavior
 # ---------------------------------------------------------------------------
 
+
 class TestRemediationEligibilityGates:
     """All spec gates are checked correctly."""
 
@@ -447,13 +466,19 @@ class TestRemediationEligibilityGates:
         assert "actionability" in result.rejected_gates
 
     def test_actionability_informational_rejected(self):
-        f = {**self.base_eligible_finding(), "actionability": FindingActionability.INFORMATIONAL}
+        f = {
+            **self.base_eligible_finding(),
+            "actionability": FindingActionability.INFORMATIONAL,
+        }
         result = is_remediation_eligible(f)
         assert result.eligible is False
         assert "actionability" in result.rejected_gates
 
     def test_actionability_medium_accepted(self):
-        f = {**self.base_eligible_finding(), "actionability": FindingActionability.MEDIUM}
+        f = {
+            **self.base_eligible_finding(),
+            "actionability": FindingActionability.MEDIUM,
+        }
         result = is_remediation_eligible(f)
         assert result.eligible is True
         assert result.actionability_ok is True
@@ -558,10 +583,11 @@ class TestRemediationEligibilityGates:
         assert "confidence" in result.rejected_gates
 
     def test_custom_min_actionability(self):
-        f = {**self.base_eligible_finding(), "actionability": FindingActionability.MEDIUM}
-        result = is_remediation_eligible(
-            f, min_actionability=FindingActionability.HIGH
-        )
+        f = {
+            **self.base_eligible_finding(),
+            "actionability": FindingActionability.MEDIUM,
+        }
+        result = is_remediation_eligible(f, min_actionability=FindingActionability.HIGH)
         assert result.eligible is False
         assert "actionability" in result.rejected_gates
 
@@ -584,6 +610,7 @@ class TestRemediationEligibilityGates:
 # ---------------------------------------------------------------------------
 # Full pipeline: normalize -> identity -> dedupe -> eligibility
 # ---------------------------------------------------------------------------
+
 
 class TestFullPipeline:
     """End-to-end pipeline: normalize, assign identity, dedupe, check eligibility."""
@@ -661,4 +688,5 @@ class TestFullPipeline:
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])

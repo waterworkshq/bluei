@@ -31,9 +31,9 @@ from bluei.app.models import (
     ReviewMode,
     generate_id,
 )
-from bluei.review.cycle import (
-    ReviewCycleEngine,
-    GitHubReviewProvider,
+from bluei.review.cycle import ReviewCycleEngine
+from bluei.review.provider import GitHubReviewProvider
+from bluei.review.publisher import (
     build_review_summary_comment,
     build_run_publish_entry,
     build_publish_entry,
@@ -45,6 +45,7 @@ from bluei.app.state import StateManager
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 def make_repo(tmp_path: Path, github_overrides: dict = None) -> Repo:
     github = {
@@ -92,6 +93,7 @@ def make_reconciliation() -> ReconciliationResult:
 # ---------------------------------------------------------------------------
 # Test: _resolve_pr_context_for_autonomous_run — explicit config wins
 # ---------------------------------------------------------------------------
+
 
 class TestResolvePrContextExplicit:
     """Explicit pr_number in github config is used without consulting live_actions."""
@@ -149,6 +151,7 @@ class TestResolvePrContextExplicit:
 # Test: _resolve_pr_context_for_autonomous_run — live_actions fallback
 # ---------------------------------------------------------------------------
 
+
 class TestResolvePrContextLiveActions:
     """When no explicit pr_number, live_actions=True falls back to _resolve_target_pr_for_run."""
 
@@ -191,6 +194,7 @@ class TestResolvePrContextLiveActions:
 # Test: pr_number persisted in ReviewRun artifact
 # ---------------------------------------------------------------------------
 
+
 class TestPrNumberInReviewRun:
     """When PR context is known, it is stored in the ReviewRun JSON file."""
 
@@ -200,10 +204,9 @@ class TestPrNumberInReviewRun:
         engine = make_engine(repo, state)
 
         # Stub candidates to keep the run fast
-        with patch.object(
-            engine, "_generate_from_backend", return_value=[]
-        ), patch.object(
-            engine, "_generate_local_candidates", return_value=[]
+        with (
+            patch.object(engine, "_generate_from_backend", return_value=[]),
+            patch.object(engine, "_generate_local_candidates", return_value=[]),
         ):
             engine.run(dry_run=False)
 
@@ -219,10 +222,9 @@ class TestPrNumberInReviewRun:
         state = StateManager(tmp_path / "repos")
         engine = make_engine(repo, state)
 
-        with patch.object(
-            engine, "_generate_from_backend", return_value=[]
-        ), patch.object(
-            engine, "_generate_local_candidates", return_value=[]
+        with (
+            patch.object(engine, "_generate_from_backend", return_value=[]),
+            patch.object(engine, "_generate_local_candidates", return_value=[]),
         ):
             engine.run(dry_run=False)
 
@@ -236,6 +238,7 @@ class TestPrNumberInReviewRun:
 # ---------------------------------------------------------------------------
 # Test: targeted_pr_number in publish-state run entry
 # ---------------------------------------------------------------------------
+
 
 class TestPrNumberInPublishState:
     """The run publish entry records targeted_pr_number when a PR is known."""
@@ -280,10 +283,9 @@ class TestPrNumberInPublishState:
         state = StateManager(tmp_path / "repos")
         engine = make_engine(repo, state)
 
-        with patch.object(
-            engine, "_generate_from_backend", return_value=[]
-        ), patch.object(
-            engine, "_generate_local_candidates", return_value=[]
+        with (
+            patch.object(engine, "_generate_from_backend", return_value=[]),
+            patch.object(engine, "_generate_local_candidates", return_value=[]),
         ):
             engine.run(dry_run=False)
 
@@ -297,10 +299,9 @@ class TestPrNumberInPublishState:
         state = StateManager(tmp_path / "repos")
         engine = make_engine(repo, state)
 
-        with patch.object(
-            engine, "_generate_from_backend", return_value=[]
-        ), patch.object(
-            engine, "_generate_local_candidates", return_value=[]
+        with (
+            patch.object(engine, "_generate_from_backend", return_value=[]),
+            patch.object(engine, "_generate_local_candidates", return_value=[]),
         ):
             engine.run(dry_run=False)
 
@@ -314,6 +315,7 @@ class TestPrNumberInPublishState:
 # Test: PR context in prompt artifact
 # ---------------------------------------------------------------------------
 
+
 class TestPrContextInPromptArtifact:
     """When pr_context is provided, _build_candidate_prompt_artifact includes it."""
 
@@ -322,7 +324,11 @@ class TestPrContextInPromptArtifact:
         state = StateManager(tmp_path / "repos")
         engine = make_engine(repo, state)
 
-        pr_context = {"pr_number": 99, "pr_url": None, "resolution": "explicit-config-pr-99"}
+        pr_context = {
+            "pr_number": 99,
+            "pr_url": None,
+            "resolution": "explicit-config-pr-99",
+        }
         artifact = engine._build_candidate_prompt_artifact(pr_context=pr_context)
 
         assert "#99" in artifact or "PR Number: #99" in artifact
@@ -357,6 +363,7 @@ class TestPrContextInPromptArtifact:
 # Test: backend generation bridge receives pr_context
 # ---------------------------------------------------------------------------
 
+
 class TestPrContextInBackendBridge:
     """_generate_from_backend accepts and uses pr_context when calling _build_candidate_prompt_artifact."""
 
@@ -380,7 +387,11 @@ class TestPrContextInBackendBridge:
         state = StateManager(tmp_path / "repos")
         engine = make_engine(repo, state)
 
-        pr_context = {"pr_number": 55, "pr_url": None, "resolution": "explicit-config-pr-55"}
+        pr_context = {
+            "pr_number": 55,
+            "pr_url": None,
+            "resolution": "explicit-config-pr-55",
+        }
 
         captured_args = {}
 
@@ -388,12 +399,16 @@ class TestPrContextInBackendBridge:
             captured_args["pr_context"] = kwargs.get("pr_context")
             return "# dummy artifact\n[]"
 
-        with patch.object(
-            type(engine), "_resolve_backend", return_value="claude"
-        ), patch.object(
-            type(engine), "_build_candidate_prompt_artifact", side_effect=capture_prompt_artifact
-        ), patch.object(
-            type(engine), "_run_backend_candidate_command", return_value="[]"
+        with (
+            patch.object(type(engine), "_resolve_backend", return_value="claude"),
+            patch.object(
+                type(engine),
+                "_build_candidate_prompt_artifact",
+                side_effect=capture_prompt_artifact,
+            ),
+            patch.object(
+                type(engine), "_run_backend_candidate_command", return_value="[]"
+            ),
         ):
             result = engine._generate_from_backend(
                 run_id="test-run",
@@ -428,12 +443,16 @@ class TestPrContextInBackendBridge:
             captured_args["pr_context"] = kwargs.get("pr_context")
             return "# dummy artifact\n[]"
 
-        with patch.object(
-            type(engine), "_resolve_backend", return_value="claude"
-        ), patch.object(
-            type(engine), "_build_candidate_prompt_artifact", side_effect=capture_prompt_artifact
-        ), patch.object(
-            type(engine), "_run_backend_candidate_command", return_value="[]"
+        with (
+            patch.object(type(engine), "_resolve_backend", return_value="claude"),
+            patch.object(
+                type(engine),
+                "_build_candidate_prompt_artifact",
+                side_effect=capture_prompt_artifact,
+            ),
+            patch.object(
+                type(engine), "_run_backend_candidate_command", return_value="[]"
+            ),
         ):
             result = engine._generate_from_backend(run_id="test-run")
 
@@ -443,6 +462,7 @@ class TestPrContextInBackendBridge:
 # ---------------------------------------------------------------------------
 # Test: PR number in summary comment
 # ---------------------------------------------------------------------------
+
 
 class TestPrNumberInSummaryComment:
     """build_review_summary_comment includes PR number in header when provided."""
@@ -479,6 +499,7 @@ class TestPrNumberInSummaryComment:
 # Test: consistent PR targeting across reruns
 # ---------------------------------------------------------------------------
 
+
 class TestConsistentPrTargetingReruns:
     """When a PR is explicitly configured, reruns always target the same PR."""
 
@@ -495,10 +516,11 @@ class TestConsistentPrTargetingReruns:
                 captured_pr_numbers.append(pr_context.get("pr_number"))
             return []
 
-        with patch.object(
-            engine, "_generate_from_backend", side_effect=capture_pr_context
-        ), patch.object(
-            engine, "_generate_local_candidates", return_value=[]
+        with (
+            patch.object(
+                engine, "_generate_from_backend", side_effect=capture_pr_context
+            ),
+            patch.object(engine, "_generate_local_candidates", return_value=[]),
         ):
             # First run
             engine.run(dry_run=False)
@@ -512,25 +534,22 @@ class TestConsistentPrTargetingReruns:
         state = StateManager(tmp_path / "repos")
         engine = make_engine(repo, state)
 
-        with patch.object(
-            engine, "_generate_from_backend", return_value=[]
-        ), patch.object(
-            engine, "_generate_local_candidates", return_value=[]
+        with (
+            patch.object(engine, "_generate_from_backend", return_value=[]),
+            patch.object(engine, "_generate_local_candidates", return_value=[]),
         ):
             engine.run(dry_run=False)
             engine.run(dry_run=False)
 
         pstate = state.load_review_publish_state(repo.config.name)
-        pr_numbers = [
-            entry["targeted_pr_number"]
-            for entry in pstate["runs"].values()
-        ]
+        pr_numbers = [entry["targeted_pr_number"] for entry in pstate["runs"].values()]
         assert pr_numbers == [88, 88]
 
 
 # ---------------------------------------------------------------------------
 # Test: local-only fallback when no PR context
 # ---------------------------------------------------------------------------
+
 
 class TestLocalOnlyFallback:
     """When no PR context is available, the run proceeds in local-only mode safely."""
@@ -540,10 +559,9 @@ class TestLocalOnlyFallback:
         state = StateManager(tmp_path / "repos")
         engine = make_engine(repo, state)
 
-        with patch.object(
-            engine, "_generate_from_backend", return_value=[]
-        ), patch.object(
-            engine, "_generate_local_candidates", return_value=[]
+        with (
+            patch.object(engine, "_generate_from_backend", return_value=[]),
+            patch.object(engine, "_generate_local_candidates", return_value=[]),
         ):
             result = engine.run(dry_run=False)
 
@@ -558,10 +576,9 @@ class TestLocalOnlyFallback:
         state = StateManager(tmp_path / "repos")
         engine = make_engine(repo, state)
 
-        with patch.object(
-            engine, "_generate_from_backend", return_value=[]
-        ), patch.object(
-            engine, "_generate_local_candidates", return_value=[]
+        with (
+            patch.object(engine, "_generate_from_backend", return_value=[]),
+            patch.object(engine, "_generate_local_candidates", return_value=[]),
         ):
             engine.run(dry_run=False)
 
@@ -577,12 +594,12 @@ class TestLocalOnlyFallback:
         engine = make_engine(repo, state)
 
         # _resolve_target_pr_for_run returns (None, reason) when no PR available
-        with patch.object(
-            engine, "_resolve_target_pr_for_run", return_value=(None, "no-open-prs")
-        ), patch.object(
-            engine, "_generate_from_backend", return_value=[]
-        ), patch.object(
-            engine, "_generate_local_candidates", return_value=[]
+        with (
+            patch.object(
+                engine, "_resolve_target_pr_for_run", return_value=(None, "no-open-prs")
+            ),
+            patch.object(engine, "_generate_from_backend", return_value=[]),
+            patch.object(engine, "_generate_local_candidates", return_value=[]),
         ):
             result = engine.run(dry_run=False)
 
@@ -600,6 +617,7 @@ class TestLocalOnlyFallback:
 # Test: dry_run does not call PR resolution (avoids network/IO)
 # ---------------------------------------------------------------------------
 
+
 class TestDryRunNoPrResolution:
     """dry_run=True returns immediately without resolving PR context."""
 
@@ -609,7 +627,9 @@ class TestDryRunNoPrResolution:
         engine = make_engine(repo, state)
 
         with patch.object(
-            engine, "_resolve_pr_context_for_autonomous_run", return_value=(5, "explicit")
+            engine,
+            "_resolve_pr_context_for_autonomous_run",
+            return_value=(5, "explicit"),
         ) as mock_resolve:
             result = engine.run(dry_run=True)
 

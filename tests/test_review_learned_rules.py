@@ -24,7 +24,7 @@ from bluei.review.models import (
 from bluei.app.models import (
     generate_id,
 )
-from bluei.review.cycle import (
+from bluei.review.rules import (
     _classify_pattern_risk,
     _check_rule_conflicts,
     _should_activate_tentative_rule,
@@ -43,6 +43,7 @@ from bluei.app.state import StateManager
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _isolated_tmp() -> Path:
     base = Path(f"/tmp/qa_test_learned_rules_{uuid.uuid4().hex[:8]}")
@@ -97,6 +98,7 @@ def make_active_rule(
 # ---------------------------------------------------------------------------
 # Test: pattern risk classification
 # ---------------------------------------------------------------------------
+
 
 class TestClassifyPatternRisk:
     def test_low_risk_style_pattern(self):
@@ -159,6 +161,7 @@ class TestClassifyPatternRisk:
 # Test: tentative vs active rule behavior
 # ---------------------------------------------------------------------------
 
+
 class TestTentativeVsActive:
     def test_tentative_rule_requires_min_evidence(self):
         rule = make_tentative_rule(evidence_count=1)
@@ -200,6 +203,7 @@ class TestTentativeVsActive:
 # Test: precedence and conflict resolution
 # ---------------------------------------------------------------------------
 
+
 class TestRuleConflicts:
     def test_no_conflict_with_different_headers(self):
         existing = [make_active_rule(header="different-rule")]
@@ -240,6 +244,7 @@ class TestRuleConflicts:
 # ---------------------------------------------------------------------------
 # Test: operator-authored rule dominance
 # ---------------------------------------------------------------------------
+
 
 class TestOperatorRuleDominance:
     def test_operator_rule_suppresses_any_finding(self):
@@ -289,6 +294,7 @@ class TestOperatorRuleDominance:
 # Test: reaction-only suppression rejection
 # ---------------------------------------------------------------------------
 
+
 class TestReactionOnlySuppression:
     def test_reaction_signals_not_inspected_in_suppression(self):
         """
@@ -320,6 +326,7 @@ class TestReactionOnlySuppression:
 # Test: safe auto-activation for low-risk repeated style-like patterns
 # ---------------------------------------------------------------------------
 
+
 class TestAutoActivation:
     def test_propose_from_low_risk_finding(self):
         finding = {
@@ -335,9 +342,7 @@ class TestAutoActivation:
             "safe_to_autofix": False,
             "discovered_at": "2026-03-29T00:00:00Z",
         }
-        rule = _propose_learned_rule_from_finding(
-            finding, "arun-test-001", []
-        )
+        rule = _propose_learned_rule_from_finding(finding, "arun-test-001", [])
         assert rule is not None
         assert rule.status == LearnedRuleStatus.TENTATIVE
         assert rule.risk_level == "low"
@@ -357,9 +362,7 @@ class TestAutoActivation:
             "safe_to_autofix": False,
             "discovered_at": "2026-03-29T00:00:00Z",
         }
-        rule = _propose_learned_rule_from_finding(
-            finding, "arun-test-001", []
-        )
+        rule = _propose_learned_rule_from_finding(finding, "arun-test-001", [])
         assert rule is None  # High-risk patterns are never proposed
 
     def test_propose_rejected_for_high_actionability(self):
@@ -376,9 +379,7 @@ class TestAutoActivation:
             "safe_to_autofix": False,
             "discovered_at": "2026-03-29T00:00:00Z",
         }
-        rule = _propose_learned_rule_from_finding(
-            finding, "arun-test-001", []
-        )
+        rule = _propose_learned_rule_from_finding(finding, "arun-test-001", [])
         assert rule is None
 
     def test_propose_rejected_when_conflict_exists(self):
@@ -396,15 +397,14 @@ class TestAutoActivation:
             "safe_to_autofix": False,
             "discovered_at": "2026-03-29T00:00:00Z",
         }
-        rule = _propose_learned_rule_from_finding(
-            finding, "arun-test-001", existing
-        )
+        rule = _propose_learned_rule_from_finding(finding, "arun-test-001", existing)
         assert rule is None  # Conflict rejected
 
 
 # ---------------------------------------------------------------------------
 # Test: persistence / load round-trip
 # ---------------------------------------------------------------------------
+
 
 class TestPersistenceRoundTrip:
     def test_learned_rules_save_load_roundtrip(self, tmp_path: Path):
@@ -455,6 +455,7 @@ class TestPersistenceRoundTrip:
 # Test: full _process_learned_rules_for_run integration
 # ---------------------------------------------------------------------------
 
+
 class TestProcessLearnedRulesForRun:
     def test_repeated_finding_proposes_rule(self):
         finding = {
@@ -471,7 +472,12 @@ class TestProcessLearnedRulesForRun:
             "safe_to_autofix": False,
             "discovered_at": "2026-03-29T00:00:00Z",
         }
-        rules_state = {"version": 1, "rules": [], "active_count": 0, "tentative_count": 0}
+        rules_state = {
+            "version": 1,
+            "rules": [],
+            "active_count": 0,
+            "tentative_count": 0,
+        }
         # Same finding twice to trigger proposal (2 occurrences)
         findings = [dict(finding), dict(finding)]
         findings[1]["finding_id"] = "rf-abc123-001"
@@ -607,7 +613,9 @@ class TestProcessLearnedRulesForRun:
             "discovered_at": "2026-03-29T00:00:00Z",
         }
         # Start with evidence_count = 2 (one more needed for activation)
-        tentative = make_tentative_rule(header="excessively-long-line", evidence_count=2)
+        tentative = make_tentative_rule(
+            header="excessively-long-line", evidence_count=2
+        )
         tentative = LearnedRule(
             rule_id=tentative.rule_id,
             header=tentative.header,
@@ -631,7 +639,9 @@ class TestProcessLearnedRulesForRun:
         filtered, updated_rules, log = _process_learned_rules_for_run(
             findings, rules_state, "arun-test-005"
         )
-        active_rules = [r for r in updated_rules if r.status == LearnedRuleStatus.ACTIVE]
+        active_rules = [
+            r for r in updated_rules if r.status == LearnedRuleStatus.ACTIVE
+        ]
         assert len(active_rules) == 1
         assert any("ACTIVATED" in line for line in log)
 
@@ -639,6 +649,7 @@ class TestProcessLearnedRulesForRun:
 # ---------------------------------------------------------------------------
 # Test: build_learned_rules_payload
 # ---------------------------------------------------------------------------
+
 
 class TestBuildLearnedRulesPayload:
     def test_counts_reflect_status(self):

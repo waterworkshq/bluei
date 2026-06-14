@@ -29,13 +29,15 @@ from bluei.app.models import (
     ReviewMode,
     generate_id,
 )
-from bluei.review.cycle import ReviewCycleEngine, GitHubReviewProvider
+from bluei.review.cycle import ReviewCycleEngine
+from bluei.review.provider import GitHubReviewProvider
 from bluei.app.state import StateManager
 
 
 # ---------------------------------------------------------------------------
 # Isolation helper — unique directory per test to avoid pytest tmp_path sharing
 # ---------------------------------------------------------------------------
+
 
 def _isolated_tmp() -> Path:
     base = Path(f"/tmp/qa_guarded_run_{uuid.uuid4().hex[:8]}")
@@ -83,7 +85,10 @@ STUB_CANDIDATES = [
 # Fixtures
 # ---------------------------------------------------------------------------
 
-def make_engine(tmp: Path, github_overrides: dict = None, review_care_overrides: dict = None):
+
+def make_engine(
+    tmp: Path, github_overrides: dict = None, review_care_overrides: dict = None
+):
     repo_path = tmp / "repo"
     repo_path.mkdir()
     github = {"live_actions": False, "auto_merge": False}
@@ -118,6 +123,7 @@ def make_engine(tmp: Path, github_overrides: dict = None, review_care_overrides:
 # Test: _is_guarded_live_review_enabled — guard reasons
 # ---------------------------------------------------------------------------
 
+
 class TestGuardEnabled:
     """Guard reasons are correctly computed from config."""
 
@@ -130,21 +136,33 @@ class TestGuardEnabled:
 
     def test_guard_true_live_actions_false_returns_live_actions_disabled(self):
         tmp = _isolated_tmp()
-        engine, _, _ = make_engine(tmp, github_overrides={"live_actions": False}, review_care_overrides={"guarded_live_review": True})
+        engine, _, _ = make_engine(
+            tmp,
+            github_overrides={"live_actions": False},
+            review_care_overrides={"guarded_live_review": True},
+        )
         enabled, reason = engine._is_guarded_live_review_enabled()
         assert enabled is False
         assert reason == "guard-failed-live-actions-disabled"
 
     def test_guard_false_live_actions_true_returns_guard_disabled(self):
         tmp = _isolated_tmp()
-        engine, _, _ = make_engine(tmp, github_overrides={"live_actions": True}, review_care_overrides={"guarded_live_review": False})
+        engine, _, _ = make_engine(
+            tmp,
+            github_overrides={"live_actions": True},
+            review_care_overrides={"guarded_live_review": False},
+        )
         enabled, reason = engine._is_guarded_live_review_enabled()
         assert enabled is False
         assert reason == "guard-failed-guarded-live-review-disabled"
 
     def test_both_true_returns_passed(self):
         tmp = _isolated_tmp()
-        engine, _, _ = make_engine(tmp, github_overrides={"live_actions": True}, review_care_overrides={"guarded_live_review": True})
+        engine, _, _ = make_engine(
+            tmp,
+            github_overrides={"live_actions": True},
+            review_care_overrides={"guarded_live_review": True},
+        )
         enabled, reason = engine._is_guarded_live_review_enabled()
         assert enabled is True
         assert reason == "guard-passed"
@@ -153,6 +171,7 @@ class TestGuardEnabled:
 # ---------------------------------------------------------------------------
 # Test: guard blocks backend generation
 # ---------------------------------------------------------------------------
+
 
 class TestGuardBlocksBackend:
     """When guard is disabled, _generate_from_backend is NOT called."""
@@ -180,7 +199,9 @@ class TestGuardBlocksBackend:
 
         result = engine._run_autonomous_review_cycle(dry_run=False)
 
-        assert backend_called is True, "_generate_from_backend SHOULD be called in local-only mode (live_actions=False)"
+        assert backend_called is True, (
+            "_generate_from_backend SHOULD be called in local-only mode (live_actions=False)"
+        )
         assert result.findings_detected == 2
 
     def test_guard_live_actions_true_blocks_backend(self):
@@ -204,7 +225,9 @@ class TestGuardBlocksBackend:
 
         result = engine._run_autonomous_review_cycle(dry_run=False)
 
-        assert backend_called is False, "_generate_from_backend should NOT be called when live_actions=True but guarded_live_review=False"
+        assert backend_called is False, (
+            "_generate_from_backend should NOT be called when live_actions=True but guarded_live_review=False"
+        )
         # But local path still works
         assert result.findings_detected == 2
 
@@ -213,7 +236,10 @@ class TestGuardBlocksBackend:
         engine, repo, state = make_engine(
             tmp,
             github_overrides={"live_actions": True, "owner": "owner", "repo": "repo"},
-            review_care_overrides={"guarded_live_review": True, "review_claude_template": "test"},
+            review_care_overrides={
+                "guarded_live_review": True,
+                "review_claude_template": "test",
+            },
         )
         backend_called = False
 
@@ -227,7 +253,9 @@ class TestGuardBlocksBackend:
 
         result = engine._run_autonomous_review_cycle(dry_run=False)
 
-        assert backend_called is True, "_generate_from_backend SHOULD be called when guard is enabled"
+        assert backend_called is True, (
+            "_generate_from_backend SHOULD be called when guard is enabled"
+        )
         # Local stub still used as fallback
         assert result.findings_detected >= 0
 
@@ -235,6 +263,7 @@ class TestGuardBlocksBackend:
 # ---------------------------------------------------------------------------
 # Test: guard blocks live GitHub publication
 # ---------------------------------------------------------------------------
+
 
 class TestGuardBlocksLivePublish:
     """When guard is disabled, _post_summary_to_github is NOT called."""
@@ -255,7 +284,9 @@ class TestGuardBlocksLivePublish:
         with unittest.mock.patch.object(subprocess, "run", side_effect=track_run):
             result = engine._run_autonomous_review_cycle(dry_run=False)
 
-        assert gh_called is False, "subprocess.run (gh) should NOT be called when guard is disabled"
+        assert gh_called is False, (
+            "subprocess.run (gh) should NOT be called when guard is disabled"
+        )
         # But run completed locally
         assert result.findings_detected == 2
 
@@ -288,6 +319,7 @@ class TestGuardBlocksLivePublish:
 # Test: guard event is emitted in all cases
 # ---------------------------------------------------------------------------
 
+
 class TestGuardEventEmitted:
     """A guard event is always appended to review_events.jsonl."""
 
@@ -300,7 +332,9 @@ class TestGuardEventEmitted:
 
         events_file = state.get_review_events_file(repo.config.name)
         assert events_file.exists()
-        events = [json.loads(line) for line in events_file.read_text().strip().splitlines()]
+        events = [
+            json.loads(line) for line in events_file.read_text().strip().splitlines()
+        ]
         guard_events = [e for e in events if "guard" in e.get("event", "")]
         assert len(guard_events) >= 1
         latest_guard = guard_events[-1]
@@ -312,8 +346,16 @@ class TestGuardEventEmitted:
         tmp = _isolated_tmp()
         engine, repo, state = make_engine(
             tmp,
-            github_overrides={"live_actions": True, "owner": "owner", "repo": "repo", "pr_number": 5},
-            review_care_overrides={"guarded_live_review": True, "review_claude_template": "test"},
+            github_overrides={
+                "live_actions": True,
+                "owner": "owner",
+                "repo": "repo",
+                "pr_number": 5,
+            },
+            review_care_overrides={
+                "guarded_live_review": True,
+                "review_claude_template": "test",
+            },
         )
         engine._generate_local_candidates = lambda: list(STUB_CANDIDATES)
 
@@ -328,7 +370,9 @@ class TestGuardEventEmitted:
             engine._run_autonomous_review_cycle(dry_run=False)
 
         events_file = state.get_review_events_file(repo.config.name)
-        events = [json.loads(line) for line in events_file.read_text().strip().splitlines()]
+        events = [
+            json.loads(line) for line in events_file.read_text().strip().splitlines()
+        ]
         guard_events = [e for e in events if "guard" in e.get("event", "")]
         assert len(guard_events) >= 1
         latest_guard = guard_events[-1]
@@ -340,6 +384,7 @@ class TestGuardEventEmitted:
 # ---------------------------------------------------------------------------
 # Test: state artifacts capture guard decision
 # ---------------------------------------------------------------------------
+
 
 class TestGuardDecisionInArtifacts:
     """ReviewRun and publish-state capture the guard decision."""
@@ -363,8 +408,16 @@ class TestGuardDecisionInArtifacts:
         tmp = _isolated_tmp()
         engine, repo, state = make_engine(
             tmp,
-            github_overrides={"live_actions": True, "owner": "owner", "repo": "repo", "pr_number": 5},
-            review_care_overrides={"guarded_live_review": True, "review_claude_template": "test"},
+            github_overrides={
+                "live_actions": True,
+                "owner": "owner",
+                "repo": "repo",
+                "pr_number": 5,
+            },
+            review_care_overrides={
+                "guarded_live_review": True,
+                "review_claude_template": "test",
+            },
         )
         engine._generate_local_candidates = lambda: list(STUB_CANDIDATES)
 
@@ -397,13 +450,16 @@ class TestGuardDecisionInArtifacts:
         run_entry = pstate["runs"][run_id]
         # targeted_pr_number may or may not be present depending on gh config
         assert "guard_enabled" in run_entry or run_entry.get("status") in {
-            "published", "failed", "skipped"
+            "published",
+            "failed",
+            "skipped",
         }
 
 
 # ---------------------------------------------------------------------------
 # Test: observation mode behavior is unchanged
 # ---------------------------------------------------------------------------
+
 
 class TestObservationModeUnchanged:
     """Observation mode still goes through its own path (not autonomous-review)."""
@@ -441,7 +497,10 @@ class TestObservationModeUnchanged:
         events_file = state.get_review_events_file(repo.config.name)
         guard_events = []
         if events_file.exists():
-            events = [json.loads(line) for line in events_file.read_text().strip().splitlines()]
+            events = [
+                json.loads(line)
+                for line in events_file.read_text().strip().splitlines()
+            ]
             guard_events = [e for e in events if "guard" in e.get("event", "")]
         # Observation mode goes through a different path, no autonomous-review guard events
         assert len(guard_events) == 0
@@ -450,6 +509,7 @@ class TestObservationModeUnchanged:
 # ---------------------------------------------------------------------------
 # Test: local-only path still works end-to-end when guard disabled
 # ---------------------------------------------------------------------------
+
 
 class TestLocalOnlyPathUnchanged:
     """When guard is disabled, full local pipeline still runs (state, artifacts, events)."""
@@ -509,6 +569,7 @@ class TestLocalOnlyPathUnchanged:
 # Test: dry_run returns immediately without guard evaluation
 # ---------------------------------------------------------------------------
 
+
 class TestDryRunSkipsGuard:
     """dry_run=True returns before guard evaluation (no side effects)."""
 
@@ -523,6 +584,7 @@ class TestDryRunSkipsGuard:
         original_guard = engine._is_guarded_live_review_enabled
 
         guard_called = False
+
         def track_guard():
             nonlocal guard_called
             guard_called = True
@@ -540,4 +602,5 @@ class TestDryRunSkipsGuard:
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])

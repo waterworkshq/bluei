@@ -19,7 +19,9 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from bluei.app.models import Repo, RepoConfig
-from bluei.review.cycle import GitHubReviewProvider, ReviewCycleEngine, ReviewCycleResult
+from bluei.review.cycle import ReviewCycleEngine
+from bluei.review.provider import GitHubReviewProvider
+from bluei.review.types import ReviewCycleResult
 from bluei.app.state import StateManager
 
 
@@ -565,7 +567,6 @@ def test_lifecycle_clean_pr_starts_pending_review_before_review_artifact(tmp_pat
     assert review_record["last_snapshot"]["actionable_comment_count"] == 0
 
 
-
 def test_review_cycle_posts_pr_comment_then_records_pending_review_first(tmp_path):
     repo = make_repo(tmp_path)
     repo.config.github["live_actions"] = True
@@ -628,13 +629,12 @@ def test_review_cycle_posts_pr_comment_then_records_pending_review_first(tmp_pat
 
     active_prs = state.load_active_prs(repo.config.name)
     assert active_prs["prs"]["77"]["status"] == "pending_review"
-    assert active_prs["prs"]["77"]["review_comment"]["url"].endswith(
-        "#issuecomment-1"
-    )
+    assert active_prs["prs"]["77"]["review_comment"]["url"].endswith("#issuecomment-1")
 
 
-
-def test_review_cycle_marks_unstable_snapshot_merge_ready_when_artifact_exists(tmp_path):
+def test_review_cycle_marks_unstable_snapshot_merge_ready_when_artifact_exists(
+    tmp_path,
+):
     repo = make_repo(tmp_path)
     repo.config.github["live_actions"] = True
     state = StateManager(tmp_path / "repos")
@@ -711,11 +711,13 @@ def test_review_cycle_marks_unstable_snapshot_merge_ready_when_artifact_exists(t
     active_prs = state.load_active_prs(repo.config.name)
     assert active_prs["prs"]["77"]["status"] == "merge_ready"
     assert active_prs["prs"]["77"]["merge_readiness"]["state"] == "ready_for_merge"
-    assert "pending fresh merge triage" in active_prs["prs"]["77"]["merge_readiness"]["reason"]
+    assert (
+        "pending fresh merge triage"
+        in active_prs["prs"]["77"]["merge_readiness"]["reason"]
+    )
 
     review_state = state.load_review_state(repo.config.name)
     assert review_state["prs"]["77"]["last_action"] == "merge_ready"
-
 
 
 def test_clean_pr_becomes_merge_ready_after_pending_review_artifact_exists(tmp_path):
@@ -809,7 +811,6 @@ def test_clean_pr_becomes_merge_ready_after_pending_review_artifact_exists(tmp_p
 
     review_state = state.load_review_state(repo.config.name)
     assert review_state["prs"]["77"]["last_action"] == "merge_ready"
-
 
 
 def test_review_cycle_republishes_when_feedback_state_changes(tmp_path):
@@ -906,5 +907,8 @@ def test_review_cycle_republishes_when_feedback_state_changes(tmp_path):
 
     review_state = state.load_review_state(repo.config.name)
     review_record = review_state["prs"]["77"]
-    assert review_record["last_review_comment_key"] == "feedback-77:review_feedback_detected"
+    assert (
+        review_record["last_review_comment_key"]
+        == "feedback-77:review_feedback_detected"
+    )
     assert review_record["last_review_comment_url"].endswith("#issuecomment-2")

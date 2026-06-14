@@ -15,7 +15,8 @@ from unittest.mock import MagicMock, call, patch
 
 from bluei.app.models import Repo, RepoConfig
 from bluei.app.state import StateManager
-from bluei.review.cycle import GitHubReviewProvider, ReviewCycleEngine, GRAPHQL_QUERY
+from bluei.review.cycle import ReviewCycleEngine
+from bluei.review.provider import GitHubReviewProvider, GRAPHQL_QUERY
 
 
 def _make_repo(tmp_path: Path, **overrides) -> Repo:

@@ -31,15 +31,15 @@ from bluei.app.models import (
     FeedbackSource,
     generate_id,
 )
-from bluei.review.cycle import (
+from bluei.review.cycle import ReviewCycleEngine
+from bluei.review.provider import GitHubReviewProvider
+from bluei.review.feedback import (
     normalize_feedback,
     record_feedback,
     inject_feedback_for_autonomous_review,
     _flush_injected_feedback,
     _classify_text_sentiment,
     _normalize_reaction_signal,
-    ReviewCycleEngine,
-    GitHubReviewProvider,
 )
 from bluei.app.state import StateManager
 
@@ -47,6 +47,7 @@ from bluei.app.state import StateManager
 # ---------------------------------------------------------------------------
 # Isolation helper
 # ---------------------------------------------------------------------------
+
 
 def _isolated_tmp() -> Path:
     base = Path(f"/tmp/qa_feedback_{uuid.uuid4().hex[:8]}")
@@ -59,6 +60,7 @@ def _isolated_tmp() -> Path:
 # ---------------------------------------------------------------------------
 # Test: normalize_feedback — comment input
 # ---------------------------------------------------------------------------
+
 
 class TestNormalizeComment:
     """Comment inputs are normalized to FeedbackEvent-compatible dicts."""
@@ -127,6 +129,7 @@ class TestNormalizeComment:
 # Test: normalize_feedback — reply input
 # ---------------------------------------------------------------------------
 
+
 class TestNormalizeReply:
     """Reply inputs are treated as conceptual unless unambiguously positive."""
 
@@ -152,6 +155,7 @@ class TestNormalizeReply:
 # ---------------------------------------------------------------------------
 # Test: normalize_feedback — review_state_change input
 # ---------------------------------------------------------------------------
+
 
 class TestNormalizeReviewStateChange:
     """Review state changes normalize to definitive sentiments."""
@@ -190,6 +194,7 @@ class TestNormalizeReviewStateChange:
 # ---------------------------------------------------------------------------
 # Test: normalize_feedback — reaction input (conservative handling)
 # ---------------------------------------------------------------------------
+
 
 class TestNormalizeReaction:
     """Reactions are treated conservatively — only unambiguous ones carry signal."""
@@ -247,6 +252,7 @@ class TestNormalizeReaction:
 # Test: normalize_feedback — invalid input class raises ValueError
 # ---------------------------------------------------------------------------
 
+
 class TestNormalizeFeedbackInvalidClass:
     def test_unknown_class_raises(self):
         raw = {"comment": "hello"}
@@ -261,6 +267,7 @@ class TestNormalizeFeedbackInvalidClass:
 # ---------------------------------------------------------------------------
 # Test: record_feedback — persistence to feedback_events.jsonl
 # ---------------------------------------------------------------------------
+
 
 def make_engine(tmp_path: Path):
     repo_path = tmp_path / "repo"
@@ -277,6 +284,7 @@ def make_engine(tmp_path: Path):
     state._get_state_dir(repo.config.name).mkdir(parents=True, exist_ok=True)
 
     from unittest.mock import MagicMock
+
     engine = ReviewCycleEngine.__new__(ReviewCycleEngine)
     engine.repo = repo
     engine.state = state
@@ -411,6 +419,7 @@ class TestRecordFeedbackPersistence:
 # Test: Finding-bound vs repo/pr-scoped feedback
 # ---------------------------------------------------------------------------
 
+
 class TestFeedbackBinding:
     """Feedback is correctly bound to findings or scoped to repo/PR."""
 
@@ -473,6 +482,7 @@ class TestFeedbackBinding:
 # ---------------------------------------------------------------------------
 # Test: autonomous-review local path with injected feedback
 # ---------------------------------------------------------------------------
+
 
 class TestAutonomousReviewFeedbackInjection:
     """The autonomous-review cycle can record injected feedback without affecting observation mode."""
@@ -668,6 +678,7 @@ class TestAutonomousReviewFeedbackInjection:
 # Test: conservative reaction handling edge cases
 # ---------------------------------------------------------------------------
 
+
 class TestConservativeReactionHandling:
     """Reactions default to ambiguous/conceptual unless trivially clear."""
 
@@ -690,7 +701,9 @@ class TestConservativeReactionHandling:
     def test_ambiguous_reactions_are_conceptual(self):
         for r in self.AMBIGUOUS_REACTIONS:
             sentiment, was_ambiguous = _normalize_reaction_signal(r)
-            assert sentiment == FeedbackSentiment.CONCEPTUAL, f"{r} should be conceptual"
+            assert sentiment == FeedbackSentiment.CONCEPTUAL, (
+                f"{r} should be conceptual"
+            )
             assert was_ambiguous is True
 
     def test_totally_unknown_reaction_is_conceptual(self):
@@ -702,6 +715,7 @@ class TestConservativeReactionHandling:
 # ---------------------------------------------------------------------------
 # Test: round-trip through FeedbackEvent model
 # ---------------------------------------------------------------------------
+
 
 class TestFeedbackEventRoundTrip:
     """Normalized events can be loaded back as FeedbackEvent instances."""
@@ -748,4 +762,5 @@ class TestFeedbackEventRoundTrip:
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])

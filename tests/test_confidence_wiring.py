@@ -10,7 +10,7 @@ from bluei.engine.pattern_store import (
     FixPatternStore,
 )
 from bluei.app.models import FeedbackSentiment
-from bluei.review.cycle import record_feedback
+from bluei.review.feedback import record_feedback
 from bluei.app.state import StateManager
 
 

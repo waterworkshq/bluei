@@ -41,11 +41,9 @@ from bluei.app.models import (
     ReviewMode,
     generate_id,
 )
-from bluei.review.cycle import (
-    ReviewCycleEngine,
-    GitHubReviewProvider,
-    normalize_candidate,
-)
+from bluei.review.cycle import ReviewCycleEngine
+from bluei.review.provider import GitHubReviewProvider
+from bluei.review.normalization import normalize_candidate
 from bluei.app.state import StateManager
 
 

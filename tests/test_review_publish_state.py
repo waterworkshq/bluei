@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from bluei.review.models import PublishStatus
-from bluei.review.cycle import (
+from bluei.review.publisher import (
     reconcile_publish_state,
     build_publish_entry,
     compute_run_publish_status,
@@ -33,7 +33,10 @@ PRIOR_PUBLISH_STATE_BASE = {
 
 def make_candidate(finding_id: str, fingerprint: str = "") -> dict:
     """Minimal candidate finding dict for reconciliation."""
-    return {"finding_id": finding_id, "finding_fingerprint": fingerprint or f"fp-{finding_id}"}
+    return {
+        "finding_id": finding_id,
+        "finding_fingerprint": fingerprint or f"fp-{finding_id}",
+    }
 
 
 def make_prior_entry(
@@ -57,6 +60,7 @@ def make_prior_entry(
 # ---------------------------------------------------------------------------
 # ReconciliationResult dataclass
 # ---------------------------------------------------------------------------
+
 
 class TestReconciliationResultDefaults:
     def test_empty_result_has_empty_lists(self):
@@ -90,6 +94,7 @@ class TestReconciliationResultDefaults:
 # PublishStatus enum
 # ---------------------------------------------------------------------------
 
+
 class TestPublishStatusValues:
     def test_all_expected_values_present(self):
         expected = {"absent", "pending", "published", "failed", "skipped", "superseded"}
@@ -120,6 +125,7 @@ class TestPublishStatusValues:
 # build_publish_entry
 # ---------------------------------------------------------------------------
 
+
 class TestBuildPublishEntry:
     def test_required_fields(self):
         entry = build_publish_entry("rf-001", PublishStatus.PENDING)
@@ -136,7 +142,9 @@ class TestBuildPublishEntry:
 
     def test_optional_fingerprint(self):
         fp = "abc123" + "0" * 56
-        entry = build_publish_entry("rf-001", PublishStatus.PENDING, finding_fingerprint=fp)
+        entry = build_publish_entry(
+            "rf-001", PublishStatus.PENDING, finding_fingerprint=fp
+        )
         assert entry["finding_fingerprint"] == fp
 
     def test_all_options_together(self):
@@ -158,64 +166,105 @@ class TestBuildPublishEntry:
 # compute_run_publish_status
 # ---------------------------------------------------------------------------
 
+
 class TestComputeRunPublishStatus:
     def test_empty_is_pending(self):
         assert compute_run_publish_status([]) == PublishStatus.PENDING
 
     def test_all_published_is_published(self):
-        assert compute_run_publish_status([
-            PublishStatus.PUBLISHED,
-            PublishStatus.PUBLISHED,
-        ]) == PublishStatus.PUBLISHED
+        assert (
+            compute_run_publish_status(
+                [
+                    PublishStatus.PUBLISHED,
+                    PublishStatus.PUBLISHED,
+                ]
+            )
+            == PublishStatus.PUBLISHED
+        )
 
     def test_any_failed_wins(self):
-        assert compute_run_publish_status([
-            PublishStatus.PUBLISHED,
-            PublishStatus.FAILED,
-            PublishStatus.PUBLISHED,
-        ]) == PublishStatus.FAILED
+        assert (
+            compute_run_publish_status(
+                [
+                    PublishStatus.PUBLISHED,
+                    PublishStatus.FAILED,
+                    PublishStatus.PUBLISHED,
+                ]
+            )
+            == PublishStatus.FAILED
+        )
 
     def test_pending_wins_over_published(self):
-        assert compute_run_publish_status([
-            PublishStatus.PUBLISHED,
-            PublishStatus.PENDING,
-        ]) == PublishStatus.PENDING
+        assert (
+            compute_run_publish_status(
+                [
+                    PublishStatus.PUBLISHED,
+                    PublishStatus.PENDING,
+                ]
+            )
+            == PublishStatus.PENDING
+        )
 
     def test_skipped_wins_over_published(self):
-        assert compute_run_publish_status([
-            PublishStatus.PUBLISHED,
-            PublishStatus.SKIPPED,
-        ]) == PublishStatus.PENDING  # pending-like rollup
+        assert (
+            compute_run_publish_status(
+                [
+                    PublishStatus.PUBLISHED,
+                    PublishStatus.SKIPPED,
+                ]
+            )
+            == PublishStatus.PENDING
+        )  # pending-like rollup
 
     def test_superseded_wins_over_published(self):
-        assert compute_run_publish_status([
-            PublishStatus.PUBLISHED,
-            PublishStatus.SUPERSEDED,
-        ]) == PublishStatus.PENDING  # pending-like rollup
+        assert (
+            compute_run_publish_status(
+                [
+                    PublishStatus.PUBLISHED,
+                    PublishStatus.SUPERSEDED,
+                ]
+            )
+            == PublishStatus.PENDING
+        )  # pending-like rollup
 
     def test_mixed_all_published(self):
-        assert compute_run_publish_status([
-            PublishStatus.PUBLISHED,
-            PublishStatus.PUBLISHED,
-        ]) == PublishStatus.PUBLISHED
+        assert (
+            compute_run_publish_status(
+                [
+                    PublishStatus.PUBLISHED,
+                    PublishStatus.PUBLISHED,
+                ]
+            )
+            == PublishStatus.PUBLISHED
+        )
 
     def test_failed_alone(self):
-        assert compute_run_publish_status([PublishStatus.FAILED]) == PublishStatus.FAILED
+        assert (
+            compute_run_publish_status([PublishStatus.FAILED]) == PublishStatus.FAILED
+        )
 
     def test_absent_alone(self):
-        assert compute_run_publish_status([PublishStatus.ABSENT]) == PublishStatus.ABSENT
+        assert (
+            compute_run_publish_status([PublishStatus.ABSENT]) == PublishStatus.ABSENT
+        )
 
     def test_absent_and_published(self):
         # Absent is "resolved" so rollup follows published
-        assert compute_run_publish_status([
-            PublishStatus.PUBLISHED,
-            PublishStatus.ABSENT,
-        ]) == PublishStatus.PUBLISHED
+        assert (
+            compute_run_publish_status(
+                [
+                    PublishStatus.PUBLISHED,
+                    PublishStatus.ABSENT,
+                ]
+            )
+            == PublishStatus.PUBLISHED
+        )
 
 
 # ---------------------------------------------------------------------------
 # build_run_publish_entry
 # ---------------------------------------------------------------------------
+
 
 class TestBuildRunPublishEntry:
     def test_required_fields(self):
@@ -265,6 +314,7 @@ class TestBuildRunPublishEntry:
 # reconcile_publish_state — core scenarios
 # ---------------------------------------------------------------------------
 
+
 class TestReconcilePublishStateEmptyPrior:
     """All current candidates are new when prior state is empty."""
 
@@ -294,9 +344,12 @@ class TestReconcilePublishStatePublishedFindings:
 
     def test_same_fingerprint_stays_published(self):
         fp = "abc123" + "0" * 56
-        prior = dict(PRIOR_PUBLISH_STATE_BASE, findings={
-            "rf-001": make_prior_entry("published", fingerprint=fp),
-        })
+        prior = dict(
+            PRIOR_PUBLISH_STATE_BASE,
+            findings={
+                "rf-001": make_prior_entry("published", fingerprint=fp),
+            },
+        )
         candidates = [make_candidate("rf-001", fingerprint=fp)]
         result = reconcile_publish_state(candidates, prior)
 
@@ -307,9 +360,12 @@ class TestReconcilePublishStatePublishedFindings:
     def test_different_fingerprint_is_superseded(self):
         prior_fp = "aaa111" + "0" * 56
         current_fp = "bbb222" + "0" * 56
-        prior = dict(PRIOR_PUBLISH_STATE_BASE, findings={
-            "rf-001": make_prior_entry("published", fingerprint=prior_fp),
-        })
+        prior = dict(
+            PRIOR_PUBLISH_STATE_BASE,
+            findings={
+                "rf-001": make_prior_entry("published", fingerprint=prior_fp),
+            },
+        )
         candidates = [make_candidate("rf-001", fingerprint=current_fp)]
         result = reconcile_publish_state(candidates, prior)
 
@@ -318,9 +374,12 @@ class TestReconcilePublishStatePublishedFindings:
         assert result.new_findings == []
 
     def test_prior_pending_is_pending(self):
-        prior = dict(PRIOR_PUBLISH_STATE_BASE, findings={
-            "rf-001": make_prior_entry("pending"),
-        })
+        prior = dict(
+            PRIOR_PUBLISH_STATE_BASE,
+            findings={
+                "rf-001": make_prior_entry("pending"),
+            },
+        )
         candidates = [make_candidate("rf-001")]
         result = reconcile_publish_state(candidates, prior)
 
@@ -329,27 +388,36 @@ class TestReconcilePublishStatePublishedFindings:
         assert result.already_published == []
 
     def test_prior_failed_is_pending(self):
-        prior = dict(PRIOR_PUBLISH_STATE_BASE, findings={
-            "rf-001": make_prior_entry("failed", error="rate limit"),
-        })
+        prior = dict(
+            PRIOR_PUBLISH_STATE_BASE,
+            findings={
+                "rf-001": make_prior_entry("failed", error="rate limit"),
+            },
+        )
         candidates = [make_candidate("rf-001")]
         result = reconcile_publish_state(candidates, prior)
 
         assert result.pending_findings == ["rf-001"]
 
     def test_prior_skipped_is_pending(self):
-        prior = dict(PRIOR_PUBLISH_STATE_BASE, findings={
-            "rf-001": make_prior_entry("skipped"),
-        })
+        prior = dict(
+            PRIOR_PUBLISH_STATE_BASE,
+            findings={
+                "rf-001": make_prior_entry("skipped"),
+            },
+        )
         candidates = [make_candidate("rf-001")]
         result = reconcile_publish_state(candidates, prior)
 
         assert result.pending_findings == ["rf-001"]
 
     def test_prior_superseded_is_pending(self):
-        prior = dict(PRIOR_PUBLISH_STATE_BASE, findings={
-            "rf-001": make_prior_entry("superseded"),
-        })
+        prior = dict(
+            PRIOR_PUBLISH_STATE_BASE,
+            findings={
+                "rf-001": make_prior_entry("superseded"),
+            },
+        )
         candidates = [make_candidate("rf-001")]
         result = reconcile_publish_state(candidates, prior)
 
@@ -361,9 +429,12 @@ class TestReconcilePublishStateAbsent:
 
     def test_published_absent_from_current_is_absent(self):
         fp = "abc123" + "0" * 56
-        prior = dict(PRIOR_PUBLISH_STATE_BASE, findings={
-            "rf-001": make_prior_entry("published", fingerprint=fp),
-        })
+        prior = dict(
+            PRIOR_PUBLISH_STATE_BASE,
+            findings={
+                "rf-001": make_prior_entry("published", fingerprint=fp),
+            },
+        )
         # No candidates match rf-001
         candidates = [make_candidate("rf-002")]
         result = reconcile_publish_state(candidates, prior)
@@ -372,9 +443,12 @@ class TestReconcilePublishStateAbsent:
         assert result.all_prior_findings == ["rf-001"]
 
     def test_pending_absent_from_current_is_absent(self):
-        prior = dict(PRIOR_PUBLISH_STATE_BASE, findings={
-            "rf-001": make_prior_entry("pending"),
-        })
+        prior = dict(
+            PRIOR_PUBLISH_STATE_BASE,
+            findings={
+                "rf-001": make_prior_entry("pending"),
+            },
+        )
         candidates = [make_candidate("rf-002")]
         result = reconcile_publish_state(candidates, prior)
 
@@ -383,11 +457,14 @@ class TestReconcilePublishStateAbsent:
 
     def test_multiple_absent_findings(self):
         fp = "abc123" + "0" * 56
-        prior = dict(PRIOR_PUBLISH_STATE_BASE, findings={
-            "rf-001": make_prior_entry(PublishStatus.PUBLISHED, fingerprint=fp),
-            "rf-002": make_prior_entry(PublishStatus.PUBLISHED, fingerprint=fp),
-            "rf-003": make_prior_entry(PublishStatus.PENDING),
-        })
+        prior = dict(
+            PRIOR_PUBLISH_STATE_BASE,
+            findings={
+                "rf-001": make_prior_entry(PublishStatus.PUBLISHED, fingerprint=fp),
+                "rf-002": make_prior_entry(PublishStatus.PUBLISHED, fingerprint=fp),
+                "rf-003": make_prior_entry(PublishStatus.PENDING),
+            },
+        )
         # Only rf-002 appears in current candidates — must use SAME fingerprint
         candidates = [make_candidate("rf-002", fingerprint=fp)]
         result = reconcile_publish_state(candidates, prior)
@@ -403,17 +480,30 @@ class TestReconcilePublishStateMixed:
         fp_a = "aaa111" + "0" * 56
         fp_b = "bbb222" + "0" * 56
         fp_c = "ccc333" + "0" * 56
-        prior = dict(PRIOR_PUBLISH_STATE_BASE, findings={
-            "rf-001": make_prior_entry(PublishStatus.PUBLISHED, fingerprint=fp_a),   # same fp → published
-            "rf-002": make_prior_entry(PublishStatus.PUBLISHED, fingerprint=fp_b),  # diff fp → superseded
-            "rf-003": make_prior_entry(PublishStatus.PENDING),                     # pending; absent from current → absent
-            "rf-004": make_prior_entry(PublishStatus.PUBLISHED, fingerprint=fp_c),  # absent from current → absent
-        })
+        prior = dict(
+            PRIOR_PUBLISH_STATE_BASE,
+            findings={
+                "rf-001": make_prior_entry(
+                    PublishStatus.PUBLISHED, fingerprint=fp_a
+                ),  # same fp → published
+                "rf-002": make_prior_entry(
+                    PublishStatus.PUBLISHED, fingerprint=fp_b
+                ),  # diff fp → superseded
+                "rf-003": make_prior_entry(
+                    PublishStatus.PENDING
+                ),  # pending; absent from current → absent
+                "rf-004": make_prior_entry(
+                    PublishStatus.PUBLISHED, fingerprint=fp_c
+                ),  # absent from current → absent
+            },
+        )
         candidates = [
-            make_candidate("rf-001", fingerprint=fp_a),        # re-confirmed published
-            make_candidate("rf-002", fingerprint="new-fp-bbb222" + "0" * 51),  # superseded (diff fp)
-            make_candidate("rf-new-1"),                        # brand new
-            make_candidate("rf-new-2"),                        # brand new
+            make_candidate("rf-001", fingerprint=fp_a),  # re-confirmed published
+            make_candidate(
+                "rf-002", fingerprint="new-fp-bbb222" + "0" * 51
+            ),  # superseded (diff fp)
+            make_candidate("rf-new-1"),  # brand new
+            make_candidate("rf-new-2"),  # brand new
         ]
         result = reconcile_publish_state(candidates, prior)
 
@@ -423,7 +513,12 @@ class TestReconcilePublishStateMixed:
         # rf-003: prior=pending, absent from current → absent (not pending, since it didn't appear)
         assert result.pending_findings == []
         assert result.absent_findings == ["rf-003", "rf-004"]
-        assert set(result.all_prior_findings) == {"rf-001", "rf-002", "rf-003", "rf-004"}
+        assert set(result.all_prior_findings) == {
+            "rf-001",
+            "rf-002",
+            "rf-003",
+            "rf-004",
+        }
 
 
 class TestReconcilePublishStateIdempotency:
@@ -431,9 +526,12 @@ class TestReconcilePublishStateIdempotency:
 
     def test_rerun_with_same_candidates_is_idempotent(self):
         fp = "abc123" + "0" * 56
-        prior_v1 = dict(PRIOR_PUBLISH_STATE_BASE, findings={
-            "rf-001": make_prior_entry(PublishStatus.PENDING),
-        })
+        prior_v1 = dict(
+            PRIOR_PUBLISH_STATE_BASE,
+            findings={
+                "rf-001": make_prior_entry(PublishStatus.PENDING),
+            },
+        )
         candidates = [
             make_candidate("rf-001", fingerprint=fp),
             make_candidate("rf-002"),
@@ -445,10 +543,13 @@ class TestReconcilePublishStateIdempotency:
         assert r1.pending_findings == ["rf-001"]
 
         # Second reconciliation against updated prior (rf-001 now published)
-        prior_v2 = dict(PRIOR_PUBLISH_STATE_BASE, findings={
-            "rf-001": make_prior_entry(PublishStatus.PUBLISHED, fingerprint=fp),
-            "rf-002": make_prior_entry(PublishStatus.PENDING),
-        })
+        prior_v2 = dict(
+            PRIOR_PUBLISH_STATE_BASE,
+            findings={
+                "rf-001": make_prior_entry(PublishStatus.PUBLISHED, fingerprint=fp),
+                "rf-002": make_prior_entry(PublishStatus.PENDING),
+            },
+        )
         r2 = reconcile_publish_state(candidates, prior_v2)
         # rf-001: was published, same fp → already_published
         # rf-002: was pending (not new in v1), still pending → pending_findings
@@ -459,9 +560,12 @@ class TestReconcilePublishStateIdempotency:
 
     def test_adding_new_findings_on_rerun(self):
         fp = "abc123" + "0" * 56
-        prior_v1 = dict(PRIOR_PUBLISH_STATE_BASE, findings={
-            "rf-001": make_prior_entry("published", fingerprint=fp),
-        })
+        prior_v1 = dict(
+            PRIOR_PUBLISH_STATE_BASE,
+            findings={
+                "rf-001": make_prior_entry("published", fingerprint=fp),
+            },
+        )
         candidates_v1 = [make_candidate("rf-001", fingerprint=fp)]
         r1 = reconcile_publish_state(candidates_v1, prior_v1)
         assert r1.already_published == ["rf-001"]
@@ -472,9 +576,12 @@ class TestReconcilePublishStateIdempotency:
             make_candidate("rf-001", fingerprint=fp),
             make_candidate("rf-002"),
         ]
-        prior_v2 = dict(PRIOR_PUBLISH_STATE_BASE, findings={
-            "rf-001": make_prior_entry("published", fingerprint=fp),
-        })
+        prior_v2 = dict(
+            PRIOR_PUBLISH_STATE_BASE,
+            findings={
+                "rf-001": make_prior_entry("published", fingerprint=fp),
+            },
+        )
         r2 = reconcile_publish_state(candidates_v2, prior_v2)
         assert r2.already_published == ["rf-001"]
         assert r2.new_findings == ["rf-002"]
@@ -492,9 +599,12 @@ class TestReconcilePublishStateEdgeCases:
 
     def test_prior_entry_missing_status_key(self):
         """Prior entries without explicit status default to pending."""
-        prior = dict(PRIOR_PUBLISH_STATE_BASE, findings={
-            "rf-001": {"run_id": "run-x"},  # no 'status' key
-        })
+        prior = dict(
+            PRIOR_PUBLISH_STATE_BASE,
+            findings={
+                "rf-001": {"run_id": "run-x"},  # no 'status' key
+            },
+        )
         candidates = [make_candidate("rf-001")]
         result = reconcile_publish_state(candidates, prior)
         assert result.pending_findings == ["rf-001"]
@@ -502,10 +612,13 @@ class TestReconcilePublishStateEdgeCases:
     def test_empty_candidates_with_prior_state(self):
         """All prior findings become absent when no current candidates."""
         fp = "abc123" + "0" * 56
-        prior = dict(PRIOR_PUBLISH_STATE_BASE, findings={
-            "rf-001": make_prior_entry("published", fingerprint=fp),
-            "rf-002": make_prior_entry("pending"),
-        })
+        prior = dict(
+            PRIOR_PUBLISH_STATE_BASE,
+            findings={
+                "rf-001": make_prior_entry("published", fingerprint=fp),
+                "rf-002": make_prior_entry("pending"),
+            },
+        )
         result = reconcile_publish_state([], prior)
         assert set(result.absent_findings) == {"rf-001", "rf-002"}
         assert result.already_published == []
@@ -513,11 +626,14 @@ class TestReconcilePublishStateEdgeCases:
 
     def test_prior_finding_ids_are_sorted(self):
         fp = "abc123" + "0" * 56
-        prior = dict(PRIOR_PUBLISH_STATE_BASE, findings={
-            "rf-c": make_prior_entry("published", fingerprint=fp),
-            "rf-a": make_prior_entry("published", fingerprint=fp),
-            "rf-b": make_prior_entry("published", fingerprint=fp),
-        })
+        prior = dict(
+            PRIOR_PUBLISH_STATE_BASE,
+            findings={
+                "rf-c": make_prior_entry("published", fingerprint=fp),
+                "rf-a": make_prior_entry("published", fingerprint=fp),
+                "rf-b": make_prior_entry("published", fingerprint=fp),
+            },
+        )
         candidates = []
         result = reconcile_publish_state(candidates, prior)
         assert result.absent_findings == ["rf-a", "rf-b", "rf-c"]
@@ -526,6 +642,7 @@ class TestReconcilePublishStateEdgeCases:
 # ---------------------------------------------------------------------------
 # build_review_summary_comment — structural + determinism tests
 # ---------------------------------------------------------------------------
+
 
 def _minimal_reconciles() -> ReconciliationResult:
     """Shared minimal reconciliation for comment tests."""
@@ -709,4 +826,5 @@ class TestBuildReviewSummaryComment:
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])

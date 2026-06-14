@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # does not collide with pytest's class-level tmp_path fixture.
 # ---------------------------------------------------------------------------
 
+
 def _isolated_tmp() -> Path:
     """Return a unique isolated temp directory, removing any pre-existing one."""
     base = Path(f"/tmp/qa_test_autonomous_{uuid.uuid4().hex[:8]}")
@@ -28,6 +29,7 @@ def _isolated_tmp() -> Path:
         shutil.rmtree(base)
     base.mkdir(parents=True)
     return base
+
 
 from bluei.review.models import (
     FindingSource,
@@ -41,11 +43,13 @@ from bluei.app.models import (
     ReviewMode,
     generate_id,
 )
-from bluei.review.cycle import (
-    ReviewCycleEngine,
-    GitHubReviewProvider,
+from bluei.review.cycle import ReviewCycleEngine
+from bluei.review.provider import GitHubReviewProvider
+from bluei.review.normalization import (
     normalize_candidate,
     assign_finding_identity,
+)
+from bluei.review.publisher import (
     build_review_summary_comment,
     ReconciliationResult,
     build_publish_entry,
@@ -57,6 +61,7 @@ from bluei.app.state import StateManager
 # ---------------------------------------------------------------------------
 # Fixtures / shared data
 # ---------------------------------------------------------------------------
+
 
 def make_repo(tmp_path: Path) -> Repo:
     repo_path = tmp_path / "repo"
@@ -149,6 +154,7 @@ STUB_CANDIDATES = [
 # Test: result counters are populated after non-dry-run
 # ---------------------------------------------------------------------------
 
+
 class TestAutonomousReviewResultCounters:
     def test_dry_run_returns_zero_counters(self):
         """dry_run=True returns immediately without processing candidates."""
@@ -180,8 +186,8 @@ class TestAutonomousReviewResultCounters:
         # 3 unique findings (one duplicate should be deduped)
         assert result.findings_detected == 3
         assert result.findings_published >= 1  # at least the eligible one published
-        assert result.findings_skipped == 0     # all stub candidates are valid/eligible
-        assert result.findings_absent == 0     # first run, nothing absent
+        assert result.findings_skipped == 0  # all stub candidates are valid/eligible
+        assert result.findings_absent == 0  # first run, nothing absent
 
     def test_empty_candidates_returns_zero_counters(self):
         tmp = _isolated_tmp()
@@ -200,6 +206,7 @@ class TestAutonomousReviewResultCounters:
 # ---------------------------------------------------------------------------
 # Test: ReviewRun artifact is persisted
 # ---------------------------------------------------------------------------
+
 
 class TestReviewRunArtifact:
     def test_review_run_file_is_created(self):
@@ -246,6 +253,7 @@ class TestReviewRunArtifact:
 # Test: findings are persisted
 # ---------------------------------------------------------------------------
 
+
 class TestFindingsPersistence:
     def test_findings_jsonl_contains_deduped_findings(self):
         tmp = _isolated_tmp()
@@ -287,6 +295,7 @@ class TestFindingsPersistence:
 # Test: publish state is reconciled and persisted
 # ---------------------------------------------------------------------------
 
+
 class TestPublishStatePersistence:
     """Tests that verify state is correctly persisted between cycle runs.
 
@@ -298,6 +307,7 @@ class TestPublishStatePersistence:
     def _isolated(self, key: str):
         """Create a unique directory guaranteed not to collide with other tests."""
         import shutil, uuid
+
         base = Path(f"/tmp/qa_persist_{key}_{uuid.uuid4().hex[:8]}")
         if base.exists():
             shutil.rmtree(base)
@@ -347,6 +357,7 @@ class TestPublishStatePersistence:
 # Test: review events are appended
 # ---------------------------------------------------------------------------
 
+
 class TestReviewEvents:
     def test_completion_event_appended(self):
         tmp = _isolated_tmp()
@@ -362,7 +373,11 @@ class TestReviewEvents:
         assert events_file.exists()
         lines = events_file.read_text().strip().splitlines()
         # Phase J may emit learned-rule-log events before the completion event
-        completion_events = [json.loads(l) for l in lines if json.loads(l)["event"] == "autonomous-review-completed"]
+        completion_events = [
+            json.loads(l)
+            for l in lines
+            if json.loads(l)["event"] == "autonomous-review-completed"
+        ]
         assert len(completion_events) == 1
         event = completion_events[0]
         assert event["run_id"] is not None
@@ -385,6 +400,7 @@ class TestReviewEvents:
 # ---------------------------------------------------------------------------
 # Test: deterministic summary comment is produced
 # ---------------------------------------------------------------------------
+
 
 class TestSummaryComment:
     def test_summary_file_written(self):
@@ -436,6 +452,7 @@ class TestSummaryComment:
 # Test: validation/normalization layer is wired correctly
 # ---------------------------------------------------------------------------
 
+
 class TestValidationLayer:
     def test_invalid_candidates_are_skipped(self):
         tmp = _isolated_tmp()
@@ -470,9 +487,12 @@ class TestValidationLayer:
         engine = make_engine(repo, state)
         # Two identical candidates for same location
         duplicate_candidates = list(STUB_CANDIDATES[:2])
-        engine._generate_local_candidates = lambda: duplicate_candidates + [
-            {**duplicate_candidates[0]},  # exact duplicate
-        ]
+        engine._generate_local_candidates = lambda: (
+            duplicate_candidates
+            + [
+                {**duplicate_candidates[0]},  # exact duplicate
+            ]
+        )
 
         result = engine._run_autonomous_review_cycle(dry_run=False)
 
@@ -482,6 +502,7 @@ class TestValidationLayer:
 # ---------------------------------------------------------------------------
 # Test: mode dispatch routes correctly to autonomous-review
 # ---------------------------------------------------------------------------
+
 
 class TestAutonomousReviewDispatch:
     def test_run_calls_autonomous_review_for_autonomous_review_mode(self):
@@ -515,6 +536,7 @@ class TestAutonomousReviewDispatch:
 # ---------------------------------------------------------------------------
 # Test: no LLM plumbing, no GitHub API calls, no push
 # ---------------------------------------------------------------------------
+
 
 class TestSafetyConstraints:
     def test_observation_provider_methods_not_called(self):
@@ -554,6 +576,7 @@ class TestSafetyConstraints:
 # Integration: full local lifecycle with empty repo
 # ---------------------------------------------------------------------------
 
+
 class TestEmptyRepoPath:
     def test_no_repo_path_means_no_candidates(self):
         tmp = _isolated_tmp()
@@ -574,6 +597,7 @@ class TestEmptyRepoPath:
 # Integration: local file scanning stub produces candidates
 # ---------------------------------------------------------------------------
 
+
 class TestLocalFileScanning:
     def test_scans_python_files_for_todo_markers(self):
         tmp = _isolated_tmp()
@@ -590,7 +614,9 @@ class TestLocalFileScanning:
         engine = make_engine(repo, state)
         # Override candidates to use actual file scan
         engine._generate_local_candidates = (
-            ReviewCycleEngine._generate_local_candidates.__get__(engine, ReviewCycleEngine)
+            ReviewCycleEngine._generate_local_candidates.__get__(
+                engine, ReviewCycleEngine
+            )
         )
 
         candidates = engine._generate_local_candidates()
@@ -611,18 +637,23 @@ class TestLocalFileScanning:
         state._get_state_dir(repo.config.name).mkdir(parents=True, exist_ok=True)
         engine = make_engine(repo, state)
         engine._generate_local_candidates = (
-            ReviewCycleEngine._generate_local_candidates.__get__(engine, ReviewCycleEngine)
+            ReviewCycleEngine._generate_local_candidates.__get__(
+                engine, ReviewCycleEngine
+            )
         )
 
         candidates = engine._generate_local_candidates()
 
-        long_candidates = [c for c in candidates if c["header"] == "excessively-long-line"]
+        long_candidates = [
+            c for c in candidates if c["header"] == "excessively-long-line"
+        ]
         assert len(long_candidates) >= 1
 
 
 # ---------------------------------------------------------------------------
 # Phase J: Live publication bridge tests
 # ---------------------------------------------------------------------------
+
 
 class TestLivePublicationBridge:
     """Tests for _post_summary_to_github and integration with autonomous cycle."""
@@ -649,7 +680,9 @@ class TestLivePublicationBridge:
         with unittest.mock.patch.object(subprocess, "run", side_effect=track_run):
             result = engine._run_autonomous_review_cycle(dry_run=False)
 
-        assert called is False, "subprocess.run should not be called when live_actions=False"
+        assert called is False, (
+            "subprocess.run should not be called when live_actions=False"
+        )
         # Local state should still be populated
         assert result.findings_published >= 1
 
@@ -786,7 +819,9 @@ class TestLivePublicationBridge:
             "gh should NOT be called when run_id already has comment_url in prior_publish"
         )
         # Returns the existing comment_url (not None) so caller knows what was already posted
-        assert result == "https://github.com/test-owner/test-repo/pull/1#issuecomment-888"
+        assert (
+            result == "https://github.com/test-owner/test-repo/pull/1#issuecomment-888"
+        )
 
     def test_local_only_path_still_works(self):
         """With live_actions=False the full local path (state + artifacts) works unchanged."""
@@ -815,6 +850,7 @@ class TestLivePublicationBridge:
 # Test: PR targeting hardening (Phase G2 slice)
 # ---------------------------------------------------------------------------
 
+
 class TestPRTargetingHardening:
     """Tests for safe PR targeting and refusal semantics in autonomous-review."""
 
@@ -833,11 +869,15 @@ class TestPRTargetingHardening:
 
         # Directly mock _find_open_prs (avoids subprocess complexity)
         engine._find_open_prs = MagicMock(
-            return_value=[{"number": 7, "title": "PR", "updatedAt": "2026-03-29T00:00:00Z"}]
+            return_value=[
+                {"number": 7, "title": "PR", "updatedAt": "2026-03-29T00:00:00Z"}
+            ]
         )
         engine.provider.list_managed_prs = MagicMock(return_value=[])
 
-        resolved, reason = engine._resolve_target_pr_for_run({"runs": {}, "findings": {}})
+        resolved, reason = engine._resolve_target_pr_for_run(
+            {"runs": {}, "findings": {}}
+        )
 
         assert resolved == 7, f"Expected PR 7, got {resolved}"
         assert "single-open-pr-7" in reason
@@ -861,7 +901,9 @@ class TestPRTargetingHardening:
         )
         engine.provider.list_managed_prs = MagicMock(return_value=[])
 
-        resolved, reason = engine._resolve_target_pr_for_run({"runs": {}, "findings": {}})
+        resolved, reason = engine._resolve_target_pr_for_run(
+            {"runs": {}, "findings": {}}
+        )
 
         assert resolved is None, f"Expected None (refuse), got {resolved}"
         assert "multiple-open-prs-2-refused" in reason
@@ -878,7 +920,9 @@ class TestPRTargetingHardening:
         engine = make_engine(repo, state)
 
         engine._find_open_prs = MagicMock(
-            return_value=[{"number": 5, "title": "Prior PR", "updatedAt": "2026-03-29T00:00:00Z"}]
+            return_value=[
+                {"number": 5, "title": "Prior PR", "updatedAt": "2026-03-29T00:00:00Z"}
+            ]
         )
         engine.provider.list_managed_prs = MagicMock(return_value=[])
 
@@ -952,7 +996,9 @@ class TestPRTargetingHardening:
 
         # Only PR 7 is open — PR 3 (prior target) is not in this list
         engine._find_open_prs = MagicMock(
-            return_value=[{"number": 7, "title": "New PR", "updatedAt": "2026-03-29T00:00:00Z"}]
+            return_value=[
+                {"number": 7, "title": "New PR", "updatedAt": "2026-03-29T00:00:00Z"}
+            ]
         )
         engine.provider.list_managed_prs = MagicMock(return_value=[])
 
@@ -996,7 +1042,9 @@ class TestPRTargetingHardening:
             ]
         )
 
-        resolved, reason = engine._resolve_target_pr_for_run({"runs": {}, "findings": {}})
+        resolved, reason = engine._resolve_target_pr_for_run(
+            {"runs": {}, "findings": {}}
+        )
 
         assert resolved == 3, f"Expected managed PR 3, got {resolved}"
         assert "single-managed-pr-3" in reason
@@ -1022,7 +1070,9 @@ class TestPRTargetingHardening:
         # This should NOT be called (managed step refuses before open PRs discovery)
         engine._find_open_prs = MagicMock(return_value=[{"number": 1}])
 
-        resolved, reason = engine._resolve_target_pr_for_run({"runs": {}, "findings": {}})
+        resolved, reason = engine._resolve_target_pr_for_run(
+            {"runs": {}, "findings": {}}
+        )
 
         assert resolved is None, f"Expected None (refuse), got {resolved}"
         assert "multiple-managed-prs-2-refused" in reason
@@ -1067,12 +1117,18 @@ class TestPRTargetingHardening:
             )
 
         assert result is None, f"Expected None (refused), got {result}"
-        assert gh_called is False, "gh should not be called when multiple PRs are ambiguous"
+        assert gh_called is False, (
+            "gh should not be called when multiple PRs are ambiguous"
+        )
         # The refusal event should be recorded
         events_file = state.get_review_events_file(repo.config.name)
         assert events_file.exists()
-        events = [json.loads(line) for line in events_file.read_text().strip().splitlines()]
-        refusal_events = [e for e in events if e.get("event") == "autonomous-review-publish-refused"]
+        events = [
+            json.loads(line) for line in events_file.read_text().strip().splitlines()
+        ]
+        refusal_events = [
+            e for e in events if e.get("event") == "autonomous-review-publish-refused"
+        ]
         assert len(refusal_events) == 1
         assert "multiple-open-prs" in refusal_events[0]["details"]["reason"]
 
@@ -1091,7 +1147,9 @@ class TestPRTargetingHardening:
 
         # Open PRs: only PR 42 is open
         engine._find_open_prs = MagicMock(
-            return_value=[{"number": 42, "title": "The PR", "updatedAt": "2026-03-29T00:00:00Z"}]
+            return_value=[
+                {"number": 42, "title": "The PR", "updatedAt": "2026-03-29T00:00:00Z"}
+            ]
         )
         engine.provider.list_managed_prs = MagicMock(return_value=[])
 
@@ -1117,7 +1175,10 @@ class TestPRTargetingHardening:
         assert result == "https://github.com/owner/repo/pull/42#issuecomment-999"
         run_entry = prior_publish["runs"]["arun-post-042"]
         assert run_entry.get("targeted_pr_number") == 42
-        assert run_entry.get("comment_url") == "https://github.com/owner/repo/pull/42#issuecomment-999"
+        assert (
+            run_entry.get("comment_url")
+            == "https://github.com/owner/repo/pull/42#issuecomment-999"
+        )
         assert run_entry.get("status") == PublishStatus.PUBLISHED.value
 
     def test_publish_state_records_refused_when_ambiguous(self):
@@ -1168,7 +1229,9 @@ class TestPRTargetingHardening:
 
         # Open PRs: only PR 42 is open
         engine._find_open_prs = MagicMock(
-            return_value=[{"number": 42, "title": "The PR", "updatedAt": "2026-03-29T00:00:00Z"}]
+            return_value=[
+                {"number": 42, "title": "The PR", "updatedAt": "2026-03-29T00:00:00Z"}
+            ]
         )
         engine.provider.list_managed_prs = MagicMock(return_value=[])
 
@@ -1196,7 +1259,9 @@ class TestPRTargetingHardening:
             )
 
         assert result is not None
-        assert gh_called_with_pr == 42, f"Expected gh called with PR 42, got {gh_called_with_pr}"
+        assert gh_called_with_pr == 42, (
+            f"Expected gh called with PR 42, got {gh_called_with_pr}"
+        )
 
     # --- rerun does not mis-target ---
 
@@ -1212,7 +1277,9 @@ class TestPRTargetingHardening:
         engine = make_engine(repo, state)
 
         engine._find_open_prs = MagicMock(
-            return_value=[{"number": 8, "title": "The PR", "updatedAt": "2026-03-29T00:00:00Z"}]
+            return_value=[
+                {"number": 8, "title": "The PR", "updatedAt": "2026-03-29T00:00:00Z"}
+            ]
         )
         engine.provider.list_managed_prs = MagicMock(return_value=[])
 
@@ -1245,7 +1312,13 @@ class TestPRTargetingHardening:
 
         # Open PRs list shows only PR 11 — PR 99 is not open
         engine._find_open_prs = MagicMock(
-            return_value=[{"number": 11, "title": "Different PR", "updatedAt": "2026-03-29T00:00:00Z"}]
+            return_value=[
+                {
+                    "number": 11,
+                    "title": "Different PR",
+                    "updatedAt": "2026-03-29T00:00:00Z",
+                }
+            ]
         )
         engine.provider.list_managed_prs = MagicMock(return_value=[])
 
@@ -1264,8 +1337,8 @@ class TestPRTargetingHardening:
         assert run_entry.get("targeted_pr_number") is None
 
 
-
 if __name__ == "__main__":
     import pytest
     import unittest
+
     pytest.main([__file__, "-v"])
