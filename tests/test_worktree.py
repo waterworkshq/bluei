@@ -217,6 +217,43 @@ class TestRemoveWorktree:
         calls = [c[0][0] for c in mock_run.call_args_list]
         assert any("worktree" in cmd and "prune" in cmd for cmd in calls)
 
+    def test_remove_worktree_failure_logs_warning(
+        self, repo_path, worktree_path, mock_run, caplog
+    ):
+        """When git worktree remove --force fails, a warning is logged."""
+        import logging
+
+        worktree_path.mkdir()
+        mock_run.return_value = MagicMock(returncode=1, stdout="fatal: locked")
+
+        with caplog.at_level(logging.WARNING, logger="bluei.engine.worktree"):
+            remove_worktree(
+                worktree_path=worktree_path,
+                repo_path=repo_path,
+            )
+
+        assert any(
+            "remove --force failed" in rec.message and "rc=1" in rec.message
+            for rec in caplog.records
+        ), [rec.message for rec in caplog.records]
+
+    def test_remove_worktree_failure_appends_to_log_file(
+        self, repo_path, worktree_path, log_file, mock_run
+    ):
+        """When git worktree remove --force fails and log_file is set, error is appended."""
+        worktree_path.mkdir()
+        mock_run.return_value = MagicMock(returncode=1, stdout="fatal: locked")
+
+        remove_worktree(
+            worktree_path=worktree_path,
+            repo_path=repo_path,
+            log_file=log_file,
+        )
+
+        log_content = log_file.read_text()
+        assert "remove --force failed" in log_content
+        assert "rc=1" in log_content
+
 
 class TestPruneWorktrees:
     """Tests for prune_worktrees()."""

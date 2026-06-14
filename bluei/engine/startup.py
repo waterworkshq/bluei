@@ -12,7 +12,6 @@ from bluei.engine.utils import run_capture, run_no_capture
 _logger = logging.getLogger(__name__)
 
 STALE_LOCK_HOURS = 4
-STALE_WORKTREE_DAYS = 7
 
 
 def _parse_worktree_list_porcelain(repo_path: Path) -> List[Dict[str, str]]:

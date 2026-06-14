@@ -45,6 +45,16 @@ class WorktreeMixin:
                     ["git", "worktree", "remove", "--force", str(path)],
                     cwd=self.provider.repo_path,
                 )
+            else:
+                status_output = self._run_repo_cmd(
+                    ["git", "status", "--porcelain"], cwd=path, check=False
+                )
+                if status_output.strip():
+                    _logger.warning(f"worktree-dirty: path={path} — force-recreating")
+                    self._run_repo_cmd(
+                        ["git", "worktree", "remove", "--force", str(path)],
+                        cwd=self.provider.repo_path,
+                    )
 
         if not path.exists():
             fetched = False

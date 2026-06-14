@@ -426,6 +426,75 @@ def test_prepare_worktree_dry_run_no_subprocess(tmp_path):
     mock_run.assert_not_called()
 
 
+def test_prepare_worktree_dirty_worktree_force_recreates(tmp_path):
+    """A worktree on the correct branch but with uncommitted changes is force-recreated."""
+    engine = _make_engine_with_mock_provider(tmp_path)
+    snapshot = {"pr_number": 42, "branch": "qa/fix-42"}
+    worktree_expected = engine._review_worktree_path(42)
+    worktree_expected.parent.mkdir(parents=True, exist_ok=True)
+    worktree_expected.mkdir()  # simulate existing worktree on disk
+
+    captured_cmds = []
+
+    def _fake_run(cmd, **kwargs):
+        captured_cmds.append(list(cmd))
+        result = MagicMock()
+        result.returncode = 0
+        if cmd[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            # get_worktree_branch → matches local_branch
+            result.stdout = "qa-review-pr-42\n"
+        elif cmd[:3] == ["git", "status", "--porcelain"]:
+            # dirty: uncommitted changes present
+            result.stdout = " M src/dirty.ts\n"
+        else:
+            result.stdout = ""
+        result.stderr = ""
+        return result
+
+    with patch.object(subprocess, "run", side_effect=_fake_run):
+        result = engine._prepare_worktree(snapshot, dry_run=False)
+
+    assert result["prepared"] is True
+
+    remove_cmds = [c for c in captured_cmds if c[:3] == ["git", "worktree", "remove"]]
+    assert len(remove_cmds) == 1, f"expected 1 remove --force, got {remove_cmds}"
+    assert "--force" in remove_cmds[0]
+    assert str(worktree_expected) in remove_cmds[0]
+
+
+def test_prepare_worktree_clean_worktree_not_removed(tmp_path):
+    """A clean worktree on the correct branch is reused as-is (no remove)."""
+    engine = _make_engine_with_mock_provider(tmp_path)
+    snapshot = {"pr_number": 42, "branch": "qa/fix-42"}
+    worktree_expected = engine._review_worktree_path(42)
+    worktree_expected.parent.mkdir(parents=True, exist_ok=True)
+    worktree_expected.mkdir()
+
+    captured_cmds = []
+
+    def _fake_run(cmd, **kwargs):
+        captured_cmds.append(list(cmd))
+        result = MagicMock()
+        result.returncode = 0
+        if cmd[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            result.stdout = "qa-review-pr-42\n"
+        elif cmd[:3] == ["git", "status", "--porcelain"]:
+            result.stdout = ""  # clean
+        else:
+            result.stdout = ""
+        result.stderr = ""
+        return result
+
+    with patch.object(subprocess, "run", side_effect=_fake_run):
+        result = engine._prepare_worktree(snapshot, dry_run=False)
+
+    assert result["prepared"] is True
+    remove_cmds = [c for c in captured_cmds if c[:3] == ["git", "worktree", "remove"]]
+    assert remove_cmds == [], (
+        f"expected no remove for clean worktree, got {remove_cmds}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 6. ReviewCycleEngine._apply_commit_push_boundary()
 # ---------------------------------------------------------------------------

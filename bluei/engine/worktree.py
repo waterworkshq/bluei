@@ -119,10 +119,19 @@ def remove_worktree(
             _logger.debug(msg)
 
     if worktree_path.exists():
-        run_no_capture(
+        rc, out = run_capture(
             ["git", "worktree", "remove", "--force", str(worktree_path)],
             cwd=repo_path,
         )
+        if rc != 0:
+            msg = (
+                f"worktree: remove --force failed rc={rc} "
+                f"output={(out or '<empty>')[:300]}"
+            )
+            if log_file is not None:
+                _append_text(log_file, msg)
+            else:
+                _logger.warning(msg)
 
     prune_worktrees(repo_path, log_file=log_file)
 
