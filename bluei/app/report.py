@@ -8,7 +8,7 @@ import os
 import subprocess
 import tempfile
 
-from .models import Repo, HealthScore, Baseline
+from .models import Repo, RepoConfig, HealthScore, Baseline
 
 
 class ReportGenerator:
@@ -58,6 +58,103 @@ class ReportGenerator:
         bar_length = int(score / 5)  # 20 blocks max
         bar = "█" * bar_length + "░" * (20 - bar_length)
         return f"{bar} {score:.1f}%"
+
+    @classmethod
+    def from_state_dir(
+        cls,
+        repo_name: str,
+        state_dir: Path,
+        repo_path: Optional[str] = None,
+        *,
+        workspace: Optional[Path] = None,
+        review_care: Optional[Dict] = None,
+    ) -> str:
+        """Build a markdown report directly from on-disk state files.
+
+        Bridges the canonical JSON produced by
+        ``bluei.engine.report.extract_report_data`` into the lightweight ORM
+        objects that :meth:`generate_markdown_report` expects, then delegates
+        to it. No database or active onboarding record is required — the
+        Repo/HealthScore wrappers built here are throwaway data containers.
+
+        Args:
+            repo_name: Repository name (registry key).
+            state_dir: Directory containing ``status.json`` / ``findings.jsonl``
+                / ``health_history.jsonl`` / ``state.json`` for the repo.
+            repo_path: Optional filesystem path for the repository. When
+                omitted, the path recorded in state is used (may be empty).
+            workspace: Optional workspace root forwarded to the constructor.
+            review_care: Optional review-care summary dict to render.
+
+        Returns:
+            The rendered markdown report string.
+        """
+        from bluei.engine.report import extract_report_data
+
+        data = extract_report_data(
+            repo_path=repo_path or "",
+            repo_name=repo_name,
+            state_dir=Path(state_dir),
+        )
+
+        repo_block = data.get("repo", {}) or {}
+        summary_block = data.get("summary", {}) or {}
+
+        # ── Build a throwaway Repo + RepoConfig ──
+        # RepoConfig requires id/name/path/language; the remaining fields all
+        # have dataclass defaults so we can pass through minimal data here.
+        config = RepoConfig(
+            id=f"state-{repo_name}",
+            name=repo_block.get("name") or repo_name,
+            path=repo_block.get("path") or repo_path or "",
+            language=repo_block.get("language") or "unknown",
+        )
+        repo = Repo(
+            config=config,
+            current_findings_count=int(summary_block.get("total_findings", 0) or 0),
+            total_prs=int(summary_block.get("total_prs", 0) or 0),
+            last_run_at=repo_block.get("last_scan") or None,
+        )
+
+        # ── Build HealthScore (no components in canonical JSON) ──
+        # extract_report_data returns 0 when no health data is available, so
+        # treat 0 / None as "no health" to preserve the markdown report's
+        # "Vitality: N/A" branch.
+        health = None
+        raw_score = repo_block.get("health_score") or 0
+        if raw_score:
+            health = HealthScore(
+                score=float(raw_score),
+                components={},
+                calculated_at=repo_block.get("last_scan") or "",
+            )
+
+        # ── Bridge health_trend entries to the history shape the markdown
+        #    report consumes (timestamp/score/findings_count). ──
+        history = []
+        for entry in data.get("health_trend", []) or []:
+            history.append(
+                {
+                    "timestamp": entry.get("date", ""),
+                    "score": float(entry.get("score", 0) or 0),
+                    "findings_count": int(entry.get("findings_count", 0) or 0),
+                }
+            )
+
+        findings_by_category = {
+            str(cat): int(count or 0)
+            for cat, count in (data.get("findings_by_category", {}) or {}).items()
+        }
+
+        generator = cls(workspace=workspace) if workspace is not None else cls()
+        return generator.generate_markdown_report(
+            repo=repo,
+            baseline=None,
+            health=health,
+            history=history,
+            findings_by_category=findings_by_category,
+            review_care=review_care,
+        )
 
     def generate_markdown_report(
         self,

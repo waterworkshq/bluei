@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from bluei.engine.models import Finding, now_iso
+from bluei.engine.report import _infer_category, infer_language_from_path
 from .state import _atomic_json_write
 
 _logger = logging.getLogger(__name__)
@@ -778,7 +779,7 @@ def propose_rules_from_findings(
                     search_pattern=rule,
                     file_glob=file_glob,
                 ),
-                language=_infer_language(grouped[0].path),
+                language=infer_language_from_path(grouped[0].path),
                 category=_infer_category(rule),
                 status=EmergentRuleStatus.PROPOSED,
                 evidence_runs=[run_id],
@@ -898,27 +899,9 @@ def _directory_glob(path: str) -> str:
     return "/".join(parts[:-1]) + "/**"
 
 
-def _infer_language(path: str) -> str:
-    suffix = Path(path).suffix.lower()
-    if suffix == ".py":
-        return "python"
-    if suffix in {".ts", ".tsx", ".js", ".jsx"}:
-        return "typescript"
-    if suffix == ".go":
-        return "go"
-    if suffix == ".rs":
-        return "rust"
-    return "all"
-
-
-def _infer_category(rule: str) -> str:
-    lowered = rule.lower()
-    if "bug" in lowered or "error" in lowered:
-        return "bug"
-    if "test" in lowered:
-        return "test"
-    if "type" in lowered:
-        return "type"
-    if "doc" in lowered:
-        return "docs"
-    return "lint"
+# NOTE: ``_infer_language(path)`` and ``_infer_category(rule)`` were previously
+# defined locally here as duplicates of ``bluei.engine.report``. They have been
+# consolidated: language-from-path now lives in
+# ``bluei.engine.report.infer_language_from_path`` and category inference uses
+# ``bluei.engine.report._infer_category`` (which is regex-based and richer than
+# the old substring heuristic). Both are imported at the top of this module.

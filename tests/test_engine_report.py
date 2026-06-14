@@ -7,6 +7,7 @@ import pytest
 from bluei.engine.report import (
     _infer_category,
     _infer_language,
+    infer_language_from_path,
     _normalize_category,
     _build_rule_catalog,
     _classify_findings,
@@ -145,6 +146,41 @@ class TestInferLanguage:
 
     def test_custom_fallback(self):
         assert _infer_language("weird-rule", fallback="cobol") == "cobol"
+
+
+class TestInferLanguageFromPath:
+    """Tests for the path-suffix based language inference bridged from
+    bluei.app.emergent_rules. This function takes a FILE PATH, whereas
+    _infer_language takes a RULE NAME."""
+
+    def test_python(self):
+        assert infer_language_from_path("src/api/users.py") == "python"
+
+    def test_typescript(self):
+        assert infer_language_from_path("src/ui/app.ts") == "typescript"
+        assert infer_language_from_path("src/ui/App.tsx") == "typescript"
+
+    def test_javascript_maps_to_typescript(self):
+        # Historical behavior preserved: .js/.jsx also map to "typescript".
+        assert infer_language_from_path("src/legacy.js") == "typescript"
+        assert infer_language_from_path("src/legacy.jsx") == "typescript"
+
+    def test_go(self):
+        assert infer_language_from_path("cmd/main.go") == "go"
+
+    def test_rust(self):
+        assert infer_language_from_path("src/lib.rs") == "rust"
+
+    def test_unknown_suffix_defaults_to_all(self):
+        assert infer_language_from_path("README.md") == "all"
+        assert infer_language_from_path("Dockerfile") == "all"
+        assert infer_language_from_path("config.yaml") == "all"
+
+    def test_custom_fallback(self):
+        assert infer_language_from_path("Dockerfile", fallback="other") == "other"
+
+    def test_case_insensitive_suffix(self):
+        assert infer_language_from_path("SRC/MAIN.PY") == "python"
 
 
 class TestNormalizeCategory:
