@@ -378,6 +378,9 @@ def deliver_digest(
 
     results = []
     for ch in channels:
+        sev_filter = ch.config.get("severity_filter", [])
+        if not ch.should_send(payload, sev_filter):
+            continue
         r = ch.send(payload)
         results.append(r)
 
@@ -398,6 +401,6 @@ def mask_sensitive(value: str) -> str:
     if ":" in value:
         prefix = value.rsplit(":", 1)[0]
         return prefix + ":***"
-    if len(value) > 4:
+    if len(value) > 8:
         return value[:4] + "***"
     return "***"

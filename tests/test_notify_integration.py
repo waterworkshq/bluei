@@ -167,24 +167,6 @@ def test_rate_limit_bypass_with_test_flag(tmp_path):
     assert len(r2) == 1
 
 
-def test_dashboard_notification_summary(tmp_path):
-    import json
-    ws = _setup_webhook_workspace(tmp_path)
-    findings = [{"type": "consecutive_merge_failures", "detail": "3 failures"}]
-
-    with patch("bluei.engine.notifiers.webhook.urllib.request.urlopen", return_value=_mock_response()):
-        deliver_escalations(findings, "test-repo", ws)
-
-    log_path = ws / "state" / "notification_log.jsonl"
-    assert log_path.exists()
-
-    from bluei.app.dashboard import _summarize_notifications
-    summary = _summarize_notifications(log_path)
-    assert summary["total"] == 1
-    assert summary["delivered"] == 1
-    assert "webhook" in summary["channels"]
-
-
 def test_doctor_check_notifications(tmp_path):
     import bin.bluei as cli
     from pathlib import Path

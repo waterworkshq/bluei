@@ -290,8 +290,12 @@ class TestDeliverDigestEdgeCases:
 
 class TestMaskSensitiveEdgeCases:
     def test_long_value_without_scheme(self):
-        result = mask_sensitive("abcdefgh")
+        result = mask_sensitive("abcdefghijkl")
         assert result == "abcd***"
+
+    def test_short_token_fully_masked(self):
+        result = mask_sensitive("abcdef")
+        assert result == "***"
 
     def test_colon_separator(self):
         result = mask_sensitive("key:secret123")
