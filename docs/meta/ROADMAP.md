@@ -49,7 +49,7 @@ What's been built, and what's next.
 - **Reboot-resilient state** — worktree porcelain parsing, auto-prune, 6 corruption repair cases.
 - **8 language plugins** — Python, TypeScript, Go, Rust, Shell, Dockerfile, Markdown, plus test fixture.
 - **Canonical `bluei` package** — `bluei.app`, `bluei.engine`, `bluei.review`, `bluei.campaigns`.
-- **5,281 tests** across 170+ test files. Mock GitHub API throughout.
+- **5,497 tests** across 180+ test files. Mock GitHub API throughout.
 
 ---
 
@@ -57,16 +57,12 @@ What's been built, and what's next.
 
 ### Near-term (v0.2.0)
 
-- **Decompose `review/cycle.py`** (3,642 lines) — split into review_state, review_execution, review_publishing modules. TypedDict annotations for dict-shaped parameters.
-- **Decompose `cli.py` main()** (~1,900 lines remain) — extract subcommand handlers from monolithic dispatcher.
-- **Replace module-level singletons** — `_recipe_engine` and `_tiered_validator` in lifecycle.py instantiated at import time. Move to DI/factory pattern for testability.
 - **Wire deferred features** — Mnemo cross-finding recall (`_get_mnemo_client`) and rule pack selection from templates (`select_rule_pack`).
 
 ### Medium-term
 
 - **`engine/report.py` integration roadmap** (5 phases) — deduplicate helpers, wire app→engine pipeline, dashboard consumer, scheduled delivery, continuous monitoring.
 - **`bluei notify config` wizard** — interactive scaffolding for `notifications.yaml`.
-- **E2E test suite** — ~93 planned tests across 9 domains (CLI lifecycle, fix lifecycle, discovery, PR lifecycle, pattern learning, state lifecycle, campaigns, notifications, emergent rules).
 
 ### Deferred (design decisions needed)
 
@@ -74,8 +70,14 @@ What's been built, and what's next.
 - **Multi-file composite rollback** — rollback scope strategy. See D2.
 - **Non-Python AST cascade** — `ASTTransformCascadeStage` is Python-only. Separate architectural task.
 - **`skip` strategy asymmetry** — `fix_strategy="skip"` → REFACTOR_CLASS vs `default_strategy="skip"` → CLAUDE_FIX.
-- **Merge cycle hardening** — DISMISSED review handling, observation state overwrite, review-state file races. See `docs/plans/MERGE_CYCLE_AUDIT.md`.
+
+### Shipped post v0.1.0-alpha.1
+
+- **Structural refactoring** — cycle.py decomposition (C3), cli.py decomposition (C4), lifecycle singletons (H4), orchestrator 4-module split (S3), structural_hash package (S4), pipeline phase extraction (S5), batch_recovery extraction (S2), observation + autonomous cycle decomposition (rec-16, rec-18).
+- **Merge-cycle audit closure** — all 21 items from `MERGE_CYCLE_AUDIT.md` fixed: DISMISSED review gate, observation state recovery, review-state race locking, merge-queue detection, HAS_HOOKS handling, worktree reuse validation, loop-count semantic guard, retry_pending_push escalation, configurable PR limits, language-aware candidate scanning, inter-PR rate throttling, atomic-write fsync, JSONL rotation, datetime cooldown comparison, generate_id entropy, runner finally-block protection.
+- **E2E test suite** — 83 tests across 9 domains.
+- **Notifications hardening** — digest severity filter, token masking, dashboard test split.
 
 ---
 
-*Updated 2026-05-31*
+*Updated 2026-06-14*
