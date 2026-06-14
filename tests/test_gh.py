@@ -573,6 +573,16 @@ class TestEvaluatePrMergeability:
         assert result["eligible"] is True
         assert "pass" in result["reason"]
 
+    def test_has_hooks_state(self, tmp_path: Path) -> None:
+        with patch(
+            "bluei.engine.gh.gh_json", return_value={"mergeStateStatus": "HAS_HOOKS"}
+        ):
+            result = evaluate_pr_mergeability("o/r", 1, tmp_path)
+        assert result["eligible"] is True
+        assert result["requires_pr_fix"] is False
+        assert result["merge_state_status"] == "HAS_HOOKS"
+        assert result["reason"] == "mergeable-with-hooks"
+
     def test_unstable_with_passing_checks(self, tmp_path: Path) -> None:
         with patch(
             "bluei.engine.gh.gh_json",
@@ -732,6 +742,71 @@ class TestMergePr:
             success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
         assert success is False
         assert "rc=1" in reason
+
+    def test_already_merged_treated_as_success(self, tmp_path: Path) -> None:
+        with patch(
+            "bluei.engine.gh.run_capture",
+            return_value=(1, "Pull Request is already merged"),
+        ):
+            success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
+        assert success is True
+        assert reason == "already-merged-or-queued"
+
+    def test_already_been_merged_treated_as_success(self, tmp_path: Path) -> None:
+        with patch(
+            "bluei.engine.gh.run_capture",
+            return_value=(1, "The pull request has already been merged"),
+        ):
+            success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
+        assert success is True
+        assert reason == "already-merged-or-queued"
+
+    def test_merge_queue_treated_as_success(self, tmp_path: Path) -> None:
+        with patch(
+            "bluei.engine.gh.run_capture",
+            return_value=(1, "This branch is in a merge queue"),
+        ):
+            success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
+        assert success is True
+        assert reason == "already-merged-or-queued"
+
+    def test_auto_merge_already_enabled_treated_as_success(
+        self, tmp_path: Path
+    ) -> None:
+        with patch(
+            "bluei.engine.gh.run_capture",
+            return_value=(1, "Auto-merge is already enabled"),
+        ):
+            success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
+        assert success is True
+        assert reason == "already-merged-or-queued"
+
+    def test_queued_for_merge_treated_as_success(self, tmp_path: Path) -> None:
+        with patch(
+            "bluei.engine.gh.run_capture",
+            return_value=(1, "PR queued for merge"),
+        ):
+            success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
+        assert success is True
+        assert reason == "already-merged-or-queued"
+
+    def test_is_queued_treated_as_success(self, tmp_path: Path) -> None:
+        with patch(
+            "bluei.engine.gh.run_capture",
+            return_value=(1, "PR #42 is queued"),
+        ):
+            success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
+        assert success is True
+        assert reason == "already-merged-or-queued"
+
+    def test_marker_match_is_case_insensitive(self, tmp_path: Path) -> None:
+        with patch(
+            "bluei.engine.gh.run_capture",
+            return_value=(1, "MERGE QUEUE has captured this PR"),
+        ):
+            success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
+        assert success is True
+        assert reason == "already-merged-or-queued"
 
 
 class TestCreateOrUpdateGithubIssue:

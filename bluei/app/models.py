@@ -74,8 +74,6 @@ class ReviewMode(str, Enum):
     REMEDIATION = "remediation"
 
 
-
-
 class LiveRolloutMode(str, Enum):
     """
     Rollout mode for autonomous-review live publication.
@@ -99,8 +97,6 @@ class LiveRolloutMode(str, Enum):
     LOCAL_ONLY = "local_only"
     SHADOW = "shadow"
     LIMITED = "limited"
-
-
 
 
 @dataclass
@@ -538,7 +534,7 @@ class Run:
 def generate_id(prefix: str = "") -> str:
     """Generate a unique ID."""
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
-    unique = uuid.uuid4().hex[:8]
+    unique = uuid.uuid4().hex[:16]
     return f"{prefix}-{ts}-{unique}" if prefix else f"{ts}-{unique}"
 
 
@@ -548,12 +544,6 @@ from bluei.engine.models import now_iso  # noqa: E402
 # ---------------------------------------------------------------------------
 # Autonomous-review models (Phase C1/C2)
 # ---------------------------------------------------------------------------
-
-
-
-
-
-
 
 
 class FeedbackSentiment(str, Enum):
@@ -586,30 +576,14 @@ class ReviewRunStatus(str, Enum):
     EXHAUSTED = "exhausted"
 
 
-
-
-
-
 # ---------------------------------------------------------------------------
 # Deterministic finding identity helpers (owned by QA-agent, not LLM input)
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # Autonomous review data models
 # ---------------------------------------------------------------------------
-
-
-
-
 
 
 @dataclass
@@ -718,5 +692,3 @@ class FeedbackEvent:
         filtered.setdefault("is_conceptual", False)
         filtered.setdefault("recorded_at", None)
         return cls(**filtered)
-
-

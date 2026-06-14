@@ -650,6 +650,13 @@ def evaluate_pr_mergeability(
             "merge_state_status": merge_state,
             "reason": "merge-state-blocked",
         }
+    if merge_state == "HAS_HOOKS":
+        return {
+            "eligible": True,
+            "requires_pr_fix": False,
+            "merge_state_status": merge_state,
+            "reason": "mergeable-with-hooks",
+        }
 
     return {
         "eligible": True,
@@ -711,6 +718,17 @@ def merge_pr(
     )
     if rc == 0:
         return True, "merged"
+    normalized = (out or "").lower()
+    already_handled_markers = (
+        "already merged",
+        "already been merged",
+        "merge queue",
+        "auto-merge",
+        "queued for merge",
+        "is queued",
+    )
+    if any(marker in normalized for marker in already_handled_markers):
+        return True, "already-merged-or-queued"
     return False, (out.strip() or f"gh-pr-merge-failed-rc={rc}")
 
 

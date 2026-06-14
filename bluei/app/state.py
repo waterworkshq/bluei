@@ -30,7 +30,10 @@ def _atomic_json_write(path: Path, data: Any) -> None:
     with open(lock_path, "w") as lock_f:
         fcntl.flock(lock_f, fcntl.LOCK_EX)
         try:
-            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(json.dumps(data, indent=2))
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp, path)
         finally:
             fcntl.flock(lock_f, fcntl.LOCK_UN)
