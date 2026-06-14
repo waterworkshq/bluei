@@ -632,6 +632,12 @@ from bin.cmd_notify import (  # noqa: E402, F401
 )
 
 
+def _cmd_create_plugin(rest: list[str]) -> int:
+    from bin.cmd_create_plugin import _cmd_create_plugin as _impl
+
+    return _impl(rest)
+
+
 # ── Main ───────────────────────────────────────────────────────
 def main():
     args = sys.argv[1:]
@@ -729,6 +735,8 @@ def main():
         return _cmd_lesson(rest)
     if cmd == "notify":
         return _cmd_notify(rest)
+    if cmd == "create-plugin":
+        return _cmd_create_plugin(rest)
 
     # ── Path command ──
     if cmd == "secrets":

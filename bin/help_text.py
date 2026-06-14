@@ -53,6 +53,7 @@ HELP_TEXT = {
   {GREEN}patterns{RESET}            {DIM}Inspect and manage learned fix patterns{RESET}
   {GREEN}campaign{RESET}            {DIM}Plan multi-finding refactor campaigns{RESET}
   {GREEN}emergent{RESET}            {DIM}Inspect proposed emergent rules{RESET}
+  {GREEN}create-plugin{RESET}       {DIM}Scaffold a new discovery plugin{RESET}
 
 {BOLD}Examples:{RESET}
   bluei init                     {DIM}# Register any project (wizard or --path){RESET}
@@ -440,6 +441,32 @@ By default runs as a dry-run — add --no-dry-run to actually heal.{RESET}
 
 {BOLD}Examples:{RESET}
   bluei upgrade-config --repo my-project
+""",
+    "create-plugin": f"""{BOLD}bluei create-plugin{RESET} {CYAN}--language <lang>{RESET} {CYAN}--tool <tool>{RESET} [{YELLOW}options{RESET}]
+
+{DIM}Scaffold a new discovery plugin: generates the manifest, the
+plugin.py skeleton, a health-mapping stub, and a matching pytest
+skeleton. The new plugin lives under plugins/<id>/ and is picked up
+by `bluei languages` on the next run.{RESET}
+
+{BOLD}Usage:{RESET}
+  bluei create-plugin {CYAN}--language {RESET}<lang> {CYAN}--tool {RESET}<tool> [{YELLOW}--plugin-id {CYAN}<id>{RESET}]
+  bluei create-plugin {CYAN}--language python{RESET} {CYAN}--tool ruff{RESET}
+  bluei create-plugin {CYAN}--language go{RESET} {CYAN}--tool staticcheck{RESET} {YELLOW}--plugin-id {CYAN}go-static{RESET}
+
+{BOLD}Options:{RESET}
+  {YELLOW}--language {CYAN}<lang>{RESET}        Target language (required)
+  {YELLOW}--tool {CYAN}<tool>{RESET}            Tool binary the plugin will wrap (required)
+  {YELLOW}--plugin-id {CYAN}<id>{RESET}        Override the derived id (default: plugin-<tool>)
+  {YELLOW}--description {CYAN}<text>{RESET}    Free-form description (printed at scaffold time)
+  {YELLOW}--author {CYAN}<name>{RESET}         Author for plugin.yaml (default: bluei)
+  {YELLOW}--plugins-dir {CYAN}<dir>{RESET}     Where to write plugins/<id>/ (default: ./plugins)
+  {YELLOW}--force{RESET}                      Overwrite an existing plugin dir or test file
+
+{BOLD}Examples:{RESET}
+  bluei create-plugin {CYAN}--language python{RESET} {CYAN}--tool ruff{RESET}
+  bluei create-plugin {CYAN}--language javascript{RESET} {CYAN}--tool eslint{RESET} {YELLOW}--plugin-id {CYAN}js-lint{RESET}
+  bluei create-plugin {CYAN}--language go{RESET} {CYAN}--tool staticcheck{RESET} {YELLOW}--force{RESET}
 """,
     "notify": f"""{BOLD}bluei notify{RESET}
 
