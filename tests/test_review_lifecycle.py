@@ -912,3 +912,548 @@ def test_review_cycle_republishes_when_feedback_state_changes(tmp_path):
         == "feedback-77:review_feedback_detected"
     )
     assert review_record["last_review_comment_url"].endswith("#issuecomment-2")
+
+
+# ---------------------------------------------------------------------------
+# pending_push_cycles — escalation guard for the retry_pending_push branch
+# (M1 fix). PRs stuck in retry_pending_push with unchanged fingerprint must
+# escalate to retry_exhausted after _MAX_PENDING_PUSH_CYCLES (5) cycles, and
+# the counter must reset whenever the PR leaves retry_pending_push.
+# ---------------------------------------------------------------------------
+
+
+def _classify_engine(tmp_path: Path) -> ReviewCycleEngine:
+    """Build a minimal engine for direct _classify_pr_status unit tests."""
+    repo = make_repo(tmp_path)
+    engine = ReviewCycleEngine.__new__(ReviewCycleEngine)
+    engine.repo = repo
+    engine.state = StateManager(tmp_path / "repos")
+    return engine
+
+
+def _feedback_snapshot(fingerprint: str = "stable-fp") -> dict:
+    """Snapshot with actionable feedback — triggers retry_eligible path."""
+    return {
+        "pr_number": 42,
+        "pr_url": "https://example.test/pr/42",
+        "branch": "qa/fix-42",
+        "author": "sound",
+        "fetched_at": "2026-06-14T12:00:00Z",
+        "review_decision": "CHANGES_REQUESTED",
+        "merge_state_status": "CLEAN",
+        "active_change_requesters": ["reviewer1"],
+        "actionable_comments": [{"author": "reviewer1", "body": "fix this"}],
+        "informational_comments": [],
+        "unresolved_threads": [],
+        "score_optional": None,
+        "checks_summary_optional": None,
+        "fingerprint": fingerprint,
+    }
+
+
+def test_pending_push_cycles_increment_and_escalate(tmp_path):
+    """
+    M1 fix: PR stays in retry_pending_push for N-1 cycles (counter 1..4),
+    then escalates to retry_exhausted on the 5th cycle.
+    """
+    from bluei.review.observation import _MAX_PENDING_PUSH_CYCLES
+    from bluei.review.types import ReviewCycleResult
+
+    assert _MAX_PENDING_PUSH_CYCLES == 5, "Test is calibrated to the default threshold"
+
+    engine = _classify_engine(tmp_path)
+    snapshot = _feedback_snapshot("stable-fp")
+
+    # Simulate the record carried across cycles.
+    existing_review = {
+        "last_snapshot_fingerprint": "stable-fp",
+        "last_action": "retry_pending_push",
+        "attempts_used": 1,
+        "loop_count": 0,
+        "pending_push_cycles": 0,
+        "planned_remediation": {"status": "retry_prepared"},
+        "execution_result": {"status": "retry_pending_push", "attempts_used": 1},
+    }
+
+    escalations_seen = 0
+    for cycle in range(1, _MAX_PENDING_PUSH_CYCLES + 1):
+        result = ReviewCycleResult()
+        classification = engine._classify_pr_status(
+            snapshot=snapshot,
+            existing_review=existing_review,
+            dry_run=False,
+            lock_handle=object(),
+            result=result,
+        )
+
+        if cycle < _MAX_PENDING_PUSH_CYCLES:
+            # Cycles 1..4 stay in retry_pending_push with monotonic counter.
+            assert classification["status"] == "retry_pending_push", (
+                f"Cycle {cycle}: expected retry_pending_push, "
+                f"got {classification['status']}"
+            )
+            assert classification["pending_push_cycles"] == cycle, (
+                f"Cycle {cycle}: expected counter {cycle}, "
+                f"got {classification['pending_push_cycles']}"
+            )
+            assert result.retry_exhausted_prs == 0
+        else:
+            # Cycle 5 escalates to retry_exhausted and resets the counter.
+            assert classification["status"] == "retry_exhausted", (
+                f"Cycle {cycle}: expected retry_exhausted, "
+                f"got {classification['status']}"
+            )
+            assert classification["pending_push_cycles"] == 0, (
+                "Counter must reset to 0 after escalation so a future re-entry "
+                "starts fresh"
+            )
+            assert result.retry_exhausted_prs == 1
+            assert "pending-push timeout" in classification["merge_reason"].lower()
+            escalations_seen += 1
+
+        # Carry the persisted counter forward to simulate the next cycle.
+        existing_review = {
+            **existing_review,
+            "pending_push_cycles": classification["pending_push_cycles"],
+        }
+
+    assert escalations_seen == 1, "Exactly the threshold cycle should escalate"
+
+
+def test_pending_push_cycles_reset_on_fingerprint_change(tmp_path):
+    """
+    M1 fix: pending_push_cycles must reset to 0 when the fingerprint changes,
+    because the PR has transitioned out of the (same-fingerprint) pending-push
+    branch into the normal retry-eligibility flow.
+    """
+    from bluei.review.types import ReviewCycleResult
+
+    engine = _classify_engine(tmp_path)
+
+    # Pre-existing state: PR was stuck in retry_pending_push for 3 cycles.
+    existing_review = {
+        "last_snapshot_fingerprint": "old-fp",
+        "last_action": "retry_pending_push",
+        "attempts_used": 1,
+        "loop_count": 0,
+        "pending_push_cycles": 3,
+        "planned_remediation": {"status": "retry_prepared"},
+        "execution_result": {"status": "retry_pending_push", "attempts_used": 1},
+    }
+
+    # New snapshot has a DIFFERENT fingerprint — reviewer pushed or PR changed.
+    snapshot = _feedback_snapshot("new-fp-after-operator-push")
+    result = ReviewCycleResult()
+
+    classification = engine._classify_pr_status(
+        snapshot=snapshot,
+        existing_review=existing_review,
+        dry_run=True,
+        lock_handle=None,
+        result=result,
+    )
+
+    # Not in the pending-push branch anymore — counter must reset.
+    assert classification["status"] != "retry_pending_push", (
+        "Fingerprint change should exit the pending-push branch"
+    )
+    assert classification["pending_push_cycles"] == 0, (
+        "Counter must reset when fingerprint changes; got "
+        f"{classification['pending_push_cycles']}"
+    )
+
+
+def test_pending_push_cycles_reset_on_status_change(tmp_path):
+    """
+    M1 fix: pending_push_cycles must reset to 0 when the PR transitions to
+    a status other than retry_pending_push (e.g., retry_exhausted via
+    max_attempts, loop_guard_paused, or merge_ready). Stale counters must
+    not carry over.
+    """
+    from bluei.review.types import ReviewCycleResult
+
+    engine = _classify_engine(tmp_path)
+
+    # Pre-existing state: stuck in pending-push for 4 cycles, but attempts_used
+    # has now reached max_attempts via a separate path. The classification
+    # chain should NOT enter the pending-push branch (fingerprint matches)
+    # because attempts_used >= max_attempts takes the exhausted branch...
+    # Wait — the pending-push branch is FIRST in the chain, so a fingerprint
+    # match always enters it. To test status-change reset, we need a case
+    # where the pending-push branch does NOT fire: e.g., fingerprint matches
+    # but previous_action is NOT retry_pending_push anymore (e.g., it transitioned
+    # to retry_pushed via --allow-review-push, then back to feedback).
+    existing_review = {
+        "last_snapshot_fingerprint": "stable-fp",
+        "last_action": "retry_pushed",  # Not retry_pending_push
+        "attempts_used": 2,
+        "loop_count": 0,
+        "pending_push_cycles": 4,  # Stale from a prior pending-push phase
+        "planned_remediation": None,
+        "execution_result": None,
+    }
+
+    snapshot = _feedback_snapshot("stable-fp")
+    result = ReviewCycleResult()
+
+    classification = engine._classify_pr_status(
+        snapshot=snapshot,
+        existing_review=existing_review,
+        dry_run=True,
+        lock_handle=None,
+        result=result,
+    )
+
+    # Status is NOT retry_pending_push (previous_action was retry_pushed).
+    assert classification["status"] != "retry_pending_push", (
+        "previous_action != retry_pending_push should not re-enter that branch"
+    )
+    assert classification["pending_push_cycles"] == 0, (
+        "Stale counter must reset when status is anything other than "
+        f"retry_pending_push; got {classification['pending_push_cycles']}"
+    )
+
+
+def test_pending_push_cycles_zero_on_first_pending_push(tmp_path):
+    """
+    M1 fix: on the FIRST cycle entering retry_pending_push classification
+    (previous_action already retry_pending_push from execution, counter was 0),
+    the counter becomes 1 and status stays retry_pending_push.
+
+    This guards the test_lifecycle_pending_push_preserved_across_runs invariant.
+    """
+    from bluei.review.types import ReviewCycleResult
+
+    engine = _classify_engine(tmp_path)
+
+    existing_review = {
+        "last_snapshot_fingerprint": "stable-fp-123",
+        "last_action": "retry_pending_push",
+        "attempts_used": 1,
+        "loop_count": 0,
+        # No pending_push_cycles key — defaults to 0
+        "planned_remediation": {"status": "retry_prepared"},
+        "execution_result": {"status": "retry_pending_push", "attempts_used": 1},
+    }
+    snapshot = _feedback_snapshot("stable-fp-123")
+    result = ReviewCycleResult()
+
+    classification = engine._classify_pr_status(
+        snapshot=snapshot,
+        existing_review=existing_review,
+        dry_run=False,
+        lock_handle=object(),
+        result=result,
+    )
+
+    assert classification["status"] == "retry_pending_push"
+    assert classification["pending_push_cycles"] == 1
+    assert result.retry_exhausted_prs == 0
+
+
+def test_pending_push_cycles_persisted_to_review_record(tmp_path):
+    """
+    M1 fix: pending_push_cycles flows from classification → review record so
+    it survives across cycles. _record_pr_in_review_state must write the
+    value into the persisted record.
+    """
+    from bluei.review.types import ReviewCycleResult
+
+    engine = _classify_engine(tmp_path)
+    snapshot = _feedback_snapshot("stable-fp-XYZ")
+
+    existing_review = {
+        "last_snapshot_fingerprint": "stable-fp-XYZ",
+        "last_action": "retry_pending_push",
+        "attempts_used": 1,
+        "loop_count": 0,
+        "pending_push_cycles": 2,
+        "planned_remediation": {"status": "retry_prepared"},
+        "execution_result": {"status": "retry_pending_push", "attempts_used": 1},
+    }
+
+    result = ReviewCycleResult()
+    classification = engine._classify_pr_status(
+        snapshot=snapshot,
+        existing_review=existing_review,
+        dry_run=False,
+        lock_handle=object(),
+        result=result,
+    )
+    assert classification["pending_push_cycles"] == 3
+
+    # Verify the record-builder writes the counter into the persisted record.
+    record = engine._record_pr_in_review_state(
+        snapshot=snapshot,
+        existing_review=existing_review,
+        status=classification["status"],
+        merge_reason=classification["merge_reason"],
+        remediation_plan=classification["remediation_plan"],
+        execution_result=classification["execution_result"],
+        loop_count=classification["loop_count"],
+        paused=classification["paused"],
+        stale_pause=classification["stale_pause"],
+        retry_eligible=False,
+        pending_push_cycles=classification["pending_push_cycles"],
+    )
+
+    assert record["pending_push_cycles"] == 3
+    assert record["last_action"] == "retry_pending_push"
+
+
+# ---------------------------------------------------------------------------
+# H6: semantic-level loop guard. When a reviewer rephrases the same concern,
+# the fingerprint changes (it hashes comment bodies) but the stable signal
+# (counts of change-requesters and actionable comments) does not. Without
+# this guard, loop_count resets to 0 on every rephrase and the bot can loop
+# indefinitely. The fix preserves loop_count when counts are stable AND the
+# prior cycle attempted remediation.
+# ---------------------------------------------------------------------------
+
+
+def test_h6_loop_count_preserved_on_reviewer_rephrase(tmp_path):
+    """
+    H6 fix: reviewer rephrases the same concern (different fingerprint, same
+    counts) after a remediation was attempted → loop_count is PRESERVED, not
+    reset to 0. Without this guard, the bot loops indefinitely.
+    """
+    from bluei.review.types import ReviewCycleResult
+
+    engine = _classify_engine(tmp_path)
+
+    # Prior cycle: remediation was attempted, loop_count was 2.
+    existing_review = {
+        "last_snapshot_fingerprint": "old-fp",
+        "last_action": "retry_executed",
+        "attempts_used": 1,
+        "loop_count": 2,
+        # Prior stable-signal counts (will match the new snapshot).
+        "change_requester_count": 1,
+        "actionable_comment_count": 1,
+        "planned_remediation": None,
+        "execution_result": None,
+    }
+
+    # New snapshot: DIFFERENT fingerprint (reviewer rephrased the comment)
+    # but the SAME stable signal — 1 change-requester, 1 actionable comment.
+    snapshot = _feedback_snapshot("new-fp-rephrased")
+    result = ReviewCycleResult()
+
+    classification = engine._classify_pr_status(
+        snapshot=snapshot,
+        existing_review=existing_review,
+        dry_run=True,
+        lock_handle=None,
+        result=result,
+    )
+
+    assert classification["loop_count"] == 2, (
+        "Rephrase with stable counts and prior remediation must PRESERVE "
+        f"loop_count; got {classification['loop_count']}"
+    )
+    # Counts flow out in the classification so they can be persisted.
+    assert classification["change_requester_count"] == 1
+    assert classification["actionable_comment_count"] == 1
+
+
+def test_h6_loop_count_resets_on_genuine_new_review_content(tmp_path):
+    """
+    H6 fix: fingerprint changed AND the number of actionable comments also
+    changed (reviewer added a second concern) → genuine new review content,
+    loop_count resets to 0 (current behavior preserved).
+    """
+    from bluei.review.types import ReviewCycleResult
+
+    engine = _classify_engine(tmp_path)
+
+    existing_review = {
+        "last_snapshot_fingerprint": "old-fp",
+        "last_action": "retry_executed",
+        "attempts_used": 1,
+        "loop_count": 2,
+        "change_requester_count": 1,
+        "actionable_comment_count": 1,
+        "planned_remediation": None,
+        "execution_result": None,
+    }
+
+    # New snapshot: different fingerprint AND a different actionable-comment
+    # count (2 instead of 1) — reviewer left genuinely new content.
+    snapshot = _feedback_snapshot("new-fp-genuine")
+    snapshot["actionable_comments"] = [
+        {"author": "reviewer1", "body": "fix this"},
+        {"author": "reviewer1", "body": "also fix that"},
+    ]
+    result = ReviewCycleResult()
+
+    classification = engine._classify_pr_status(
+        snapshot=snapshot,
+        existing_review=existing_review,
+        dry_run=True,
+        lock_handle=None,
+        result=result,
+    )
+
+    assert classification["loop_count"] == 0, (
+        "Genuine new review content (counts changed) must reset loop_count; "
+        f"got {classification['loop_count']}"
+    )
+    assert classification["actionable_comment_count"] == 2
+
+
+def test_h6_loop_count_resets_on_first_cycle_without_prior_counts(tmp_path):
+    """
+    H6 fix: backward compatibility. On the first cycle (or for an older
+    review record that predates the H6 fields), prev counts are missing —
+    the guard must fall through to reset (current behavior).
+    """
+    from bluei.review.types import ReviewCycleResult
+
+    engine = _classify_engine(tmp_path)
+
+    existing_review = {
+        "last_snapshot_fingerprint": "old-fp",
+        "last_action": "retry_executed",
+        "attempts_used": 1,
+        "loop_count": 2,
+        # NOTE: no change_requester_count / actionable_comment_count keys —
+        # simulates a record written before the H6 fix shipped.
+        "planned_remediation": None,
+        "execution_result": None,
+    }
+
+    snapshot = _feedback_snapshot("new-fp-first-cycle")
+    result = ReviewCycleResult()
+
+    classification = engine._classify_pr_status(
+        snapshot=snapshot,
+        existing_review=existing_review,
+        dry_run=True,
+        lock_handle=None,
+        result=result,
+    )
+
+    assert classification["loop_count"] == 0, (
+        "Missing prior counts (first cycle / old record) must reset "
+        f"loop_count for backward compatibility; got {classification['loop_count']}"
+    )
+
+
+def test_h6_loop_count_resets_when_no_prior_remediation(tmp_path):
+    """
+    H6 fix: even if counts are unchanged, if no remediation was attempted
+    last cycle, the rephrase interpretation does not apply — reset to 0.
+    This prevents false-positive loop detection on the second-ever cycle.
+    """
+    from bluei.review.types import ReviewCycleResult
+
+    engine = _classify_engine(tmp_path)
+
+    existing_review = {
+        "last_snapshot_fingerprint": "old-fp",
+        "last_action": "review_feedback_detected",  # not a remediation action
+        "attempts_used": 0,
+        "loop_count": 1,
+        "change_requester_count": 1,
+        "actionable_comment_count": 1,
+        "planned_remediation": None,
+        "execution_result": None,
+    }
+
+    snapshot = _feedback_snapshot("new-fp-no-remediation")
+    result = ReviewCycleResult()
+
+    classification = engine._classify_pr_status(
+        snapshot=snapshot,
+        existing_review=existing_review,
+        dry_run=True,
+        lock_handle=None,
+        result=result,
+    )
+
+    assert classification["loop_count"] == 0, (
+        "Stable counts but no prior remediation must reset loop_count "
+        f"(avoid false-positive loop detection); got {classification['loop_count']}"
+    )
+
+
+def test_h6_counts_persisted_to_review_record(tmp_path):
+    """
+    H6 fix: _record_pr_in_review_state must persist change_requester_count
+    and actionable_comment_count as top-level fields so the next cycle can
+    read them in _classify_pr_status.
+    """
+    engine = _classify_engine(tmp_path)
+    snapshot = _feedback_snapshot("any-fp")
+
+    existing_review = {
+        "last_snapshot_fingerprint": "old-fp",
+        "last_action": "retry_executed",
+        "attempts_used": 1,
+        "loop_count": 0,
+    }
+
+    record = engine._record_pr_in_review_state(
+        snapshot=snapshot,
+        existing_review=existing_review,
+        status="review_feedback_detected",
+        merge_reason="test",
+        remediation_plan=None,
+        execution_result=None,
+        loop_count=0,
+        paused=False,
+        stale_pause=False,
+        retry_eligible=True,
+        pending_push_cycles=0,
+    )
+
+    assert record["change_requester_count"] == 1, (
+        "change_requester_count must be persisted from snapshot"
+    )
+    assert record["actionable_comment_count"] == 1, (
+        "actionable_comment_count must be persisted from snapshot"
+    )
+
+
+def test_h6_loop_count_increments_across_multiple_rephrase_cycles(tmp_path):
+    """
+    H6 integration: a PR that loops through remediation → reviewer rephrase
+    (same counts) → remediation again must eventually trip the loop guard.
+    Before H6 the counter kept resetting to 0 and the guard never fired.
+    """
+    from bluei.review.types import ReviewCycleResult
+
+    engine = _classify_engine(tmp_path)
+    # max_loops is 2 in make_repo — the guard fires at loop_count > 2.
+
+    existing_review = {
+        "last_snapshot_fingerprint": "fp-0",
+        "last_action": "retry_executed",
+        "attempts_used": 1,
+        "loop_count": 3,
+        "change_requester_count": 1,
+        "actionable_comment_count": 1,
+        "planned_remediation": None,
+        "execution_result": None,
+    }
+
+    # Reviewer rephrases — new fingerprint, same counts.
+    snapshot = _feedback_snapshot("fp-1-rephrased")
+    result = ReviewCycleResult()
+
+    classification = engine._classify_pr_status(
+        snapshot=snapshot,
+        existing_review=existing_review,
+        dry_run=True,
+        lock_handle=None,
+        result=result,
+    )
+
+    # loop_count preserved at 3 → strictly greater than max_loops (2) → guard fires.
+    assert classification["loop_count"] == 3
+    assert classification["status"] == "loop_guard_paused", (
+        "Preserved loop_count must trip the loop guard when it exceeds "
+        f"max_loops; got status {classification['status']}"
+    )
+    assert classification["paused"] is True
+    assert result.paused_prs == 1

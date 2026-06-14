@@ -18,6 +18,17 @@ from bluei.app.models import LiveRolloutMode, now_iso
 from bluei.review.models import PublishStatus
 from bluei.review.types import ReviewCycleResult
 
+# Proactive inter-PR throttle. Default 0 keeps existing behavior; opt in via
+# review_care.inter_pr_delay_seconds to space out sequential API calls and
+# reduce the chance of tripping GitHub's secondary rate limit on PR-heavy repos.
+_DEFAULT_INTER_PR_DELAY_SECONDS = 0.0
+
+# Maximum number of consecutive cycles a PR may stay in retry_pending_push
+# (with unchanged fingerprint) before escalating to retry_exhausted. Prevents
+# indefinite pinning when the retry path reuses execution_result without
+# re-running remediation, freezing attempts_used and bypassing escalation.
+_MAX_PENDING_PUSH_CYCLES = 5
+
 
 class ObservationMixin:
     def _run_observation_cycle(
@@ -143,9 +154,19 @@ class ObservationMixin:
                 }
                 review_records[pr_key] = previous_review_records.get(pr_key, {})
 
-        for pr in managed_prs[
-            : int(self.repo.config.review_care.get("max_prs_per_run", 1) or 1) * 20
-        ]:
+        inter_pr_delay_seconds = float(
+            (self.repo.config.review_care or {}).get(
+                "inter_pr_delay_seconds", _DEFAULT_INTER_PR_DELAY_SECONDS
+            )
+        )
+
+        for idx, pr in enumerate(
+            managed_prs[
+                : int(self.repo.config.review_care.get("max_prs_per_run", 1) or 1) * 20
+            ]
+        ):
+            if idx > 0 and not dry_run and inter_pr_delay_seconds > 0:
+                _time.sleep(inter_pr_delay_seconds)
             pr_number = int(pr["number"])
             pr_key = str(pr_number)
             lock_handle = None
@@ -169,6 +190,7 @@ class ObservationMixin:
                 paused = classification["paused"]
                 remediation_plan = classification["remediation_plan"]
                 execution_result = classification["execution_result"]
+                pending_push_cycles = classification["pending_push_cycles"]
 
                 final_retry_eligible = False
 
@@ -196,6 +218,7 @@ class ObservationMixin:
                     paused=paused,
                     stale_pause=stale_pause,
                     retry_eligible=final_retry_eligible,
+                    pending_push_cycles=pending_push_cycles,
                 )
                 if not dry_run:
                     self._append_pr_review_event(
@@ -259,11 +282,15 @@ class ObservationMixin:
 
         Returns a dict with keys: ``loop_count``, ``stale_pause``, ``status``,
         ``merge_state``, ``merge_reason``, ``paused``, ``remediation_plan``,
-        ``execution_result``.
+        ``execution_result``, ``pending_push_cycles``.
         """
         existing_fingerprint = existing_review.get("last_snapshot_fingerprint")
         previous_action = str(existing_review.get("last_action") or "")
         loop_count = int(existing_review.get("loop_count", 0))
+        # Default to 0; only set non-zero while staying in retry_pending_push.
+        # Any transition out (fingerprint change, escalation, status change)
+        # implicitly resets because we never increment in those branches.
+        pending_push_cycles = 0
         previous_attempted_remediation = previous_action in {
             "retry_executed",
             "retry_pushed",
@@ -276,6 +303,14 @@ class ObservationMixin:
         stale_pause = (not previous_attempted_remediation) and int(
             existing_review.get("attempts_used", 0)
         ) == 0
+        # Stable-signal counts — used to detect reviewer rephrase vs. genuine
+        # new review content when the fingerprint changes. The fingerprint is
+        # a hash over comment bodies, so any rewording flips it even when the
+        # underlying concern (and number of commenters / comments) is static.
+        current_change_requester_count = len(snapshot["active_change_requesters"])
+        current_actionable_comment_count = len(snapshot["actionable_comments"])
+        prev_change_requester_count = existing_review.get("change_requester_count")
+        prev_actionable_comment_count = existing_review.get("actionable_comment_count")
         if (
             existing_fingerprint == snapshot["fingerprint"]
             and snapshot["actionable_comments"]
@@ -285,7 +320,28 @@ class ObservationMixin:
             else:
                 loop_count = 0
         elif existing_fingerprint and existing_fingerprint != snapshot["fingerprint"]:
-            loop_count = 0
+            # H6: semantic-level loop guard. A fingerprint change normally means
+            # the reviewer left genuinely new content, so we reset the counter.
+            # But if the *stable signal* (number of change-requesters and
+            # actionable comments) is unchanged AND we attempted remediation
+            # last cycle, the reviewer most likely rephrased the same concern.
+            # In that case preserve loop_count rather than resetting to 0 —
+            # otherwise a reviewer can keep the bot in an infinite remediation
+            # loop simply by rewording each time. We only PRESERVE (never
+            # increment here) to avoid false-positive loop detection; when in
+            # doubt (missing prior counts), we reset (backward compatible).
+            counts_unchanged = (
+                prev_change_requester_count is not None
+                and prev_actionable_comment_count is not None
+                and int(prev_change_requester_count) == current_change_requester_count
+                and int(prev_actionable_comment_count)
+                == current_actionable_comment_count
+            )
+            if counts_unchanged and previous_attempted_remediation:
+                # Rephrase of the same concern — preserve loop_count.
+                pass
+            else:
+                loop_count = 0
 
         retry_eligible = bool(
             snapshot["actionable_comments"] or snapshot["active_change_requesters"]
@@ -319,13 +375,25 @@ class ObservationMixin:
                 previous_action == "retry_pending_push"
                 and existing_fingerprint == snapshot["fingerprint"]
             ):
-                status = "retry_pending_push"
-                merge_state = "awaiting_operator_push"
-                merge_reason = (
-                    "Validated remediation is waiting for explicit commit/push approval"
+                # Increment pending-push counter; escalate to retry_exhausted
+                # after _MAX_PENDING_PUSH_CYCLES to avoid indefinite pinning.
+                pending_push_cycles = (
+                    int(existing_review.get("pending_push_cycles", 0)) + 1
                 )
-                remediation_plan = existing_review.get("planned_remediation")
-                execution_result = existing_review.get("execution_result")
+                if pending_push_cycles >= _MAX_PENDING_PUSH_CYCLES:
+                    status = "retry_exhausted"
+                    merge_reason = (
+                        f"Pending-push timeout: stuck {pending_push_cycles} "
+                        "cycles awaiting operator push"
+                    )
+                    result.retry_exhausted_prs += 1
+                    pending_push_cycles = 0
+                else:
+                    status = "retry_pending_push"
+                    merge_state = "awaiting_operator_push"
+                    merge_reason = "Validated remediation is waiting for explicit commit/push approval"
+                    remediation_plan = existing_review.get("planned_remediation")
+                    execution_result = existing_review.get("execution_result")
             elif attempts_used >= max_attempts:
                 status = "retry_exhausted"
                 merge_reason = f"Max retry attempts ({max_attempts}) exhausted"
@@ -388,6 +456,9 @@ class ObservationMixin:
             "paused": paused,
             "remediation_plan": remediation_plan,
             "execution_result": execution_result,
+            "pending_push_cycles": pending_push_cycles,
+            "change_requester_count": current_change_requester_count,
+            "actionable_comment_count": current_actionable_comment_count,
         }
 
     def _record_pr_in_active_state(
@@ -447,6 +518,7 @@ class ObservationMixin:
         paused: bool,
         stale_pause: bool,
         retry_eligible: bool,
+        pending_push_cycles: int = 0,
     ) -> Dict[str, Any]:
         """Build the review-state record capturing the snapshot and remediation outcome."""
         return {
@@ -466,7 +538,13 @@ class ObservationMixin:
                 )
             ),
             "loop_count": loop_count,
+            "pending_push_cycles": pending_push_cycles,
             "retry_eligible": retry_eligible,
+            # H6: top-level stable-signal counts so the next cycle can detect
+            # reviewer rephrase (fingerprint changed but counts unchanged)
+            # without resetting loop_count indefinitely.
+            "change_requester_count": len(snapshot["active_change_requesters"]),
+            "actionable_comment_count": len(snapshot["actionable_comments"]),
             "last_action": status,
             "last_action_at": snapshot["fetched_at"],
             "last_action_reason": merge_reason,
