@@ -1,65 +1,64 @@
-"""Structural code fingerprinting for duplicate/similar pattern detection.
+"""Python-specific structural normalization via AST traversal.
 
-Normalizes AST and text to structure-only tokens, then hashes for exact
-matching or computes similarity via Levenshtein distance. Used by the
-pattern replay system.
+The four `_python_*` dispatcher functions parse the AST, then delegate
+to the text-based normalizers in `.text` for the final pass. Imports
+from `.text` are deferred to avoid any chance of circular import at
+package init time.
 """
+
+from __future__ import annotations
+
 import ast
 import hashlib
-import re
-from typing import Dict, List, Optional, Tuple
-
-FUZZY_THRESHOLDS: Dict[str, float] = {
-    "bug": 0.85,
-    "lint": 0.70,
-    "type-safety": 0.80,
-    "test-coverage": 0.60,
-    "test-gap": 0.60,
-    "refactor": 0.75,
-    "perf-smell": 0.80,
-    "security": 0.85,
-    "style": 0.65,
-    "docs-gap": 0.65,
-    "docs-drift": 0.65,
-    "docs-mismatch": 0.65,
-    "todo/debt": 0.70,
-}
-
-DEFAULT_FUZZY_THRESHOLD = 0.75
-
-
-def compute_structural_hash(code: str, language: str) -> str:
-    if language in ("python",):
-        return _python_structural_hash(code)
-    return _text_structural_hash(code)
+from typing import Dict, List
 
 
 def _python_structural_hash(code: str) -> str:
     try:
         tree = ast.parse(code)
     except SyntaxError:
+        from bluei.engine.structural_hash.text import _text_structural_hash
+
         return _text_structural_hash(code)
     normalizer = _PythonStructuralNormalizer()
     normalizer.visit(tree)
     return hashlib.sha256(" ".join(normalizer.tokens).encode("utf-8")).hexdigest()[:16]
 
 
-def _text_structural_hash(code: str) -> str:
-    normalized = _text_normalize(code)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+def _python_node_sequence(code: str) -> List[str]:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        from bluei.engine.structural_hash.text import _text_node_sequence
+
+        return _text_node_sequence(code)
+    visitor = _NodeSequenceExtractor()
+    visitor.visit(tree)
+    return visitor.sequence
 
 
-def _text_normalize(code: str) -> str:
-    text = code
-    text = re.sub(r'#.*$', '', text, flags=re.MULTILINE)
-    text = re.sub(r'//.*$', '', text, flags=re.MULTILINE)
-    text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
-    text = re.sub(r'"(?:[^"\\]|\\.)*"', '"<str>"', text)
-    text = re.sub(r"'(?:[^'\\]|\\.)*'", "'<str>'", text)
-    text = re.sub(r'\b\d+\.?\d*\b', '<num>', text)
-    text = re.sub(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', '<id>', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+def _python_operator_sequence(code: str) -> List[str]:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        from bluei.engine.structural_hash.text import _text_operator_sequence
+
+        return _text_operator_sequence(code)
+    extractor = _OperatorExtractor()
+    extractor.visit(tree)
+    return extractor.operators
+
+
+def _python_normalize_for_sharing(code: str) -> str:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        from bluei.engine.structural_hash.text import _text_normalize_for_sharing
+
+        return _text_normalize_for_sharing(code)
+    normalizer = _SharingNormalizer()
+    normalizer.visit(tree)
+    return ast.unparse(tree)
 
 
 class _PythonStructuralNormalizer(ast.NodeVisitor):
@@ -328,18 +327,34 @@ class _PythonStructuralNormalizer(ast.NodeVisitor):
 
     def _op_str(self, op: ast.operator) -> str:
         _MAP = {
-            ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/",
-            ast.FloorDiv: "//", ast.Mod: "%", ast.Pow: "**",
-            ast.LShift: "<<", ast.RShift: ">>", ast.BitOr: "|",
-            ast.BitXor: "^", ast.BitAnd: "&", ast.MatMult: "@",
+            ast.Add: "+",
+            ast.Sub: "-",
+            ast.Mult: "*",
+            ast.Div: "/",
+            ast.FloorDiv: "//",
+            ast.Mod: "%",
+            ast.Pow: "**",
+            ast.LShift: "<<",
+            ast.RShift: ">>",
+            ast.BitOr: "|",
+            ast.BitXor: "^",
+            ast.BitAnd: "&",
+            ast.MatMult: "@",
         }
         return _MAP.get(type(op), type(op).__name__)
 
     def _cmpop_str(self, op: ast.cmpop) -> str:
         _MAP = {
-            ast.Eq: "==", ast.NotEq: "!=", ast.Lt: "<", ast.LtE: "<=",
-            ast.Gt: ">", ast.GtE: ">=", ast.Is: "is", ast.IsNot: "is not",
-            ast.In: "in", ast.NotIn: "not in",
+            ast.Eq: "==",
+            ast.NotEq: "!=",
+            ast.Lt: "<",
+            ast.LtE: "<=",
+            ast.Gt: ">",
+            ast.GtE: ">=",
+            ast.Is: "is",
+            ast.IsNot: "is not",
+            ast.In: "in",
+            ast.NotIn: "not in",
         }
         return _MAP.get(type(op), type(op).__name__)
 
@@ -347,22 +362,6 @@ class _PythonStructuralNormalizer(ast.NodeVisitor):
         if isinstance(op, ast.And):
             return "and"
         return "or"
-
-
-def extract_node_sequence(code: str, language: str) -> List[str]:
-    if language in ("python",):
-        return _python_node_sequence(code)
-    return _text_node_sequence(code)
-
-
-def _python_node_sequence(code: str) -> List[str]:
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return _text_node_sequence(code)
-    visitor = _NodeSequenceExtractor()
-    visitor.visit(tree)
-    return visitor.sequence
 
 
 class _NodeSequenceExtractor(ast.NodeVisitor):
@@ -373,33 +372,6 @@ class _NodeSequenceExtractor(ast.NodeVisitor):
         self.sequence.append(type(node).__name__)
         for child in ast.iter_child_nodes(node):
             self.visit(child)
-
-
-def _text_node_sequence(code: str) -> List[str]:
-    tokens = []
-    for m in re.finditer(r'[a-zA-Z_]\w*|[+\-*/%=<>!&|^~]+|[{}\[\](),.;:]', code):
-        tok = m.group()
-        if re.match(r'^[a-zA-Z_]', tok):
-            tokens.append("ID")
-        else:
-            tokens.append(tok)
-    return tokens
-
-
-def extract_operator_sequence(code: str, language: str) -> List[str]:
-    if language in ("python",):
-        return _python_operator_sequence(code)
-    return _text_operator_sequence(code)
-
-
-def _python_operator_sequence(code: str) -> List[str]:
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return _text_operator_sequence(code)
-    extractor = _OperatorExtractor()
-    extractor.visit(tree)
-    return extractor.operators
 
 
 class _OperatorExtractor(ast.NodeVisitor):
@@ -437,94 +409,6 @@ class _OperatorExtractor(ast.NodeVisitor):
             self.visit(child)
 
 
-def _text_operator_sequence(code: str) -> List[str]:
-    ops = []
-    for m in re.finditer(r'[+\-*/%=<>!&|^~]+', code):
-        ops.append(m.group())
-    return ops
-
-
-def sequence_similarity(seq_a: List[str], seq_b: List[str]) -> float:
-    if not seq_a and not seq_b:
-        return 1.0
-    if not seq_a or not seq_b:
-        return 0.0
-    la, lb = len(seq_a), len(seq_b)
-    if abs(la - lb) > max(la, lb):
-        return 0.0
-    dist = _levenshtein_distance(seq_a, seq_b)
-    max_len = max(la, lb)
-    if max_len == 0:
-        return 1.0
-    return 1.0 - (dist / max_len)
-
-
-def _levenshtein_distance(a: List[str], b: List[str]) -> int:
-    la, lb = len(a), len(b)
-    if la == 0:
-        return lb
-    if lb == 0:
-        return la
-    prev = list(range(lb + 1))
-    curr = [0] * (lb + 1)
-    for i in range(1, la + 1):
-        curr[0] = i
-        for j in range(1, lb + 1):
-            cost = 0 if a[i - 1] == b[j - 1] else 1
-            curr[j] = min(
-                prev[j] + 1,
-                curr[j - 1] + 1,
-                prev[j - 1] + cost,
-            )
-        prev, curr = curr, prev
-    return prev[lb]
-
-
-def fuzzy_structural_match(
-    finding_snippet: str,
-    pattern_before: str,
-    language: str,
-) -> float:
-    h1 = compute_structural_hash(finding_snippet, language)
-    h2 = compute_structural_hash(pattern_before, language)
-    if h1 == h2:
-        return 1.0
-    nodes_a = extract_node_sequence(finding_snippet, language)
-    nodes_b = extract_node_sequence(pattern_before, language)
-    node_sim = sequence_similarity(nodes_a, nodes_b)
-    ops_a = extract_operator_sequence(finding_snippet, language)
-    ops_b = extract_operator_sequence(pattern_before, language)
-    if ops_a or ops_b:
-        op_sim = sequence_similarity(ops_a, ops_b)
-        return 0.4 * node_sim + 0.6 * op_sim
-    return node_sim
-
-
-def get_fuzzy_threshold(rule: str, catalog: Optional[List[Dict]] = None) -> float:
-    if catalog:
-        for entry in catalog:
-            if entry.get("rule") == rule:
-                cat = entry.get("category", "")
-                return FUZZY_THRESHOLDS.get(cat, DEFAULT_FUZZY_THRESHOLD)
-    return DEFAULT_FUZZY_THRESHOLD
-
-
-def normalize_for_sharing(code: str, language: str) -> str:
-    if language in ("python",):
-        return _python_normalize_for_sharing(code)
-    return _text_normalize_for_sharing(code)
-
-
-def _python_normalize_for_sharing(code: str) -> str:
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return _text_normalize_for_sharing(code)
-    normalizer = _SharingNormalizer()
-    normalizer.visit(tree)
-    return ast.unparse(tree)
-
-
 class _SharingNormalizer(ast.NodeTransformer):
     def __init__(self):
         self._var_map: Dict[str, str] = {}
@@ -559,7 +443,3 @@ class _SharingNormalizer(ast.NodeTransformer):
         mod_name = f"_mod{self._mod_counter}"
         self._mod_counter += 1
         return ast.ImportFrom(module=mod_name, names=[ast.alias(name="_imp")], level=0)
-
-
-def _text_normalize_for_sharing(code: str) -> str:
-    return _text_normalize(code)
