@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import importlib.util
-import json
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -22,50 +21,33 @@ except ImportError:
     # Fall back to absolute import when not running as part of the package
     import sys
     from pathlib import Path
+
     _self_dir = Path(__file__).resolve().parent
     if str(_self_dir.parent.parent) not in sys.path:
         sys.path.insert(0, str(_self_dir.parent.parent))
     from bluei.engine.models import Finding
 
-
-# ── Detect repo languages without importing app modules ────────────
-LANGUAGE_MARKERS: Dict[str, List[str]] = {
-    'python': ['setup.py', 'pyproject.toml', 'requirements.txt', 'Pipfile', 'setup.cfg'],
-    'typescript': ['tsconfig.json'],
-    'javascript': ['package.json'],
-    'go': ['go.mod', 'go.sum'],
-    'rust': ['Cargo.toml', 'Cargo.lock'],
-    'dockerfile': ['Dockerfile', 'Containerfile'],
-}
-
-LANGUAGE_GLOBS: Dict[str, List[str]] = {
-    'shell': ['*.sh', 'scripts/*.sh', 'bin/*.sh'],
-    'markdown': ['*.md', 'docs/*.md'],
-}
+from bluei.engine.language_detect import (
+    LANGUAGE_MARKERS,
+    LANGUAGE_GLOBS,
+    detect_all_languages,
+)
 
 
 def detect_repo_languages(repo_path: Path, min_score: int = 1) -> List[str]:
-    """Detect languages present in a repo by checking marker files."""
-    scores: Dict[str, int] = {}
-    for lang, markers in LANGUAGE_MARKERS.items():
-        score = sum(1 for m in markers if (repo_path / m).exists())
-        if score > 0:
-            scores[lang] = score
+    """Detect languages present in a repo by checking marker files.
+
+    Delegates marker/package-json detection to the canonical
+    :func:`detect_all_languages` and layers glob-based detection
+    (shell, markdown) on top.
+    """
+    ranked = detect_all_languages(repo_path)
+    scores: Dict[str, int] = dict(ranked)
+
     for lang, patterns in LANGUAGE_GLOBS.items():
         score = sum(1 for pattern in patterns for _ in repo_path.glob(pattern))
         if score > 0:
-            scores[lang] = score
-
-    # Refine JavaScript/TypeScript using package.json
-    pkg_json = repo_path / 'package.json'
-    if pkg_json.exists():
-        try:
-            pkg = json.loads(pkg_json.read_text())
-            deps = {**pkg.get('dependencies', {}), **pkg.get('devDependencies', {})}
-            if 'typescript' in deps or any(k.startswith('@types/') for k in deps):
-                scores['typescript'] = scores.get('typescript', 0) + 5
-        except (json.JSONDecodeError, OSError):
-            _logger.debug("Failed to detect TypeScript via package.json")
+            scores[lang] = scores.get(lang, 0) + score
 
     return sorted(
         [lang for lang, s in scores.items() if s >= min_score],
@@ -80,10 +62,10 @@ def _find_plugins_dir(repo_path: Path) -> Optional[Path]:
     # Traverse up from repo_path to find the project root.
     candidate = repo_path.resolve()
     for _ in range(10):
-        plugins_candidate = candidate / 'plugins'
+        plugins_candidate = candidate / "plugins"
         if plugins_candidate.exists() and plugins_candidate.is_dir():
             # Verify it has at least one plugin.yaml
-            if list(plugins_candidate.rglob('plugin.yaml')):
+            if list(plugins_candidate.rglob("plugin.yaml")):
                 return plugins_candidate
         parent = candidate.parent
         if parent == candidate:
@@ -93,7 +75,7 @@ def _find_plugins_dir(repo_path: Path) -> Optional[Path]:
     # Fall back to the known location relative to this file
     here = Path(__file__).resolve().parent
     agent_root = here.parents[1]
-    known = agent_root / 'plugins'
+    known = agent_root / "plugins"
     if known.exists():
         return known
 
@@ -102,20 +84,20 @@ def _find_plugins_dir(repo_path: Path) -> Optional[Path]:
 
 def _load_plugin_module(plugin_id: str, plugin_dir: Path) -> Optional[Any]:
     """Import a plugin from its plugin.py file."""
-    plugin_file = plugin_dir / 'plugin.py'
+    plugin_file = plugin_dir / "plugin.py"
     if not plugin_file.exists():
         return None
 
     try:
         spec = importlib.util.spec_from_file_location(
-            f'loaded_plugin_{plugin_id}',
+            f"loaded_plugin_{plugin_id}",
             plugin_file,
         )
         if not spec or not spec.loader:
             return None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        plugin_class = getattr(module, 'Plugin', None)
+        plugin_class = getattr(module, "Plugin", None)
         if plugin_class is None:
             return None
         return plugin_class()
@@ -125,11 +107,12 @@ def _load_plugin_module(plugin_id: str, plugin_dir: Path) -> Optional[Any]:
 
 def _get_plugin_manifest(plugin_dir: Path) -> Optional[Dict[str, Any]]:
     """Read plugin.yaml manifest."""
-    manifest_file = plugin_dir / 'plugin.yaml'
+    manifest_file = plugin_dir / "plugin.yaml"
     if not manifest_file.exists():
         return None
     try:
         import yaml
+
         with open(manifest_file) as f:
             return yaml.safe_load(f)
     except ImportError:
@@ -149,9 +132,9 @@ def discover_plugins(plugins_dir: Path) -> Dict[str, Dict[str, Any]]:
         if not entry.is_dir():
             continue
         manifest = _get_plugin_manifest(entry)
-        if manifest and manifest.get('id'):
-            plugin_id = manifest['id']
-            manifest['_path'] = str(entry)
+        if manifest and manifest.get("id"):
+            plugin_id = manifest["id"]
+            manifest["_path"] = str(entry)
             manifests[plugin_id] = manifest
 
     return manifests
@@ -166,12 +149,14 @@ def load_plugin(plugin_id: str, plugins_dir: Path) -> Optional[Any]:
         manifest = manifests.get(plugin_id)
         if not manifest:
             return None
-        plugin_dir = Path(manifest['_path'])
+        plugin_dir = Path(manifest["_path"])
 
-    return _load_plugin_module(plugin_id.replace('plugin-', ''), plugin_dir)
+    return _load_plugin_module(plugin_id.replace("plugin-", ""), plugin_dir)
 
 
-def load_applicable_plugins(repo_path: Path, plugins_dir: Optional[Path] = None) -> List[Any]:
+def load_applicable_plugins(
+    repo_path: Path, plugins_dir: Optional[Path] = None
+) -> List[Any]:
     """Load all plugins that are applicable to the given repository.
 
     Detects repo languages, scans plugins, and returns instantiated plugin
@@ -191,7 +176,7 @@ def load_applicable_plugins(repo_path: Path, plugins_dir: Optional[Path] = None)
 
     loaded: List[Any] = []
     for plugin_id, manifest in manifests.items():
-        plugin_languages = [l.lower() for l in (manifest.get('languages') or [])]
+        plugin_languages = [l.lower() for l in (manifest.get("languages") or [])]
         # Match if the plugin supports any detectable language
         matches = any(lang.lower() in plugin_languages for lang in languages)
         if not matches:
@@ -201,10 +186,10 @@ def load_applicable_plugins(repo_path: Path, plugins_dir: Optional[Path] = None)
         plugin_instance = load_plugin(plugin_id, plugins_dir)
         if plugin_instance is None:
             # Fall back to inferring path from manifest
-            plugin_dir = Path(manifest['_path'])
+            plugin_dir = Path(manifest["_path"])
             plugin_instance = _load_plugin_module(plugin_id, plugin_dir)
 
-        if plugin_instance is not None and hasattr(plugin_instance, 'detect'):
+        if plugin_instance is not None and hasattr(plugin_instance, "detect"):
             if not plugin_instance.detect(repo_path):
                 continue
 

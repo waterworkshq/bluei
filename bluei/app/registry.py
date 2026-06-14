@@ -78,29 +78,10 @@ class RepoRegistry:
 
     @staticmethod
     def _detect_language(path: Path) -> str:
-        """Lightweight language detection by file extension."""
-        try:
-            for entry in path.iterdir():
-                if entry.is_file():
-                    ext = entry.suffix.lower()
-                    if ext == ".py":
-                        return "python"
-                    if ext in (".ts", ".tsx"):
-                        return "typescript"
-                    if ext in (".js", ".jsx"):
-                        return "javascript"
-        except PermissionError:
-            _logger.debug("Permission denied scanning for language detection")
-        # Check marker files
-        markers = {
-            "python": ["setup.py", "pyproject.toml", "requirements.txt", "Pipfile"],
-            "typescript": ["tsconfig.json"],
-            "javascript": ["package.json", ".eslintrc"],
-        }
-        for lang, files in markers.items():
-            if any((path / f).exists() for f in files):
-                return lang
-        return "unknown"
+        """Detect primary language via canonical detection logic."""
+        from bluei.app.onboarding.detection import detect_language_simple
+
+        return detect_language_simple(path)
 
     def _ensure_registry(self):
         """Ensure registry file exists."""

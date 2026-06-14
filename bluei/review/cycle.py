@@ -457,30 +457,16 @@ class ReviewCycleEngine(
         )
 
     def _guess_validation_commands(self) -> List[List[str]]:
-        """Infer test/lint/build commands from package.json or project layout."""
-        commands: List[List[str]] = []
-        package_json = self.provider.repo_path / "package.json"
-        if (
-            self.repo.config.language in {"typescript", "javascript"}
-            and package_json.exists()
-        ):
-            try:
-                pkg = json.loads(package_json.read_text())
-                scripts = pkg.get("scripts", {})
-                if "test" in scripts:
-                    commands.append(["npm", "test"])
-                if "lint" in scripts:
-                    commands.append(["npm", "run", "lint"])
-                if "build" in scripts:
-                    commands.append(["npm", "run", "build"])
-                if "typecheck" in scripts:
-                    commands.append(["npm", "run", "typecheck"])
-            except Exception:
-                pass
-        elif self.repo.config.language == "python":
-            if (self.provider.repo_path / "tests").exists():
-                commands.append(["pytest", "-q"])
-        return commands
+        """Infer test/lint/build commands from the canonical onboarding inference.
+
+        Delegates to :func:`infer_baseline_checks` so that the review cycle
+        uses the same command inference as onboarding (single source of truth).
+        """
+        from bluei.app.onboarding.inference import infer_baseline_checks
+        from bluei.app.models import LanguageInfo
+
+        language = LanguageInfo(name=self.repo.config.language or "unknown")
+        return infer_baseline_checks(self.provider.repo_path, language)
 
     def _get_review_mode(self) -> str:
         """Return the configured review mode, falling back to observation."""
