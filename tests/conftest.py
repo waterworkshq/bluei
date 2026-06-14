@@ -5,6 +5,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
+# Import orchestrator eagerly so its re-exports bind to the real functions
+# before any test patches submodules like ``bluei.engine.discovery``. Without
+# this, the first ``from bluei.engine.orchestrator import X`` inside a
+# ``with patch(...)`` block would capture the mock permanently.
+import bluei.engine.orchestrator  # noqa: F401
+
 from bluei.engine.models import Finding
 
 logger = logging.getLogger(__name__)

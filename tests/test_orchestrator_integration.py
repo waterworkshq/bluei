@@ -150,27 +150,27 @@ class TestDiscoverFindingsEndToEnd:
         docs_index.write_text("[]")
 
         with (
-            patch("bluei.engine.orchestrator._ast_scan_python_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_ts_js_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_go_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_rust_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_python_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_ts_js_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_go_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_rust_files", return_value=[]),
             patch(
-                "bluei.engine.orchestrator.discover_typescript_type_findings",
+                "bluei.engine.discovery.discover_typescript_type_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_test_coverage_findings",
+                "bluei.engine.discovery.discover_test_coverage_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_xo_linter_findings", return_value=[]
+                "bluei.engine.discovery.discover_xo_linter_findings", return_value=[]
             ),
             patch(
-                "bluei.engine.orchestrator.discover_python_linter_findings",
+                "bluei.engine.discovery.discover_python_linter_findings",
                 return_value=[],
             ),
-            patch("bluei.engine.orchestrator.run_plugin_discovery", return_value=[]),
-            patch("bluei.engine.orchestrator.load_docs_index", return_value=[]),
+            patch("bluei.engine.discovery.run_plugin_discovery", return_value=[]),
+            patch("bluei.engine.discovery.load_docs_index", return_value=[]),
         ):
             from bluei.engine.orchestrator import discover_findings
 
@@ -191,27 +191,27 @@ class TestDiscoverFindingsEndToEnd:
         docs_index.write_text("[]")
 
         with (
-            patch("bluei.engine.orchestrator._ast_scan_python_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_ts_js_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_go_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_rust_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_python_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_ts_js_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_go_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_rust_files", return_value=[]),
             patch(
-                "bluei.engine.orchestrator.discover_typescript_type_findings",
+                "bluei.engine.discovery.discover_typescript_type_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_test_coverage_findings",
+                "bluei.engine.discovery.discover_test_coverage_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_xo_linter_findings", return_value=[]
+                "bluei.engine.discovery.discover_xo_linter_findings", return_value=[]
             ),
             patch(
-                "bluei.engine.orchestrator.discover_python_linter_findings",
+                "bluei.engine.discovery.discover_python_linter_findings",
                 return_value=[],
             ),
-            patch("bluei.engine.orchestrator.run_plugin_discovery", return_value=[]),
-            patch("bluei.engine.orchestrator.load_docs_index", return_value=[]),
+            patch("bluei.engine.discovery.run_plugin_discovery", return_value=[]),
+            patch("bluei.engine.discovery.load_docs_index", return_value=[]),
         ):
             from bluei.engine.orchestrator import discover_findings
 
@@ -240,27 +240,27 @@ class TestDiscoverFindingsEndToEnd:
         docs_index.write_text("[]")
 
         with (
-            patch("bluei.engine.orchestrator._ast_scan_python_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_ts_js_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_go_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_rust_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_python_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_ts_js_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_go_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_rust_files", return_value=[]),
             patch(
-                "bluei.engine.orchestrator.discover_typescript_type_findings",
+                "bluei.engine.discovery.discover_typescript_type_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_test_coverage_findings",
+                "bluei.engine.discovery.discover_test_coverage_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_xo_linter_findings", return_value=[]
+                "bluei.engine.discovery.discover_xo_linter_findings", return_value=[]
             ),
             patch(
-                "bluei.engine.orchestrator.discover_python_linter_findings",
+                "bluei.engine.discovery.discover_python_linter_findings",
                 return_value=[],
             ),
-            patch("bluei.engine.orchestrator.run_plugin_discovery", return_value=[]),
-            patch("bluei.engine.orchestrator.load_docs_index", return_value=[]),
+            patch("bluei.engine.discovery.run_plugin_discovery", return_value=[]),
+            patch("bluei.engine.discovery.load_docs_index", return_value=[]),
         ):
             from bluei.engine.orchestrator import discover_findings
 
@@ -277,27 +277,27 @@ class TestDiscoverFindingsEndToEnd:
         docs_index.write_text("[]")
 
         with (
-            patch("bluei.engine.orchestrator._ast_scan_python_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_ts_js_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_go_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_rust_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_python_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_ts_js_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_go_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_rust_files", return_value=[]),
             patch(
-                "bluei.engine.orchestrator.discover_typescript_type_findings",
+                "bluei.engine.discovery.discover_typescript_type_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_test_coverage_findings",
+                "bluei.engine.discovery.discover_test_coverage_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_xo_linter_findings", return_value=[]
+                "bluei.engine.discovery.discover_xo_linter_findings", return_value=[]
             ),
             patch(
-                "bluei.engine.orchestrator.discover_python_linter_findings",
+                "bluei.engine.discovery.discover_python_linter_findings",
                 return_value=[],
             ),
-            patch("bluei.engine.orchestrator.run_plugin_discovery", return_value=[]),
-            patch("bluei.engine.orchestrator.load_docs_index", return_value=[]),
+            patch("bluei.engine.discovery.run_plugin_discovery", return_value=[]),
+            patch("bluei.engine.discovery.load_docs_index", return_value=[]),
         ):
             from bluei.engine.orchestrator import discover_findings
 
@@ -315,27 +315,27 @@ class TestDiscoverFindingsEndToEnd:
         docs_index.write_text("[]")
 
         with (
-            patch("bluei.engine.orchestrator._ast_scan_python_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_ts_js_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_go_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_rust_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_python_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_ts_js_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_go_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_rust_files", return_value=[]),
             patch(
-                "bluei.engine.orchestrator.discover_typescript_type_findings",
+                "bluei.engine.discovery.discover_typescript_type_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_test_coverage_findings",
+                "bluei.engine.discovery.discover_test_coverage_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_xo_linter_findings", return_value=[]
+                "bluei.engine.discovery.discover_xo_linter_findings", return_value=[]
             ),
             patch(
-                "bluei.engine.orchestrator.discover_python_linter_findings",
+                "bluei.engine.discovery.discover_python_linter_findings",
                 return_value=[],
             ),
-            patch("bluei.engine.orchestrator.run_plugin_discovery", return_value=[]),
-            patch("bluei.engine.orchestrator.load_docs_index", return_value=[]),
+            patch("bluei.engine.discovery.run_plugin_discovery", return_value=[]),
+            patch("bluei.engine.discovery.load_docs_index", return_value=[]),
         ):
             from bluei.engine.orchestrator import discover_findings
 
@@ -355,27 +355,27 @@ class TestDiscoverFindingsEndToEnd:
         docs_index.write_text("[]")
 
         with (
-            patch("bluei.engine.orchestrator._ast_scan_python_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_ts_js_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_go_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_rust_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_python_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_ts_js_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_go_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_rust_files", return_value=[]),
             patch(
-                "bluei.engine.orchestrator.discover_typescript_type_findings",
+                "bluei.engine.discovery.discover_typescript_type_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_test_coverage_findings",
+                "bluei.engine.discovery.discover_test_coverage_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_xo_linter_findings", return_value=[]
+                "bluei.engine.discovery.discover_xo_linter_findings", return_value=[]
             ),
             patch(
-                "bluei.engine.orchestrator.discover_python_linter_findings",
+                "bluei.engine.discovery.discover_python_linter_findings",
                 return_value=[],
             ),
-            patch("bluei.engine.orchestrator.run_plugin_discovery", return_value=[]),
-            patch("bluei.engine.orchestrator.load_docs_index", return_value=[]),
+            patch("bluei.engine.discovery.run_plugin_discovery", return_value=[]),
+            patch("bluei.engine.discovery.load_docs_index", return_value=[]),
         ):
             from bluei.engine.orchestrator import discover_findings
 
@@ -396,27 +396,27 @@ class TestDiscoverFindingsEndToEnd:
         docs_index.write_text("[]")
 
         with (
-            patch("bluei.engine.orchestrator._ast_scan_python_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_ts_js_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_go_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_rust_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_python_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_ts_js_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_go_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_rust_files", return_value=[]),
             patch(
-                "bluei.engine.orchestrator.discover_typescript_type_findings",
+                "bluei.engine.discovery.discover_typescript_type_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_test_coverage_findings",
+                "bluei.engine.discovery.discover_test_coverage_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_xo_linter_findings", return_value=[]
+                "bluei.engine.discovery.discover_xo_linter_findings", return_value=[]
             ),
             patch(
-                "bluei.engine.orchestrator.discover_python_linter_findings",
+                "bluei.engine.discovery.discover_python_linter_findings",
                 return_value=[],
             ),
-            patch("bluei.engine.orchestrator.run_plugin_discovery", return_value=[]),
-            patch("bluei.engine.orchestrator.load_docs_index", return_value=[]),
+            patch("bluei.engine.discovery.run_plugin_discovery", return_value=[]),
+            patch("bluei.engine.discovery.load_docs_index", return_value=[]),
         ):
             from bluei.engine.orchestrator import discover_findings
 
@@ -471,28 +471,28 @@ class TestDiscoverFindingsEndToEnd:
         ]
 
         with (
-            patch("bluei.engine.orchestrator._ast_scan_python_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_ts_js_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_go_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_rust_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_python_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_ts_js_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_go_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_rust_files", return_value=[]),
             patch(
-                "bluei.engine.orchestrator.discover_typescript_type_findings",
+                "bluei.engine.discovery.discover_typescript_type_findings",
                 return_value=fake_type,
             ),
             patch(
-                "bluei.engine.orchestrator.discover_test_coverage_findings",
+                "bluei.engine.discovery.discover_test_coverage_findings",
                 return_value=fake_cov,
             ),
             patch(
-                "bluei.engine.orchestrator.discover_xo_linter_findings",
+                "bluei.engine.discovery.discover_xo_linter_findings",
                 return_value=fake_xo,
             ),
             patch(
-                "bluei.engine.orchestrator.discover_python_linter_findings",
+                "bluei.engine.discovery.discover_python_linter_findings",
                 return_value=fake_ruff,
             ),
-            patch("bluei.engine.orchestrator.run_plugin_discovery", return_value=[]),
-            patch("bluei.engine.orchestrator.load_docs_index", return_value=[]),
+            patch("bluei.engine.discovery.run_plugin_discovery", return_value=[]),
+            patch("bluei.engine.discovery.load_docs_index", return_value=[]),
         ):
             from bluei.engine.orchestrator import discover_findings
 
@@ -515,27 +515,27 @@ class TestDiscoverFindingsEndToEnd:
         docs_index.write_text("[]")
 
         with (
-            patch("bluei.engine.orchestrator._ast_scan_python_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_ts_js_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_go_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_rust_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_python_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_ts_js_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_go_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_rust_files", return_value=[]),
             patch(
-                "bluei.engine.orchestrator.discover_typescript_type_findings",
+                "bluei.engine.discovery.discover_typescript_type_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_test_coverage_findings",
+                "bluei.engine.discovery.discover_test_coverage_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_xo_linter_findings", return_value=[]
+                "bluei.engine.discovery.discover_xo_linter_findings", return_value=[]
             ),
             patch(
-                "bluei.engine.orchestrator.discover_python_linter_findings",
+                "bluei.engine.discovery.discover_python_linter_findings",
                 return_value=[],
             ),
-            patch("bluei.engine.orchestrator.run_plugin_discovery", return_value=[]),
-            patch("bluei.engine.orchestrator.load_docs_index", return_value=[]),
+            patch("bluei.engine.discovery.run_plugin_discovery", return_value=[]),
+            patch("bluei.engine.discovery.load_docs_index", return_value=[]),
         ):
             from bluei.engine.orchestrator import discover_findings
 
@@ -573,29 +573,29 @@ class TestCrossSourceDeduplication:
 
         with (
             patch(
-                "bluei.engine.orchestrator._ast_scan_python_files",
+                "bluei.engine.discovery._ast_scan_python_files",
                 return_value=[ast_finding],
             ),
-            patch("bluei.engine.orchestrator._ast_scan_ts_js_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_go_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_rust_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_ts_js_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_go_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_rust_files", return_value=[]),
             patch(
-                "bluei.engine.orchestrator.discover_typescript_type_findings",
+                "bluei.engine.discovery.discover_typescript_type_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_test_coverage_findings",
+                "bluei.engine.discovery.discover_test_coverage_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_xo_linter_findings", return_value=[]
+                "bluei.engine.discovery.discover_xo_linter_findings", return_value=[]
             ),
             patch(
-                "bluei.engine.orchestrator.discover_python_linter_findings",
+                "bluei.engine.discovery.discover_python_linter_findings",
                 return_value=[],
             ),
-            patch("bluei.engine.orchestrator.run_plugin_discovery", return_value=[]),
-            patch("bluei.engine.orchestrator.load_docs_index", return_value=[]),
+            patch("bluei.engine.discovery.run_plugin_discovery", return_value=[]),
+            patch("bluei.engine.discovery.load_docs_index", return_value=[]),
         ):
             from bluei.engine.orchestrator import discover_findings
 
@@ -625,29 +625,29 @@ class TestCrossSourceDeduplication:
 
         with (
             patch(
-                "bluei.engine.orchestrator._ast_scan_python_files",
+                "bluei.engine.discovery._ast_scan_python_files",
                 return_value=[ast_finding],
             ),
-            patch("bluei.engine.orchestrator._ast_scan_ts_js_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_go_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_rust_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_ts_js_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_go_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_rust_files", return_value=[]),
             patch(
-                "bluei.engine.orchestrator.discover_typescript_type_findings",
+                "bluei.engine.discovery.discover_typescript_type_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_test_coverage_findings",
+                "bluei.engine.discovery.discover_test_coverage_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_xo_linter_findings", return_value=[]
+                "bluei.engine.discovery.discover_xo_linter_findings", return_value=[]
             ),
             patch(
-                "bluei.engine.orchestrator.discover_python_linter_findings",
+                "bluei.engine.discovery.discover_python_linter_findings",
                 return_value=[],
             ),
-            patch("bluei.engine.orchestrator.run_plugin_discovery", return_value=[]),
-            patch("bluei.engine.orchestrator.load_docs_index", return_value=[]),
+            patch("bluei.engine.discovery.run_plugin_discovery", return_value=[]),
+            patch("bluei.engine.discovery.load_docs_index", return_value=[]),
         ):
             from bluei.engine.orchestrator import discover_findings
 
@@ -677,29 +677,29 @@ class TestCrossSourceDeduplication:
 
         with (
             patch(
-                "bluei.engine.orchestrator._ast_scan_python_files",
+                "bluei.engine.discovery._ast_scan_python_files",
                 return_value=[ast_finding],
             ),
-            patch("bluei.engine.orchestrator._ast_scan_ts_js_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_go_files", return_value=[]),
-            patch("bluei.engine.orchestrator._ast_scan_rust_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_ts_js_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_go_files", return_value=[]),
+            patch("bluei.engine.discovery._ast_scan_rust_files", return_value=[]),
             patch(
-                "bluei.engine.orchestrator.discover_typescript_type_findings",
+                "bluei.engine.discovery.discover_typescript_type_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_test_coverage_findings",
+                "bluei.engine.discovery.discover_test_coverage_findings",
                 return_value=[],
             ),
             patch(
-                "bluei.engine.orchestrator.discover_xo_linter_findings", return_value=[]
+                "bluei.engine.discovery.discover_xo_linter_findings", return_value=[]
             ),
             patch(
-                "bluei.engine.orchestrator.discover_python_linter_findings",
+                "bluei.engine.discovery.discover_python_linter_findings",
                 return_value=[],
             ),
-            patch("bluei.engine.orchestrator.run_plugin_discovery", return_value=[]),
-            patch("bluei.engine.orchestrator.load_docs_index", return_value=[]),
+            patch("bluei.engine.discovery.run_plugin_discovery", return_value=[]),
+            patch("bluei.engine.discovery.load_docs_index", return_value=[]),
         ):
             from bluei.engine.orchestrator import discover_findings
 

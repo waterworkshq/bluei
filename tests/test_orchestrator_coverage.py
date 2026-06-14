@@ -102,7 +102,7 @@ def _patch_all_discovery(**scanner_overrides):
     }
     defaults.update(scanner_overrides)
     return [
-        patch(f"bluei.engine.orchestrator.{k}", return_value=v)
+        patch(f"bluei.engine.discovery.{k}", return_value=v)
         for k, v in defaults.items()
         if v is not None
     ]
@@ -386,7 +386,7 @@ class TestDiscoverFindingsDocsIndex:
             self._apply_patches(stack)
             stack.enter_context(
                 patch(
-                    "bluei.engine.orchestrator._git_last_commit_for_path",
+                    "bluei.engine.discovery._git_last_commit_for_path",
                     return_value="newsha456",
                 )
             )
@@ -475,18 +475,18 @@ class TestRouteFindingsWithIntent:
 
         with (
             patch(
-                "bluei.engine.orchestrator.classify_finding",
+                "bluei.engine.finding_router.classify_finding",
                 return_value=RefactorClass.REFACTOR_CLASS,
             ),
             patch(
-                "bluei.engine.orchestrator.can_auto_refactor",
+                "bluei.engine.finding_router.can_auto_refactor",
                 return_value=(False, "too-large"),
             ),
             patch(
-                "bluei.engine.orchestrator.enqueue_refactor_work",
+                "bluei.engine.finding_router.enqueue_refactor_work",
                 return_value=mock_entry,
             ),
-            patch("bluei.engine.orchestrator.save_refactor_work"),
+            patch("bluei.engine.finding_router.save_refactor_work"),
         ):
             result = route_findings_with_intent(
                 [f],
@@ -511,13 +511,14 @@ class TestRouteFindingsWithIntent:
 
         with (
             patch(
-                "bluei.engine.orchestrator.classify_finding",
+                "bluei.engine.finding_router.classify_finding",
                 return_value=RefactorClass.REFACTOR_CLASS,
             ),
             patch(
-                "bluei.engine.orchestrator.can_auto_refactor", return_value=(True, "ok")
+                "bluei.engine.finding_router.can_auto_refactor",
+                return_value=(True, "ok"),
             ),
-            patch("bluei.engine.orchestrator.save_refactor_work"),
+            patch("bluei.engine.finding_router.save_refactor_work"),
         ):
             result = route_findings_with_intent(
                 [f],
