@@ -374,6 +374,30 @@ def _cmd_status(rest: list[str]):
     return 0
 
 
+def _cmd_repos(rest: list[str]):
+    from bluei.app.config import ConfigManager
+    from bluei.app.registry import RepoRegistry
+
+    registry = RepoRegistry(ConfigManager())
+    repos = registry.list_all()
+    if not repos:
+        print("bluei: no projects registered")
+        return 0
+
+    enabled_only = "--all" not in rest
+    if enabled_only:
+        repos = [r for r in repos if r.config.enabled]
+
+    print(f"{'Name':<30} {'Language':<12} {'Enabled':<8} {'Path'}")
+    print("-" * 80)
+    for repo in repos:
+        enabled = "yes" if repo.config.enabled else "no"
+        lang = repo.config.language or "unknown"
+        path = str(repo.config.path)[:40]
+        print(f"{repo.config.name:<30} {lang:<12} {enabled:<8} {path}")
+    return 0
+
+
 def _cmd_scan(name: str, passthrough: list[str]):
     return _cmd_run(name, ["--phase", "issue-cycle", "--no-dry-run"] + passthrough)
 
@@ -715,6 +739,8 @@ def main():
         return _cmd_dashboard(rest)
     if cmd == "languages":
         return _cmd_languages(rest)
+    if cmd == "repos":
+        return _cmd_repos(rest)
 
     # ── Named-argument commands (--repo, --mode, etc.) ──
     if cmd == "onboard":

@@ -43,6 +43,7 @@ HELP_TEXT = {
   {GREEN}report{RESET}     <name> {DIM}Generate a vitality report (PDF by default){RESET}
   {GREEN}dashboard{RESET}        {DIM}Generate a read-only observability dashboard{RESET}
   {GREEN}languages{RESET}        {DIM}List installed language packs and rules{RESET}
+  {GREEN}repos{RESET}            {DIM}List registered projects (--all to include disabled){RESET}
   {GREEN}preflight{RESET}  <name> {DIM}Assess a project before registering{RESET}
   {GREEN}heal{RESET}       <name> {DIM}Heal dirty worktrees from transient artifacts{RESET}
 
@@ -233,6 +234,14 @@ PDF by default. Also supports text, JSON, HTML, and WhatsApp formats.{RESET}
 
 {BOLD}Usage:{RESET}
   bluei languages
+""",
+    "repos": f"""{BOLD}bluei repos{RESET}
+
+{DIM}List registered projects with language, enabled status, and path.{RESET}
+
+{BOLD}Usage:{RESET}
+  bluei repos              {DIM}# List enabled projects{RESET}
+  bluei repos --all        {DIM}# Include disabled projects{RESET}
 """,
     "preflight": f"""{BOLD}bluei preflight{RESET} --repo {CYAN}<path>{RESET}
 
