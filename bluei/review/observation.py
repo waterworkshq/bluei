@@ -154,387 +154,527 @@ class ObservationMixin:
                     lock_handle = self._acquire_pr_lock(pr_number)
                 snapshot = self.provider.fetch_review_snapshot(pr_number)
                 existing_review = previous_review_records.get(pr_key, {})
-                existing_fingerprint = existing_review.get("last_snapshot_fingerprint")
-                previous_action = str(existing_review.get("last_action") or "")
-                loop_count = int(existing_review.get("loop_count", 0))
-                previous_attempted_remediation = previous_action in {
-                    "retry_executed",
-                    "retry_pushed",
-                    "retry_failed",
-                    "retry_failed_validation",
-                    "retry_no_changes",
-                    "retry_failed_timeout",
-                    "retry_failed_push",
-                }
-                stale_pause = (not previous_attempted_remediation) and int(
-                    existing_review.get("attempts_used", 0)
-                ) == 0
-                if (
-                    existing_fingerprint == snapshot["fingerprint"]
-                    and snapshot["actionable_comments"]
-                ):
-                    if previous_attempted_remediation:
-                        loop_count += 1
-                    else:
-                        loop_count = 0
-                elif (
-                    existing_fingerprint
-                    and existing_fingerprint != snapshot["fingerprint"]
-                ):
-                    loop_count = 0
-
-                retry_eligible = bool(
-                    snapshot["actionable_comments"]
-                    or snapshot["active_change_requesters"]
+                classification = self._classify_pr_status(
+                    snapshot=snapshot,
+                    existing_review=existing_review,
+                    dry_run=dry_run,
+                    lock_handle=lock_handle,
+                    result=result,
                 )
-                merge_state_status = str(
-                    snapshot.get("merge_state_status") or "UNKNOWN"
-                )
-                prior_comment_key = str(
-                    existing_review.get("last_review_comment_key") or ""
-                )
-                current_snapshot_prefix = f"{snapshot['fingerprint']}:"
-                current_merge_ready_key = f"{snapshot['fingerprint']}:merge_ready"
-                review_artifact_exists_for_snapshot = prior_comment_key.startswith(
-                    current_snapshot_prefix
-                )
-                merge_ready_artifact_exists_for_snapshot = (
-                    prior_comment_key == current_merge_ready_key
-                )
-                merge_state = "not_merge_ready"
-                merge_reason = "Awaiting review evaluation"
-                status = "pending_review"
-                paused = False
-                remediation_plan: Optional[Dict[str, Any]] = None
-                execution_result: Optional[Dict[str, Any]] = None
-                if retry_eligible:
-                    status = "review_feedback_detected"
-                    merge_state = "blocked_by_review"
-                    merge_reason = f"{len(snapshot['actionable_comments'])} actionable review comments"
-                    result.blocked_prs += 1
-                    attempts_used = int(existing_review.get("attempts_used", 0))
-                    max_attempts = int(
-                        self.repo.config.review_care.get("max_attempts", 3)
-                    )
-                    if (
-                        previous_action == "retry_pending_push"
-                        and existing_fingerprint == snapshot["fingerprint"]
-                    ):
-                        status = "retry_pending_push"
-                        merge_state = "awaiting_operator_push"
-                        merge_reason = "Validated remediation is waiting for explicit commit/push approval"
-                        remediation_plan = existing_review.get("planned_remediation")
-                        execution_result = existing_review.get("execution_result")
-                    elif attempts_used >= max_attempts:
-                        status = "retry_exhausted"
-                        merge_reason = f"Max retry attempts ({max_attempts}) exhausted"
-                        result.retry_exhausted_prs += 1
-                    elif loop_count > int(
-                        self.repo.config.review_care.get("max_loops", 2)
-                    ):
-                        status = "loop_guard_paused"
-                        paused = True
-                        result.paused_prs += 1
-                    elif not dry_run and not lock_handle:
-                        status = "retry_lock_busy"
-                        merge_reason = "PR remediation lock already held"
-                    else:
-                        remediation_plan = self._plan_remediation(
-                            snapshot, existing_review, dry_run
-                        )
-                        if remediation_plan:
-                            status = remediation_plan["status"]
-                            result.retry_planned_prs += 1
-                            if remediation_plan["status"] == "retry_prepared":
-                                result.retry_prepared_prs += 1
-                elif merge_state_status in {"CLEAN", "UNKNOWN", "UNSTABLE"}:
-                    if (
-                        merge_ready_artifact_exists_for_snapshot
-                        or review_artifact_exists_for_snapshot
-                    ):
-                        status = "merge_ready"
-                        merge_state = "ready_for_merge"
-                        if merge_state_status == "CLEAN":
-                            merge_reason = "QA review artifact exists for this snapshot and no actionable review blockers were found"
-                        else:
-                            merge_reason = (
-                                "QA review artifact exists for this snapshot and no actionable review blockers were found, "
-                                f"with merge state {merge_state_status.lower()} pending fresh merge triage"
-                            )
-                        result.merge_ready_prs += 1
-                    else:
-                        status = "pending_review"
-                        merge_state = "awaiting_review_artifact"
-                        if merge_state_status == "CLEAN":
-                            merge_reason = "Clean PR, but bluei review for this snapshot has not been published yet"
-                        else:
-                            merge_reason = (
-                                "No actionable review blockers and merge state is "
-                                f"{merge_state_status.lower()}, but bluei review for this snapshot has not been published yet"
-                            )
-                else:
-                    status = "awaiting_mergeability"
-                    merge_state = "awaiting_mergeability"
-                    merge_reason = (
-                        "No actionable review blockers, but merge state is "
-                        f"{merge_state_status.lower()}"
-                    )
+                loop_count = classification["loop_count"]
+                stale_pause = classification["stale_pause"]
+                status = classification["status"]
+                merge_state = classification["merge_state"]
+                merge_reason = classification["merge_reason"]
+                paused = classification["paused"]
+                remediation_plan = classification["remediation_plan"]
+                execution_result = classification["execution_result"]
 
                 final_retry_eligible = False
 
                 result.active_prs += 1
-                active_records[pr_key] = {
-                    "pr_number": pr_number,
-                    "url": pr.get("url"),
-                    "branch": pr.get("headRefName") or snapshot["branch"],
-                    "author": (pr.get("author") or {}).get("login")
-                    or snapshot["author"],
-                    "source": "bluei-heuristic",
-                    "status": status,
-                    "opened_at": (previous_active_records.get(pr_key, {}) or {}).get(
-                        "opened_at"
-                    )
-                    or snapshot["fetched_at"],
-                    "updated_at": snapshot["fetched_at"],
-                    "provider_summary": {
-                        "provider": "github",
-                        "review_decision": snapshot["review_decision"],
-                        "merge_state_status": snapshot["merge_state_status"],
-                        "active_change_requesters": snapshot[
-                            "active_change_requesters"
-                        ],
-                        "actionable_comment_count": len(
-                            snapshot["actionable_comments"]
-                        ),
-                        "score_optional": None,
-                    },
-                    "merge_readiness": {
-                        "state": merge_state,
-                        "reason": merge_reason,
-                        "evaluated_at": snapshot["fetched_at"],
-                    },
-                    "remediation_plan": remediation_plan,
-                    "execution_result": execution_result,
-                }
-                review_records[pr_key] = {
-                    "last_provider": "github",
-                    "last_polled_at": snapshot["fetched_at"],
-                    "last_snapshot_fingerprint": snapshot["fingerprint"],
-                    "last_snapshot": {
-                        "review_decision": snapshot["review_decision"],
-                        "merge_state_status": snapshot["merge_state_status"],
-                        "active_change_requesters": snapshot[
-                            "active_change_requesters"
-                        ],
-                        "actionable_comment_count": len(
-                            snapshot["actionable_comments"]
-                        ),
-                        "informational_comment_count": len(
-                            snapshot["informational_comments"]
-                        ),
-                    },
-                    "attempts_used": int(
-                        (execution_result or {}).get(
-                            "attempts_used", existing_review.get("attempts_used", 0)
-                        )
-                    ),
-                    "loop_count": loop_count,
-                    "retry_eligible": final_retry_eligible,
-                    "last_action": status,
-                    "last_action_at": snapshot["fetched_at"],
-                    "last_action_reason": merge_reason,
-                    "planned_remediation": remediation_plan,
-                    "execution_result": execution_result,
-                    "last_review_comment_key": existing_review.get(
-                        "last_review_comment_key"
-                    ),
-                    "last_review_comment_url": existing_review.get(
-                        "last_review_comment_url"
-                    ),
-                    "last_review_comment_at": existing_review.get(
-                        "last_review_comment_at"
-                    ),
-                    "escalation": (
-                        {
-                            "kind": "loop_guard_paused",
-                            "reason": "fingerprint repeated beyond threshold",
-                            "at": snapshot["fetched_at"],
-                        }
-                        if paused and not stale_pause
-                        else None
-                    ),
-                }
+                active_records[pr_key] = self._record_pr_in_active_state(
+                    pr=pr,
+                    pr_number=pr_number,
+                    pr_key=pr_key,
+                    snapshot=snapshot,
+                    previous_active_records=previous_active_records,
+                    status=status,
+                    merge_state=merge_state,
+                    merge_reason=merge_reason,
+                    remediation_plan=remediation_plan,
+                    execution_result=execution_result,
+                )
+                review_records[pr_key] = self._record_pr_in_review_state(
+                    snapshot=snapshot,
+                    existing_review=existing_review,
+                    status=status,
+                    merge_reason=merge_reason,
+                    remediation_plan=remediation_plan,
+                    execution_result=execution_result,
+                    loop_count=loop_count,
+                    paused=paused,
+                    stale_pause=stale_pause,
+                    retry_eligible=final_retry_eligible,
+                )
                 if not dry_run:
-                    self.state.append_review_event(
-                        self.repo.config.name,
-                        {
-                            "pr_number": pr_number,
-                            "event": status,
-                            "provider": "github",
-                            "fingerprint": snapshot["fingerprint"],
-                            "details": {
-                                "review_decision": snapshot["review_decision"],
-                                "actionable_comment_count": len(
-                                    snapshot["actionable_comments"]
-                                ),
-                                "loop_count": loop_count,
-                                "planned_prompt_file": (remediation_plan or {}).get(
-                                    "prompt_file"
-                                ),
-                                "worktree_path": (
-                                    (remediation_plan or {}).get("worktree") or {}
-                                ).get("worktree_path"),
-                                "backend_returncode": (
-                                    (execution_result or {}).get("backend_result") or {}
-                                ).get("returncode"),
-                                "changed_files": (execution_result or {}).get(
-                                    "changed_files"
-                                ),
-                                "validation_ok": (
-                                    (execution_result or {}).get("validation") or {}
-                                ).get("ok"),
-                            },
-                        },
+                    self._append_pr_review_event(
+                        pr_number=pr_number,
+                        snapshot=snapshot,
+                        status=status,
+                        loop_count=loop_count,
+                        remediation_plan=remediation_plan,
+                        execution_result=execution_result,
                     )
 
                     if (
                         remediation_plan
                         and remediation_plan.get("status") == "retry_prepared"
                     ):
-                        execution_result = self._execute_prepared_remediation(
-                            remediation_plan,
-                            existing_review,
-                            dry_run,
-                            allow_review_push=allow_review_push,
-                            snapshot=snapshot,
-                        )
-                        execution_status = execution_result.get("status") or status
-                        if execution_result.get("executed"):
-                            if execution_status in {
-                                "retry_executed",
-                                "retry_pending_push",
-                                "retry_pushed",
-                            }:
-                                result.retry_executed_prs += 1
-                            elif execution_status.startswith("retry_failed"):
-                                result.retry_failed_prs += 1
-                        active_records[pr_key]["status"] = execution_status
-                        active_records[pr_key]["execution_result"] = execution_result
-                        review_records[pr_key]["attempts_used"] = int(
-                            execution_result.get(
-                                "attempts_used",
-                                review_records[pr_key].get("attempts_used", 0),
-                            )
-                        )
-                        review_records[pr_key]["last_action"] = execution_status
-                        review_records[pr_key]["execution_result"] = execution_result
-                        review_records[pr_key]["planned_remediation"] = remediation_plan
-                        if execution_status == "retry_pending_push":
-                            active_records[pr_key]["merge_readiness"] = {
-                                "state": "awaiting_operator_push",
-                                "reason": "Validated remediation is waiting for explicit commit/push approval",
-                                "evaluated_at": snapshot["fetched_at"],
-                            }
-                        elif execution_status in {"retry_executed", "retry_pushed"}:
-                            active_records[pr_key]["merge_readiness"] = {
-                                "state": "awaiting_re_review",
-                                "reason": "Remediation pushed; awaiting new review snapshot"
-                                if execution_status == "retry_pushed"
-                                else "Remediation executed locally; awaiting commit/push boundary",
-                                "evaluated_at": snapshot["fetched_at"],
-                            }
-                        self.state.append_review_event(
-                            self.repo.config.name,
-                            {
-                                "pr_number": pr_number,
-                                "event": execution_status,
-                                "provider": "github",
-                                "fingerprint": snapshot["fingerprint"],
-                                "details": {
-                                    "backend_returncode": (
-                                        (execution_result or {}).get("backend_result")
-                                        or {}
-                                    ).get("returncode"),
-                                    "changed_files": (execution_result or {}).get(
-                                        "changed_files"
-                                    ),
-                                    "validation_ok": (
-                                        (execution_result or {}).get("validation") or {}
-                                    ).get("ok"),
-                                    "push_status": (
-                                        (execution_result or {}).get("push_result")
-                                        or {}
-                                    ).get("status"),
-                                },
-                            },
-                        )
-
-                    final_status = active_records[pr_key]["status"]
-                    final_retry_eligible = final_status in {
-                        "review_feedback_detected",
-                        "retry_planned",
-                        "retry_prepared",
-                        "retry_lock_busy",
-                        "retry_failed",
-                        "retry_failed_timeout",
-                        "retry_failed_validation",
-                        "retry_no_changes",
-                    }
-                    active_records[pr_key]["retry_eligible"] = final_retry_eligible
-                    review_records[pr_key]["retry_eligible"] = final_retry_eligible
-                    if final_retry_eligible:
-                        result.retry_eligible_prs += 1
-
-                    final_merge_readiness = active_records[pr_key]["merge_readiness"]
-                    publication_key = f"{snapshot['fingerprint']}:{final_status}"
-                    review_comment_url = self._publish_review_cycle_comment(
-                        pr_number=pr_number,
-                        summary_text=self._build_review_cycle_comment(
+                        self._handle_retry_remediation(
                             pr_number=pr_number,
+                            pr_key=pr_key,
                             snapshot=snapshot,
-                            status=final_status,
-                            merge_readiness=final_merge_readiness,
-                            execution_result=active_records[pr_key].get(
-                                "execution_result"
-                            ),
-                        ),
-                        publication_key=publication_key,
-                        existing_review=review_records[pr_key],
+                            existing_review=existing_review,
+                            remediation_plan=remediation_plan,
+                            fallback_status=status,
+                            dry_run=dry_run,
+                            allow_review_push=allow_review_push,
+                            active_records=active_records,
+                            review_records=review_records,
+                            result=result,
+                        )
+
+                    self._persist_active_and_review_state(
+                        pr_number=pr_number,
+                        pr_key=pr_key,
+                        snapshot=snapshot,
+                        active_state=active_state,
+                        review_state=review_state,
+                        active_records=active_records,
+                        review_records=review_records,
+                        result=result,
                     )
-                    if review_comment_url:
-                        review_records[pr_key]["last_review_comment_key"] = (
-                            publication_key
-                        )
-                        review_records[pr_key]["last_review_comment_url"] = (
-                            review_comment_url
-                        )
-                        review_records[pr_key]["last_review_comment_at"] = snapshot[
-                            "fetched_at"
-                        ]
-                        active_records[pr_key]["review_comment"] = {
-                            "url": review_comment_url,
-                            "key": publication_key,
-                            "published_at": snapshot["fetched_at"],
-                        }
-                    elif review_records[pr_key].get("last_review_comment_url"):
-                        active_records[pr_key]["review_comment"] = {
-                            "url": review_records[pr_key].get(
-                                "last_review_comment_url"
-                            ),
-                            "key": review_records[pr_key].get(
-                                "last_review_comment_key"
-                            ),
-                            "published_at": review_records[pr_key].get(
-                                "last_review_comment_at"
-                            ),
-                        }
-                    self._persist_review_state(active_state, review_state, result)
             finally:
                 self._release_pr_lock(lock_handle)
 
         if not dry_run:
             self._persist_review_state(active_state, review_state, result)
         return result
+
+    def _classify_pr_status(
+        self,
+        *,
+        snapshot: Dict[str, Any],
+        existing_review: Dict[str, Any],
+        dry_run: bool,
+        lock_handle: Any,
+        result: ReviewCycleResult,
+    ) -> Dict[str, Any]:
+        """Classify a PR snapshot into a review status and remediation plan.
+
+        Computes loop-count tracking, retry eligibility, status transitions
+        across the seven review states, and any remediation plan produced by
+        ``_plan_remediation``. Mutates ``result`` counters as a side effect.
+
+        Returns a dict with keys: ``loop_count``, ``stale_pause``, ``status``,
+        ``merge_state``, ``merge_reason``, ``paused``, ``remediation_plan``,
+        ``execution_result``.
+        """
+        existing_fingerprint = existing_review.get("last_snapshot_fingerprint")
+        previous_action = str(existing_review.get("last_action") or "")
+        loop_count = int(existing_review.get("loop_count", 0))
+        previous_attempted_remediation = previous_action in {
+            "retry_executed",
+            "retry_pushed",
+            "retry_failed",
+            "retry_failed_validation",
+            "retry_no_changes",
+            "retry_failed_timeout",
+            "retry_failed_push",
+        }
+        stale_pause = (not previous_attempted_remediation) and int(
+            existing_review.get("attempts_used", 0)
+        ) == 0
+        if (
+            existing_fingerprint == snapshot["fingerprint"]
+            and snapshot["actionable_comments"]
+        ):
+            if previous_attempted_remediation:
+                loop_count += 1
+            else:
+                loop_count = 0
+        elif existing_fingerprint and existing_fingerprint != snapshot["fingerprint"]:
+            loop_count = 0
+
+        retry_eligible = bool(
+            snapshot["actionable_comments"] or snapshot["active_change_requesters"]
+        )
+        merge_state_status = str(snapshot.get("merge_state_status") or "UNKNOWN")
+        prior_comment_key = str(existing_review.get("last_review_comment_key") or "")
+        current_snapshot_prefix = f"{snapshot['fingerprint']}:"
+        current_merge_ready_key = f"{snapshot['fingerprint']}:merge_ready"
+        review_artifact_exists_for_snapshot = prior_comment_key.startswith(
+            current_snapshot_prefix
+        )
+        merge_ready_artifact_exists_for_snapshot = (
+            prior_comment_key == current_merge_ready_key
+        )
+        merge_state = "not_merge_ready"
+        merge_reason = "Awaiting review evaluation"
+        status = "pending_review"
+        paused = False
+        remediation_plan: Optional[Dict[str, Any]] = None
+        execution_result: Optional[Dict[str, Any]] = None
+        if retry_eligible:
+            status = "review_feedback_detected"
+            merge_state = "blocked_by_review"
+            merge_reason = (
+                f"{len(snapshot['actionable_comments'])} actionable review comments"
+            )
+            result.blocked_prs += 1
+            attempts_used = int(existing_review.get("attempts_used", 0))
+            max_attempts = int(self.repo.config.review_care.get("max_attempts", 3))
+            if (
+                previous_action == "retry_pending_push"
+                and existing_fingerprint == snapshot["fingerprint"]
+            ):
+                status = "retry_pending_push"
+                merge_state = "awaiting_operator_push"
+                merge_reason = (
+                    "Validated remediation is waiting for explicit commit/push approval"
+                )
+                remediation_plan = existing_review.get("planned_remediation")
+                execution_result = existing_review.get("execution_result")
+            elif attempts_used >= max_attempts:
+                status = "retry_exhausted"
+                merge_reason = f"Max retry attempts ({max_attempts}) exhausted"
+                result.retry_exhausted_prs += 1
+            elif loop_count > int(self.repo.config.review_care.get("max_loops", 2)):
+                status = "loop_guard_paused"
+                paused = True
+                result.paused_prs += 1
+            elif not dry_run and not lock_handle:
+                status = "retry_lock_busy"
+                merge_reason = "PR remediation lock already held"
+            else:
+                remediation_plan = self._plan_remediation(
+                    snapshot, existing_review, dry_run
+                )
+                if remediation_plan:
+                    status = remediation_plan["status"]
+                    result.retry_planned_prs += 1
+                    if remediation_plan["status"] == "retry_prepared":
+                        result.retry_prepared_prs += 1
+        elif merge_state_status in {"CLEAN", "UNKNOWN", "UNSTABLE"}:
+            if (
+                merge_ready_artifact_exists_for_snapshot
+                or review_artifact_exists_for_snapshot
+            ):
+                status = "merge_ready"
+                merge_state = "ready_for_merge"
+                if merge_state_status == "CLEAN":
+                    merge_reason = "QA review artifact exists for this snapshot and no actionable review blockers were found"
+                else:
+                    merge_reason = (
+                        "QA review artifact exists for this snapshot and no actionable review blockers were found, "
+                        f"with merge state {merge_state_status.lower()} pending fresh merge triage"
+                    )
+                result.merge_ready_prs += 1
+            else:
+                status = "pending_review"
+                merge_state = "awaiting_review_artifact"
+                if merge_state_status == "CLEAN":
+                    merge_reason = "Clean PR, but bluei review for this snapshot has not been published yet"
+                else:
+                    merge_reason = (
+                        "No actionable review blockers and merge state is "
+                        f"{merge_state_status.lower()}, but bluei review for this snapshot has not been published yet"
+                    )
+        else:
+            status = "awaiting_mergeability"
+            merge_state = "awaiting_mergeability"
+            merge_reason = (
+                "No actionable review blockers, but merge state is "
+                f"{merge_state_status.lower()}"
+            )
+
+        return {
+            "loop_count": loop_count,
+            "stale_pause": stale_pause,
+            "status": status,
+            "merge_state": merge_state,
+            "merge_reason": merge_reason,
+            "paused": paused,
+            "remediation_plan": remediation_plan,
+            "execution_result": execution_result,
+        }
+
+    def _record_pr_in_active_state(
+        self,
+        *,
+        pr: Dict[str, Any],
+        pr_number: int,
+        pr_key: str,
+        snapshot: Dict[str, Any],
+        previous_active_records: Dict[str, Any],
+        status: str,
+        merge_state: str,
+        merge_reason: str,
+        remediation_plan: Optional[Dict[str, Any]],
+        execution_result: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Build the active-state record describing the PR's current review posture."""
+        return {
+            "pr_number": pr_number,
+            "url": pr.get("url"),
+            "branch": pr.get("headRefName") or snapshot["branch"],
+            "author": (pr.get("author") or {}).get("login") or snapshot["author"],
+            "source": "bluei-heuristic",
+            "status": status,
+            "opened_at": (previous_active_records.get(pr_key, {}) or {}).get(
+                "opened_at"
+            )
+            or snapshot["fetched_at"],
+            "updated_at": snapshot["fetched_at"],
+            "provider_summary": {
+                "provider": "github",
+                "review_decision": snapshot["review_decision"],
+                "merge_state_status": snapshot["merge_state_status"],
+                "active_change_requesters": snapshot["active_change_requesters"],
+                "actionable_comment_count": len(snapshot["actionable_comments"]),
+                "score_optional": None,
+            },
+            "merge_readiness": {
+                "state": merge_state,
+                "reason": merge_reason,
+                "evaluated_at": snapshot["fetched_at"],
+            },
+            "remediation_plan": remediation_plan,
+            "execution_result": execution_result,
+        }
+
+    def _record_pr_in_review_state(
+        self,
+        *,
+        snapshot: Dict[str, Any],
+        existing_review: Dict[str, Any],
+        status: str,
+        merge_reason: str,
+        remediation_plan: Optional[Dict[str, Any]],
+        execution_result: Optional[Dict[str, Any]],
+        loop_count: int,
+        paused: bool,
+        stale_pause: bool,
+        retry_eligible: bool,
+    ) -> Dict[str, Any]:
+        """Build the review-state record capturing the snapshot and remediation outcome."""
+        return {
+            "last_provider": "github",
+            "last_polled_at": snapshot["fetched_at"],
+            "last_snapshot_fingerprint": snapshot["fingerprint"],
+            "last_snapshot": {
+                "review_decision": snapshot["review_decision"],
+                "merge_state_status": snapshot["merge_state_status"],
+                "active_change_requesters": snapshot["active_change_requesters"],
+                "actionable_comment_count": len(snapshot["actionable_comments"]),
+                "informational_comment_count": len(snapshot["informational_comments"]),
+            },
+            "attempts_used": int(
+                (execution_result or {}).get(
+                    "attempts_used", existing_review.get("attempts_used", 0)
+                )
+            ),
+            "loop_count": loop_count,
+            "retry_eligible": retry_eligible,
+            "last_action": status,
+            "last_action_at": snapshot["fetched_at"],
+            "last_action_reason": merge_reason,
+            "planned_remediation": remediation_plan,
+            "execution_result": execution_result,
+            "last_review_comment_key": existing_review.get("last_review_comment_key"),
+            "last_review_comment_url": existing_review.get("last_review_comment_url"),
+            "last_review_comment_at": existing_review.get("last_review_comment_at"),
+            "escalation": (
+                {
+                    "kind": "loop_guard_paused",
+                    "reason": "fingerprint repeated beyond threshold",
+                    "at": snapshot["fetched_at"],
+                }
+                if paused and not stale_pause
+                else None
+            ),
+        }
+
+    def _handle_retry_remediation(
+        self,
+        *,
+        pr_number: int,
+        pr_key: str,
+        snapshot: Dict[str, Any],
+        existing_review: Dict[str, Any],
+        remediation_plan: Dict[str, Any],
+        fallback_status: str,
+        dry_run: bool,
+        allow_review_push: bool,
+        active_records: Dict[str, Any],
+        review_records: Dict[str, Any],
+        result: ReviewCycleResult,
+    ) -> None:
+        """Execute a prepared remediation plan and update PR records in place.
+
+        Runs ``_execute_prepared_remediation``, applies the resulting
+        execution status to the active/review records, refreshes merge-readiness
+        for retry states, bumps the appropriate result counters, and appends a
+        review event describing the execution outcome.
+        """
+        execution_result = self._execute_prepared_remediation(
+            remediation_plan,
+            existing_review,
+            dry_run,
+            allow_review_push=allow_review_push,
+            snapshot=snapshot,
+        )
+        execution_status = execution_result.get("status") or fallback_status
+        if execution_result.get("executed"):
+            if execution_status in {
+                "retry_executed",
+                "retry_pending_push",
+                "retry_pushed",
+            }:
+                result.retry_executed_prs += 1
+            elif execution_status.startswith("retry_failed"):
+                result.retry_failed_prs += 1
+        active_records[pr_key]["status"] = execution_status
+        active_records[pr_key]["execution_result"] = execution_result
+        review_records[pr_key]["attempts_used"] = int(
+            execution_result.get(
+                "attempts_used",
+                review_records[pr_key].get("attempts_used", 0),
+            )
+        )
+        review_records[pr_key]["last_action"] = execution_status
+        review_records[pr_key]["execution_result"] = execution_result
+        review_records[pr_key]["planned_remediation"] = remediation_plan
+        if execution_status == "retry_pending_push":
+            active_records[pr_key]["merge_readiness"] = {
+                "state": "awaiting_operator_push",
+                "reason": "Validated remediation is waiting for explicit commit/push approval",
+                "evaluated_at": snapshot["fetched_at"],
+            }
+        elif execution_status in {"retry_executed", "retry_pushed"}:
+            active_records[pr_key]["merge_readiness"] = {
+                "state": "awaiting_re_review",
+                "reason": "Remediation pushed; awaiting new review snapshot"
+                if execution_status == "retry_pushed"
+                else "Remediation executed locally; awaiting commit/push boundary",
+                "evaluated_at": snapshot["fetched_at"],
+            }
+        self.state.append_review_event(
+            self.repo.config.name,
+            {
+                "pr_number": pr_number,
+                "event": execution_status,
+                "provider": "github",
+                "fingerprint": snapshot["fingerprint"],
+                "details": {
+                    "backend_returncode": (
+                        (execution_result or {}).get("backend_result") or {}
+                    ).get("returncode"),
+                    "changed_files": (execution_result or {}).get("changed_files"),
+                    "validation_ok": (
+                        (execution_result or {}).get("validation") or {}
+                    ).get("ok"),
+                    "push_status": (
+                        (execution_result or {}).get("push_result") or {}
+                    ).get("status"),
+                },
+            },
+        )
+
+    def _append_pr_review_event(
+        self,
+        *,
+        pr_number: int,
+        snapshot: Dict[str, Any],
+        status: str,
+        loop_count: int,
+        remediation_plan: Optional[Dict[str, Any]],
+        execution_result: Optional[Dict[str, Any]],
+    ) -> None:
+        """Append the primary review-event entry for a PR snapshot."""
+        self.state.append_review_event(
+            self.repo.config.name,
+            {
+                "pr_number": pr_number,
+                "event": status,
+                "provider": "github",
+                "fingerprint": snapshot["fingerprint"],
+                "details": {
+                    "review_decision": snapshot["review_decision"],
+                    "actionable_comment_count": len(snapshot["actionable_comments"]),
+                    "loop_count": loop_count,
+                    "planned_prompt_file": (remediation_plan or {}).get("prompt_file"),
+                    "worktree_path": (
+                        (remediation_plan or {}).get("worktree") or {}
+                    ).get("worktree_path"),
+                    "backend_returncode": (
+                        (execution_result or {}).get("backend_result") or {}
+                    ).get("returncode"),
+                    "changed_files": (execution_result or {}).get("changed_files"),
+                    "validation_ok": (
+                        (execution_result or {}).get("validation") or {}
+                    ).get("ok"),
+                },
+            },
+        )
+
+    def _persist_active_and_review_state(
+        self,
+        *,
+        pr_number: int,
+        pr_key: str,
+        snapshot: Dict[str, Any],
+        active_state: Dict[str, Any],
+        review_state: Dict[str, Any],
+        active_records: Dict[str, Any],
+        review_records: Dict[str, Any],
+        result: ReviewCycleResult,
+    ) -> None:
+        """Finalize retry eligibility, publish the review-cycle comment,
+        update records with publication info, and persist state.
+
+        Computes ``final_retry_eligible`` from the post-remediation status,
+        publishes the review cycle comment (reusing the prior publication when
+        the publication key matches), records the comment URL on both active
+        and review records, and writes state to disk.
+        """
+        final_status = active_records[pr_key]["status"]
+        final_retry_eligible = final_status in {
+            "review_feedback_detected",
+            "retry_planned",
+            "retry_prepared",
+            "retry_lock_busy",
+            "retry_failed",
+            "retry_failed_timeout",
+            "retry_failed_validation",
+            "retry_no_changes",
+        }
+        active_records[pr_key]["retry_eligible"] = final_retry_eligible
+        review_records[pr_key]["retry_eligible"] = final_retry_eligible
+        if final_retry_eligible:
+            result.retry_eligible_prs += 1
+
+        final_merge_readiness = active_records[pr_key]["merge_readiness"]
+        publication_key = f"{snapshot['fingerprint']}:{final_status}"
+        review_comment_url = self._publish_review_cycle_comment(
+            pr_number=pr_number,
+            summary_text=self._build_review_cycle_comment(
+                pr_number=pr_number,
+                snapshot=snapshot,
+                status=final_status,
+                merge_readiness=final_merge_readiness,
+                execution_result=active_records[pr_key].get("execution_result"),
+            ),
+            publication_key=publication_key,
+            existing_review=review_records[pr_key],
+        )
+        if review_comment_url:
+            review_records[pr_key]["last_review_comment_key"] = publication_key
+            review_records[pr_key]["last_review_comment_url"] = review_comment_url
+            review_records[pr_key]["last_review_comment_at"] = snapshot["fetched_at"]
+            active_records[pr_key]["review_comment"] = {
+                "url": review_comment_url,
+                "key": publication_key,
+                "published_at": snapshot["fetched_at"],
+            }
+        elif review_records[pr_key].get("last_review_comment_url"):
+            active_records[pr_key]["review_comment"] = {
+                "url": review_records[pr_key].get("last_review_comment_url"),
+                "key": review_records[pr_key].get("last_review_comment_key"),
+                "published_at": review_records[pr_key].get("last_review_comment_at"),
+            }
+        self._persist_review_state(active_state, review_state, result)
 
     def _find_open_prs(self) -> List[Dict[str, Any]]:
         try:
