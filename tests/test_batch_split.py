@@ -368,7 +368,7 @@ class TestHandleBatchFailure:
         log_file = Path("/tmp/test.log")
 
         with patch(
-            "bluei.engine.batch_pr.commit_partial_batch", return_value=True
+            "bluei.engine.batch_recovery.commit_partial_batch", return_value=True
         ) as mock_commit:
             sub_batches = handle_batch_failure(
                 batch, Path("/tmp/repo"), mock_args, log_file
@@ -396,7 +396,9 @@ class TestHandleBatchFailure:
         mock_args.max_split_depth = 3
         log_file = Path("/tmp/test.log")
 
-        with patch("bluei.engine.batch_pr.commit_partial_batch", return_value=True):
+        with patch(
+            "bluei.engine.batch_recovery.commit_partial_batch", return_value=True
+        ):
             sub_batches = handle_batch_failure(
                 batch, Path("/tmp/repo"), mock_args, log_file
             )
@@ -425,7 +427,9 @@ class TestHandleBatchFailure:
         mock_args.max_split_depth = 3
         log_file = Path("/tmp/test.log")
 
-        with patch("bluei.engine.batch_pr.commit_partial_batch", return_value=True):
+        with patch(
+            "bluei.engine.batch_recovery.commit_partial_batch", return_value=True
+        ):
             sub_batches = handle_batch_failure(
                 batch, Path("/tmp/repo"), mock_args, log_file
             )
@@ -451,7 +455,7 @@ class TestHandleBatchFailure:
         log_file = Path("/tmp/test.log")
 
         with patch(
-            "bluei.engine.batch_pr.commit_partial_batch", return_value=False
+            "bluei.engine.batch_recovery.commit_partial_batch", return_value=False
         ) as mock_commit:
             sub_batches = handle_batch_failure(
                 batch, Path("/tmp/repo"), mock_args, log_file

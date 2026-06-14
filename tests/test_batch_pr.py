@@ -718,8 +718,10 @@ class TestHandleBatchFailureExtended:
         args = _make_mock_args()
 
         with (
-            patch("bluei.engine.batch_pr.commit_partial_batch", return_value=True),
-            patch("bluei.engine.batch_pr.split_batch", return_value=[]),
+            patch(
+                "bluei.engine.batch_recovery.commit_partial_batch", return_value=True
+            ),
+            patch("bluei.engine.batch_recovery.split_batch", return_value=[]),
         ):
             sub = handle_batch_failure(batch, tmp_path, args, log)
         assert batch.status == BatchStatus.SPLIT.value
@@ -741,8 +743,10 @@ class TestHandleBatchFailureExtended:
         args = _make_mock_args()
 
         with (
-            patch("bluei.engine.batch_pr.commit_partial_batch", return_value=True),
-            patch("bluei.engine.batch_pr.split_batch", return_value=[]),
+            patch(
+                "bluei.engine.batch_recovery.commit_partial_batch", return_value=True
+            ),
+            patch("bluei.engine.batch_recovery.split_batch", return_value=[]),
         ):
             sub = handle_batch_failure(batch, tmp_path, args, log)
         assert batch.status == BatchStatus.SPLIT.value
@@ -756,8 +760,10 @@ class TestHandleBatchFailureExtended:
         args = _make_mock_args()
 
         with (
-            patch("bluei.engine.batch_pr.commit_partial_batch", return_value=False),
-            patch("bluei.engine.batch_pr.split_batch", return_value=[]),
+            patch(
+                "bluei.engine.batch_recovery.commit_partial_batch", return_value=False
+            ),
+            patch("bluei.engine.batch_recovery.split_batch", return_value=[]),
         ):
             sub = handle_batch_failure(batch, tmp_path, args, log)
         assert batch.split_history[0]["failed_count"] == 1
