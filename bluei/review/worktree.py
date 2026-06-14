@@ -16,6 +16,7 @@ _logger = logging.getLogger(__name__)
 from bluei.app.models import now_iso, ReviewMode
 from bluei.review.types import ReviewCycleResult
 from bluei.engine.worktree import get_worktree_branch
+from bluei.engine.safety_gates import check_push_allowed
 
 
 class WorktreeMixin:
@@ -290,6 +291,15 @@ class WorktreeMixin:
         result["git_commit"] = commit_result
         if commit_result["returncode"] != 0:
             result["status"] = "commit_failed"
+            return result
+
+        # Safety gate: block direct pushes to protected branches (F1 coverage)
+        safety_config = getattr(self.repo.config, "safety", None) or {}
+        push_allowed, block_reason = check_push_allowed(branch, safety_config)
+        if not push_allowed:
+            result["status"] = "blocked_by_safety_gate"
+            result["block_reason"] = block_reason
+            result["target_branch"] = branch
             return result
 
         push_result = self._run_git_result(

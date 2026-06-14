@@ -584,6 +584,61 @@ def test_apply_commit_push_no_changes(tmp_path):
     mock_run.assert_not_called()
 
 
+def test_apply_commit_push_blocked_by_safety_gate_for_protected_branch(tmp_path):
+    """F1 coverage: push to a protected branch (main) is blocked even when allow_review_push=True."""
+    engine = _make_engine_with_mock_provider(tmp_path)
+    worktree_path = tmp_path / "wt"
+    worktree_path.mkdir()
+    snapshot = {"pr_number": 42, "branch": "main"}
+    changed_files = ["src/a.ts"]
+
+    push_cmds = []
+
+    def _fake_run(cmd, **kwargs):
+        if cmd[0] == "git" and "push" in cmd:
+            push_cmds.append(list(cmd))
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = ""
+        result.stderr = ""
+        return result
+
+    with patch.object(subprocess, "run", side_effect=_fake_run):
+        result = engine._apply_commit_push_boundary(
+            worktree_path=worktree_path,
+            snapshot=snapshot,
+            changed_files=changed_files,
+            allow_review_push=True,
+        )
+
+    # Should be blocked — push to main is never allowed
+    assert result["status"] == "blocked_by_safety_gate"
+    assert "protected" in result.get("block_reason", "").lower()
+    assert result["target_branch"] == "main"
+    # No push should have been executed
+    assert push_cmds == []
+
+
+def test_apply_commit_push_allows_feature_branch(tmp_path):
+    """F1 coverage: push to a feature branch proceeds normally."""
+    engine = _make_engine_with_mock_provider(tmp_path)
+    worktree_path = tmp_path / "wt"
+    worktree_path.mkdir()
+    snapshot = {"pr_number": 42, "branch": "qa/fix-42"}
+    changed_files = ["src/a.ts"]
+
+    with patch.object(subprocess, "run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        result = engine._apply_commit_push_boundary(
+            worktree_path=worktree_path,
+            snapshot=snapshot,
+            changed_files=changed_files,
+            allow_review_push=True,
+        )
+
+    assert result["status"] == "pushed"
+
+
 # ---------------------------------------------------------------------------
 # 7. Cross-layer consistency: provider vs engine use same repo slug
 # ---------------------------------------------------------------------------
