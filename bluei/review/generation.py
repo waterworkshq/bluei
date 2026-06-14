@@ -23,6 +23,51 @@ from bluei.review.types import CandidateValidationError
 from bluei.review.normalization import normalize_candidate
 
 
+# Language-aware local candidate scanning.
+# Maps a repo's configured primary language to the file extensions and
+# line-comment prefixes used when scanning for outstanding TODO/FIXME/BUG
+# markers and excessively long lines. Unknown/blank languages default to
+# Python (*.py, '#') for backward compatibility.
+_LANGUAGE_EXTENSIONS: Dict[str, List[str]] = {
+    "python": ["*.py"],
+    "typescript": ["*.ts", "*.tsx"],
+    "javascript": ["*.js", "*.jsx"],
+    "go": ["*.go"],
+    "rust": ["*.rs"],
+    "java": ["*.java"],
+    "ruby": ["*.rb"],
+    "php": ["*.php"],
+}
+
+_LANGUAGE_COMMENT_PREFIXES: Dict[str, List[str]] = {
+    "python": ["#"],
+    "ruby": ["#"],
+    "php": ["#", "//"],
+    "typescript": ["//"],
+    "javascript": ["//"],
+    "go": ["//"],
+    "rust": ["//"],
+    "java": ["//"],
+}
+
+
+def _extensions_for_language(language: str) -> List[str]:
+    """Return the file glob patterns for a configured language.
+
+    Defaults to Python (*.py) for unknown/blank languages so existing Python
+    repos keep their pre-fix scanning behaviour.
+    """
+    return _LANGUAGE_EXTENSIONS.get((language or "").lower(), ["*.py"])
+
+
+def _comment_prefixes_for_language(language: str) -> List[str]:
+    """Return the line-comment prefixes for a configured language.
+
+    Defaults to '#' for unknown/blank languages (backward compat).
+    """
+    return _LANGUAGE_COMMENT_PREFIXES.get((language or "").lower(), ["#"])
+
+
 class GenerationMixin:
     def _generate_from_backend(
         self,
@@ -292,22 +337,37 @@ class GenerationMixin:
         if not repo_path.exists():
             return candidates
 
-        for py_file in repo_path.rglob("*.py"):
+        language = (self.repo.config.language or "").lower()
+        extensions = _extensions_for_language(language)
+        comment_prefixes = _comment_prefixes_for_language(language)
+        is_python = language == "python"
+
+        todo_markers = [f"{p} TODO:" for p in comment_prefixes]
+        fixme_markers = [f"{p} FIXME:" for p in comment_prefixes]
+        bug_markers = [f"{p} BUG:" for p in comment_prefixes]
+
+        src_files: List[Path] = []
+        for pattern in extensions:
+            src_files.extend(repo_path.rglob(pattern))
+
+        for src_file in src_files:
             try:
                 for i, line in enumerate(
-                    py_file.read_text(encoding="utf-8").splitlines(), start=1
+                    src_file.read_text(encoding="utf-8").splitlines(), start=1
                 ):
                     stripped = line.strip()
                     marker = None
-                    if stripped.startswith("# TODO:"):
+                    if any(stripped.startswith(m) for m in todo_markers):
                         marker = "outstanding-todo"
-                    elif stripped.startswith("# FIXME:"):
+                    elif any(stripped.startswith(m) for m in fixme_markers):
                         marker = "unresolved-fixme"
-                    elif stripped.startswith("# BUG:") or stripped.startswith("# BUG:"):
+                    elif any(stripped.startswith(m) for m in bug_markers):
                         marker = "documented-bug"
-                    elif "raise NotImplementedError" in stripped:
+                    elif is_python and "raise NotImplementedError" in stripped:
                         marker = "not-implemented-raise"
-                    elif "pass  # TODO" in stripped or "..." in stripped:
+                    elif is_python and (
+                        "pass  # TODO" in stripped or "..." in stripped
+                    ):
                         if i > 1:
                             marker = "code-placeholder"
 
@@ -316,7 +376,7 @@ class GenerationMixin:
                         candidates.append(
                             {
                                 "repo": self.repo.config.name,
-                                "path": str(py_file.relative_to(repo_path)),
+                                "path": str(src_file.relative_to(repo_path)),
                                 "line": i,
                                 "header": marker,
                                 "snippet": snippet,
@@ -331,11 +391,15 @@ class GenerationMixin:
             except (OSError, UnicodeDecodeError):
                 continue
 
-        for src_file in repo_path.rglob("*.py"):
+        for src_file in src_files:
             try:
                 lines = src_file.read_text(encoding="utf-8").splitlines()
                 for i, line in enumerate(lines, start=1):
-                    if len(line) > 120 and not line.strip().startswith("#"):
+                    stripped_line = line.strip()
+                    is_comment = any(
+                        stripped_line.startswith(p) for p in comment_prefixes
+                    )
+                    if len(line) > 120 and not is_comment:
                         candidates.append(
                             {
                                 "repo": self.repo.config.name,

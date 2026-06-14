@@ -16,6 +16,11 @@ from bluei.app.state import StateManager
 
 _logger = logging.getLogger(__name__)
 
+# Default --limit for `gh pr list` when enumerating managed PRs. Overridable
+# per-repo via review_care.managed_pr_limit. Large repos with many managed
+# PRs would otherwise be capped at 50 and lose visibility.
+_DEFAULT_MANAGED_PR_LIMIT = 200
+
 GRAPHQL_QUERY = r"""
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
@@ -142,6 +147,11 @@ class GitHubReviewProvider:
 
     def list_managed_prs(self) -> List[Dict[str, Any]]:
         """Return open, non-draft PRs that match managed-PR heuristics."""
+        managed_pr_limit = int(
+            (self.repo.config.review_care or {}).get(
+                "managed_pr_limit", _DEFAULT_MANAGED_PR_LIMIT
+            )
+        )
         prs = json.loads(
             self._run(
                 [
@@ -153,7 +163,7 @@ class GitHubReviewProvider:
                     "--state",
                     "open",
                     "--limit",
-                    "50",
+                    str(managed_pr_limit),
                     "--json",
                     "number,url,title,headRefName,author,isDraft,state",
                 ]

@@ -602,6 +602,7 @@ class TestLocalFileScanning:
     def test_scans_python_files_for_todo_markers(self):
         tmp = _isolated_tmp()
         repo = make_repo(tmp)
+        repo.config.language = "python"
         # Create a Python file with a TODO
         src_dir = tmp / "repo" / "src"
         src_dir.mkdir(parents=True, exist_ok=True)
@@ -629,6 +630,7 @@ class TestLocalFileScanning:
     def test_scans_python_files_for_long_lines(self):
         tmp = _isolated_tmp()
         repo = make_repo(tmp)
+        repo.config.language = "python"
         src_dir = tmp / "repo" / "src"
         src_dir.mkdir(parents=True, exist_ok=True)
         long_line = "x = " + ", ".join([f"arg{i}" for i in range(30)]) + "\n"
@@ -648,6 +650,82 @@ class TestLocalFileScanning:
             c for c in candidates if c["header"] == "excessively-long-line"
         ]
         assert len(long_candidates) >= 1
+
+    def test_scans_typescript_files_for_todo_markers(self):
+        """TypeScript repos should scan *.ts/*.tsx with // comment markers."""
+        tmp = _isolated_tmp()
+        repo = make_repo(tmp)
+        # make_repo defaults to language="typescript"
+        src_dir = tmp / "repo" / "src"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        (src_dir / "service.ts").write_text(
+            "// TODO: refactor this service\nexport const x = 1;\n",
+            encoding="utf-8",
+        )
+        state = StateManager(tmp / "repos")
+        state._get_state_dir(repo.config.name).mkdir(parents=True, exist_ok=True)
+        engine = make_engine(repo, state)
+        engine._generate_local_candidates = (
+            ReviewCycleEngine._generate_local_candidates.__get__(
+                engine, ReviewCycleEngine
+            )
+        )
+
+        candidates = engine._generate_local_candidates()
+
+        todo_candidates = [c for c in candidates if c["header"] == "outstanding-todo"]
+        assert len(todo_candidates) >= 1
+        assert todo_candidates[0]["path"].endswith(".ts")
+
+    def test_scans_go_files_for_fixme_markers(self):
+        """Go repos should scan *.go with // comment markers."""
+        tmp = _isolated_tmp()
+        repo = make_repo(tmp)
+        repo.config.language = "go"
+        src_dir = tmp / "repo"
+        (src_dir / "main.go").write_text(
+            "package main\n\n// FIXME: handle error\nfunc main() {}\n",
+            encoding="utf-8",
+        )
+        state = StateManager(tmp / "repos")
+        state._get_state_dir(repo.config.name).mkdir(parents=True, exist_ok=True)
+        engine = make_engine(repo, state)
+        engine._generate_local_candidates = (
+            ReviewCycleEngine._generate_local_candidates.__get__(
+                engine, ReviewCycleEngine
+            )
+        )
+
+        candidates = engine._generate_local_candidates()
+
+        fixme_candidates = [c for c in candidates if c["header"] == "unresolved-fixme"]
+        assert len(fixme_candidates) >= 1
+        assert fixme_candidates[0]["path"].endswith(".go")
+
+    def test_skips_python_files_when_language_is_typescript(self):
+        """A typescript repo must NOT scan *.py files for markers."""
+        tmp = _isolated_tmp()
+        repo = make_repo(tmp)
+        # language defaults to typescript
+        src_dir = tmp / "repo" / "src"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        (src_dir / "sample.py").write_text(
+            "# TODO: this is a python todo that ts repos should ignore\n",
+            encoding="utf-8",
+        )
+        state = StateManager(tmp / "repos")
+        state._get_state_dir(repo.config.name).mkdir(parents=True, exist_ok=True)
+        engine = make_engine(repo, state)
+        engine._generate_local_candidates = (
+            ReviewCycleEngine._generate_local_candidates.__get__(
+                engine, ReviewCycleEngine
+            )
+        )
+
+        candidates = engine._generate_local_candidates()
+
+        py_candidates = [c for c in candidates if c["path"].endswith(".py")]
+        assert py_candidates == []
 
 
 # ---------------------------------------------------------------------------

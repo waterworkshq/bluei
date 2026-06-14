@@ -118,7 +118,7 @@ def test_list_managed_prs_gh_command_flags(tmp_path):
     assert gh_cmd[state_idx + 1] == "open"
     assert "--limit" in gh_cmd
     limit_idx = gh_cmd.index("--limit")
-    assert gh_cmd[limit_idx + 1] == "50"
+    assert gh_cmd[limit_idx + 1] == "200"
     assert "--json" in gh_cmd
     json_idx = gh_cmd.index("--json")
     json_fields = gh_cmd[json_idx + 1].split(",")
@@ -132,6 +132,51 @@ def test_list_managed_prs_gh_command_flags(tmp_path):
         "state",
     ):
         assert field in json_fields, f"Missing json field: {field}"
+
+
+def test_list_managed_prs_limit_configurable(tmp_path):
+    """Verify the --limit flag honours review_care.managed_pr_limit override."""
+    repo = _make_repo(
+        tmp_path,
+        review_care={
+            "enabled": True,
+            "max_attempts": 3,
+            "max_loops": 2,
+            "max_prs_per_run": 1,
+            "cleanup_worktrees_after_push": False,
+            "managed_pr_limit": 500,
+        },
+    )
+    state = StateManager(tmp_path / "repos")
+
+    pr_list_json = json.dumps([])
+    api_user_json = json.dumps({"login": "bot"})
+
+    captured_cmds = []
+
+    def _fake_run(cmd, **kwargs):
+        captured_cmds.append(list(cmd))
+        result = MagicMock()
+        result.returncode = 0
+        if "remote" in cmd:
+            result.stdout = "https://github.com/owner/test-repo.git"
+        elif "api" in cmd and "user" in cmd:
+            result.stdout = api_user_json
+        elif "pr" in cmd and "list" in cmd:
+            result.stdout = pr_list_json
+        else:
+            result.stdout = ""
+        result.stderr = ""
+        return result
+
+    with patch.object(subprocess, "run", side_effect=_fake_run):
+        provider = GitHubReviewProvider(repo, state)
+        provider.list_managed_prs()
+
+    gh_cmd = captured_cmds[2]  # 0=remote, 1=api user, 2=pr list
+    assert "--limit" in gh_cmd
+    limit_idx = gh_cmd.index("--limit")
+    assert gh_cmd[limit_idx + 1] == "500"
 
 
 # ---------------------------------------------------------------------------
