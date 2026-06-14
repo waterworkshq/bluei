@@ -9,6 +9,14 @@ from .patterns.python_patterns import PYTHON_PATTERNS
 from .patterns.python_patterns import get_patterns as get_python_patterns
 from .transforms.python_transforms import PYTHON_TRANSFORMS
 from .transforms.python_transforms import get_transforms as get_python_transforms
+from .transforms.typescript_transforms import TS_TRANSFORMS
+from .transforms.typescript_transforms import (
+    get_transforms as get_typescript_transforms,
+)
+from .transforms.go_transforms import GO_TRANSFORMS
+from .transforms.go_transforms import get_transforms as get_go_transforms
+from .transforms.rust_transforms import RUST_TRANSFORMS
+from .transforms.rust_transforms import get_transforms as get_rust_transforms
 
 
 def get_python_matcher():
