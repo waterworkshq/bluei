@@ -663,16 +663,22 @@ class RunEngine:
         finally:
             self._release_lock(lock_handle)
 
-            # Save run record
-            self.state.save_run(repo_name, run)
+            # Persist run state defensively — if the original failure was
+            # filesystem-related (disk full, permissions), these calls can
+            # themselves raise. Swallow so we don't mask the original error.
+            try:
+                # Save run record
+                self.state.save_run(repo_name, run)
 
-            # Update repo status
-            self.registry.update(
-                repo_name,
-                {
-                    "status": RepoStatus.READY.value,
-                },
-            )
+                # Update repo status
+                self.registry.update(
+                    repo_name,
+                    {
+                        "status": RepoStatus.READY.value,
+                    },
+                )
+            except Exception:
+                _logger.exception("Failed to persist run state for %s", repo_name)
 
     def dry_run(self, repo: Repo, phase: str = "issue-cycle") -> RunResult:
         """Execute a dry run (preview only)."""

@@ -499,3 +499,58 @@ class TestRunExecution:
                 test_repo, RunOptions(phase="issue-cycle", dry_run=False)
             )
         assert len(result.run.error) <= 500
+
+    def test_persistence_failure_in_finally_does_not_mask_original_error(
+        self, runner_env, test_repo
+    ):
+        """If save_run raises in finally, the original RuntimeError must survive
+        and the lock must still be released."""
+        with (
+            patch(
+                "bluei.app.runner.subprocess.run",
+                side_effect=RuntimeError("original boom"),
+            ),
+            patch.object(
+                runner_env["state"],
+                "save_run",
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            result = runner_env["runner"].run(
+                test_repo, RunOptions(phase="issue-cycle", dry_run=False)
+            )
+        # Original error preserved, persistence error not masked
+        assert result.success is False
+        assert result.run.status == "error"
+        assert "original boom" in result.run.error
+        assert "disk full" not in result.run.error
+        # Lock released despite persistence failure
+        lock = runner_env["runner"]._acquire_lock("test-repo", "issue-cycle")
+        assert lock is not None
+        runner_env["runner"]._release_lock(lock)
+
+    def test_persistence_failure_in_finally_does_not_break_successful_run(
+        self, runner_env, test_repo
+    ):
+        """A successful run must still return success even if save_run fails
+        in the finally block."""
+        with (
+            patch(
+                "bluei.app.runner.subprocess.run",
+                return_value=_make_subprocess_ok(),
+            ),
+            patch.object(
+                runner_env["state"],
+                "save_run",
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            result = runner_env["runner"].run(
+                test_repo, RunOptions(phase="issue-cycle", dry_run=False)
+            )
+        assert result.success is True
+        assert result.run.status == "completed"
+        # Lock released despite persistence failure
+        lock = runner_env["runner"]._acquire_lock("test-repo", "issue-cycle")
+        assert lock is not None
+        runner_env["runner"]._release_lock(lock)
