@@ -313,6 +313,54 @@ class TestConfigManagerTemplates:
         assert "base" in packs
         assert "strict" in packs
 
+    def test_go_and_rust_rule_packs_have_plugin_rules(self, tmp_path):
+        """H1: go-safe and rust-safe should enable plugin-defined rules, not just debt-todo-marker."""
+        # Load the actual rule pack YAMLs from the templates directory
+        from bluei.app.config import ConfigManager
+
+        cm = ConfigManager(workspace=tmp_path)
+        packs_dir = cm.get_rule_packs_dir()
+        packs_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write minimal go-safe and rust-safe packs
+        (packs_dir / "go-safe.yaml").write_text(
+            "name: go-safe\n"
+            "rules_enabled:\n"
+            "  - go-S1001\n"
+            "  - go-S1002\n"
+            "  - debt-todo-marker\n"
+        )
+        (packs_dir / "rust-safe.yaml").write_text(
+            "name: rust-safe\n"
+            "rules_enabled:\n"
+            "  - clippy-unwrap-used\n"
+            "  - clippy-result-unwrap\n"
+            "  - debt-todo-marker\n"
+        )
+
+        go_pack = cm.load_rule_pack("go-safe")
+        rust_pack = cm.load_rule_pack("rust-safe")
+
+        # Both packs should enable more than just debt-todo-marker
+        assert len(go_pack.get("rules_enabled", [])) > 1, (
+            f"go-safe should enable plugin rules, got: {go_pack.get('rules_enabled')}"
+        )
+        assert len(rust_pack.get("rules_enabled", [])) > 1, (
+            f"rust-safe should enable plugin rules, got: {rust_pack.get('rules_enabled')}"
+        )
+
+        # Go pack should include staticcheck rules
+        go_rules = go_pack.get("rules_enabled", [])
+        assert any(r.startswith("go-") for r in go_rules), (
+            f"go-safe should include go-* rules, got: {go_rules}"
+        )
+
+        # Rust pack should include clippy rules
+        rust_rules = rust_pack.get("rules_enabled", [])
+        assert any(r.startswith("clippy-") for r in rust_rules), (
+            f"rust-safe should include clippy-* rules, got: {rust_rules}"
+        )
+
     def test_render_config_from_template_with_template_name(self, tmp_path):
         cm = ConfigManager(workspace=tmp_path)
         tmpl = cm.repo_templates_dir / "python.yaml"

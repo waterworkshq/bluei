@@ -2,7 +2,22 @@ name: rust-safe
 description: Rule pack for Rust crates
 ecosystem: rust
 rules_enabled:
+  - clippy-unwrap-used
+  - clippy-result-unwrap
+  - clippy-clone-on-copy
+  - clippy-needless-range-loop
+  - clippy-redundant-clone
+  - clippy-dead-code
+  - clippy-unused-imports
+  - clippy-doc-markdown
+  - clippy-missing-errors-doc
+  - clippy-panic
+  - clippy-expect-used
   - debt-todo-marker
 rules_disabled: []
-severity_overrides: {}
+severity_overrides:
+  clippy-unwrap-used: high
+  clippy-result-unwrap: high
+  clippy-panic: high
+  clippy-expect-used: medium
 quick_win_bias: 0.3

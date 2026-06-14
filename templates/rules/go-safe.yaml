@@ -2,7 +2,20 @@ name: go-safe
 description: Rule pack for Go services
 ecosystem: go
 rules_enabled:
+  - go-S1001
+  - go-S1002
+  - go-SA1000
+  - go-SA2002
+  - go-URQ1001
+  - go-ST1005
+  - go-undeferred-close
+  - go-missing-goroutine-wait
+  - go-context-cancel-leak
+  - go-error-unwrap-panic
   - debt-todo-marker
 rules_disabled: []
-severity_overrides: {}
+severity_overrides:
+  go-SA1000: high
+  go-SA2002: high
+  go-context-cancel-leak: high
 quick_win_bias: 0.3
