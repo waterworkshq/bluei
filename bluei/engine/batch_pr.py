@@ -685,7 +685,11 @@ def _apply_single_fix(
 
 
 def create_batch_pr(
-    batch: BatchGroup, repo_slug: str, log_file: Path
+    batch: BatchGroup,
+    repo_slug: str,
+    log_file: Path,
+    safety_config: Optional[dict] = None,
+    repo_config: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """Create a GitHub PR for the batch.
 
@@ -694,14 +698,28 @@ def create_batch_pr(
     Returns dict with 'number' and 'url'.
     Raises RuntimeError on failure.
     """
+    from bluei.engine.safety_gates import (
+        check_pr_creation_allowed,
+        resolve_base_branch,
+    )
     from bluei.engine.utils import run_capture
     from bluei.engine.state import _append_text
 
     title = batch.pr_title()
     body = batch.pr_body()
     branch = batch.branch
+    base_branch = resolve_base_branch(safety_config, repo_config)
 
     _append_text(log_file, f"batch-pr: creating PR for {batch.batch_id} title={title}")
+
+    if safety_config:
+        allowed, reason = check_pr_creation_allowed(base_branch, safety_config)
+        if not allowed:
+            _append_text(
+                log_file,
+                f"safety-block: batch PR creation blocked batch={batch.batch_id} reason={reason}",
+            )
+            raise RuntimeError(f"blocked-by-safety-mode: {reason}")
 
     rc, output = run_capture(
         [
@@ -717,7 +735,7 @@ def create_batch_pr(
             "--head",
             branch,
             "--base",
-            "main",
+            base_branch,
         ],
         cwd=batch.worktree_path,
     )
@@ -805,6 +823,8 @@ def process_batch(
     repo_path: Path,
     args,
     log_file: Path,
+    safety_config: Optional[dict] = None,
+    repo_config: Optional[dict] = None,
 ) -> Tuple[bool, Optional[str]]:
     """Process a multi-finding batch: worktree → fixes → PR.
 
@@ -949,6 +969,7 @@ def process_batch(
             branch,
             log_file=log_file,
             dry_run=getattr(args, "dry_run", True),
+            safety_config=safety_config,
         )
         if not pushed:
             batch.status = BatchStatus.FAILED.value
@@ -965,7 +986,13 @@ def process_batch(
             return True, "dry-run-pr-simulated"
 
         try:
-            pr = create_batch_pr(batch, repo_slug, log_file)
+            pr = create_batch_pr(
+                batch,
+                repo_slug,
+                log_file,
+                safety_config=safety_config,
+                repo_config=repo_config,
+            )
         except RuntimeError:
             batch.status = BatchStatus.FAILED.value
             _append_text(

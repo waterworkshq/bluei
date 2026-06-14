@@ -17,6 +17,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from bluei.engine.constants import DETECTOR_CATALOG
 from bluei.engine.models import Finding
+from bluei.engine.safety_gates import (
+    check_merge_allowed,
+    check_pr_creation_allowed,
+    resolve_base_branch,
+)
 from bluei.engine.utils import run_capture
 
 logger = logging.getLogger(__name__)
@@ -688,7 +693,11 @@ def merge_failure_requires_pr_fix(reason: str) -> bool:
 
 
 def merge_pr(
-    repo_slug: str, pr_number: int, dry_run: bool, cwd: Path
+    repo_slug: str,
+    pr_number: int,
+    dry_run: bool,
+    cwd: Path,
+    safety_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, str]:
     """Merge a PR via ``gh pr merge --merge --delete-branch``.
 
@@ -697,10 +706,17 @@ def merge_pr(
         pr_number: PR number.
         dry_run: If ``True``, simulate the merge without executing.
         cwd: Working directory for the ``gh`` subprocess.
+        safety_config: Optional safety policy dict. When provided, the merge is
+            blocked unless the safety mode is ``merge``. When omitted/empty, no
+            enforcement is applied (backward compat).
 
     Returns:
         ``(success, reason)`` tuple.
     """
+    if safety_config:
+        allowed, reason = check_merge_allowed(safety_config)
+        if not allowed:
+            return False, f"blocked-by-safety-mode: {reason}"
     if dry_run:
         return True, "dry-run-merge-simulated"
     rc, out = run_capture(
@@ -849,6 +865,8 @@ def create_or_update_github_pr(
     dry_run: bool,
     log_file: Path,
     cwd: Path,
+    safety_config: Optional[Dict[str, Any]] = None,
+    repo_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Create a GitHub PR for a finding, or reuse an existing one.
 
@@ -860,6 +878,13 @@ def create_or_update_github_pr(
         dry_run: If ``True``, log actions without executing.
         log_file: Path to append log entries to.
         cwd: Working directory for the ``gh`` subprocess.
+        safety_config: Optional safety policy dict. When provided, PR creation
+            is blocked unless the safety mode allows it (``pr`` or ``merge``).
+            When omitted/empty, no enforcement is applied (backward compat).
+        repo_config: Optional repo config dict used to resolve the PR base
+            branch (``base_branch`` / ``default_branch`` override). When
+            omitted, the base falls back to ``protected_branches[0]`` then
+            ``"main"``.
 
     Returns:
         Dict with ``number``, ``url``, ``created`` (bool), and optionally ``error``.
@@ -891,12 +916,28 @@ def create_or_update_github_pr(
     body = "\n".join(body_lines)
     title = f"fix(bluei): {finding.rule} [{finding.path}]"
 
+    base_branch = resolve_base_branch(safety_config, repo_config)
+
     if dry_run:
         _append_text(
             log_file,
-            f"dry-run-live: would open PR from branch={branch} finding_id={finding.finding_id}",
+            f"dry-run-live: would open PR from branch={branch} base={base_branch} finding_id={finding.finding_id}",
         )
         return {"number": None, "url": "", "created": True}
+
+    if safety_config:
+        allowed, reason = check_pr_creation_allowed(base_branch, safety_config)
+        if not allowed:
+            _append_text(
+                log_file,
+                f"safety-block: PR creation blocked finding_id={finding.finding_id} reason={reason}",
+            )
+            return {
+                "number": None,
+                "url": "",
+                "created": False,
+                "error": "blocked-by-safety-mode",
+            }
 
     rc, out = run_capture(
         [
@@ -906,7 +947,7 @@ def create_or_update_github_pr(
             "--repo",
             repo_slug,
             "--base",
-            "main",
+            base_branch,
             "--head",
             branch,
             "--title",

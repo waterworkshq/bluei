@@ -2,8 +2,9 @@
 
 import logging
 from pathlib import Path
-from typing import Tuple
+from typing import Any, Dict, Optional, Tuple
 
+from bluei.engine.safety_gates import check_push_allowed
 from bluei.engine.state import _append_text
 from bluei.engine.utils import run_capture
 
@@ -47,7 +48,11 @@ def git_commit_all(repo_path: Path, message: str, log_file: Path, dry_run: bool)
 
 
 def git_push_branch(
-    repo_path: Path, branch: str, log_file: Path, dry_run: bool
+    repo_path: Path,
+    branch: str,
+    log_file: Path,
+    dry_run: bool,
+    safety_config: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Push the given branch to origin.
 
@@ -56,10 +61,21 @@ def git_push_branch(
         branch: Branch name to push.
         log_file: Path to the run log.
         dry_run: If True, log the would-be push without executing it.
+        safety_config: Optional safety policy dict. When provided, the push is
+            blocked if ``branch`` is a protected branch (e.g. main/master).
+            When omitted/empty, no enforcement is applied (backward compat).
 
     Returns:
-        True if push succeeded (or dry-run), False on failure.
+        True if push succeeded (or dry-run), False on failure or safety block.
     """
+    if safety_config:
+        allowed, reason = check_push_allowed(branch, safety_config)
+        if not allowed:
+            _append_text(
+                log_file,
+                f"safety-block: git push blocked branch={branch} reason={reason}",
+            )
+            return False
     if dry_run:
         _append_text(log_file, f"dry-run-live: would git push -u origin {branch}")
         return True

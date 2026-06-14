@@ -250,6 +250,8 @@ def _finalize_pr_for_issue(
     log_file: Path,
     args: Any,
     state: Dict[str, Any],
+    safety_config: Optional[Dict[str, Any]] = None,
+    repo_config: Optional[Dict[str, Any]] = None,
 ) -> FinalizeResult:
     """Commit, push, create PR, and link to issue after a successful fix verification.
 
@@ -318,6 +320,7 @@ def _finalize_pr_for_issue(
             worktree_branch,
             log_file=log_file,
             dry_run=args.dry_run,
+            safety_config=safety_config,
         )
         if not pushed:
             run_status = "needs-human-push-failed"
@@ -338,6 +341,8 @@ def _finalize_pr_for_issue(
             dry_run=args.dry_run,
             log_file=log_file,
             cwd=worktree_path,
+            safety_config=safety_config,
+            repo_config=repo_config,
         )
         pr_number = (
             pr_result.get("number") if pr_result.get("number") is not None else None
@@ -435,6 +440,8 @@ def _process_one_issue(
     claude_invocations: int,
     deterministic_invocations: int,
     blocked_reasons: List[str],
+    safety_config: Optional[Dict[str, Any]] = None,
+    repo_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, int]:
     """Phase D+E: process a single (issue, finding) through worktree setup,
     fix dispatch, verification, and PR publication.
@@ -1053,6 +1060,8 @@ def _process_one_issue(
             log_file=log_file,
             args=args,
             state=state,
+            safety_config=safety_config,
+            repo_config=repo_config,
         )
         fixes_verified += finalize_result.fixes_verified_delta
         fixes_failed_verification += finalize_result.fixes_failed_verification_delta
@@ -1137,6 +1146,10 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
         claude_invocations = ctx.claude_invocations
         deterministic_invocations = ctx.deterministic_invocations
         blocked_reasons = ctx.blocked_reasons
+        # F1: runtime safety gates (ctx path — defensive getattr keeps
+        # historical behaviour when ctx lacks these attributes).
+        safety_config = getattr(ctx, "safety_config", None)
+        repo_config = getattr(ctx, "repo_config", None)
     else:
         repo_path = kwargs["repo_path"]
         findings_file = kwargs["findings_file"]
@@ -1163,6 +1176,9 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
         claude_invocations = kwargs["claude_invocations"]
         deterministic_invocations = kwargs["deterministic_invocations"]
         blocked_reasons = kwargs["blocked_reasons"]
+        # F1: runtime safety gates (kwargs path).
+        safety_config = kwargs.get("safety_config")
+        repo_config = kwargs.get("repo_config")
 
     queue_candidates, _escalated = _select_candidates(
         repo_path=repo_path,
@@ -1289,6 +1305,8 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
                 claude_invocations=claude_invocations,
                 deterministic_invocations=deterministic_invocations,
                 blocked_reasons=blocked_reasons,
+                safety_config=safety_config,
+                repo_config=repo_config,
             )
             created_prs = _delta["created_prs"]
             open_prs = _delta["open_prs"]

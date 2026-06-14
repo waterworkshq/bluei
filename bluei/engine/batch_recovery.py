@@ -65,6 +65,7 @@ def commit_partial_batch(
     successful_findings: List[Finding],
     batch: BatchGroup,
     log_file: Path,
+    safety_config: Optional[dict] = None,
 ) -> bool:
     """Commit partial results for successful findings.
 
@@ -113,6 +114,7 @@ def commit_partial_batch(
         batch.branch,
         log_file=log_file,
         dry_run=False,
+        safety_config=safety_config,
     )
     if not pushed:
         _append_text(log_file, f"batch-partial: push failed for {batch.batch_id}")
