@@ -79,9 +79,129 @@ def _notify_test(sub_rest: list[str]) -> int:
     return 0
 
 
+def _notify_init(sub_rest: list[str]) -> int:
+    """Notif 1: Interactive wizard to scaffold notifications.yaml."""
+    import yaml
+    from pathlib import Path
+
+    is_global = _has_flag(sub_rest, "--global")
+    repo = _parse_repo_arg(sub_rest)
+
+    if not is_global and not repo:
+        print(
+            "bluei: notify config --init requires --repo <name> or --global.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print()
+    print("bluei notification setup wizard")
+    print("=" * 40)
+    print()
+
+    config: dict = {"enabled": True, "channels": []}
+
+    # Slack
+    print("Slack notifications (Block Kit via Incoming Webhook)")
+    slack_url = input("  Slack webhook URL (or press Enter to skip): ").strip()
+    if slack_url:
+        config["channels"].append(
+            {
+                "type": "slack",
+                "url": slack_url,
+                "severity_filter": ["critical", "high"],
+            }
+        )
+        print("  ✓ Slack configured")
+    print()
+
+    # Email
+    print("Email notifications (SMTP)")
+    smtp_host = input("  SMTP host (or press Enter to skip): ").strip()
+    if smtp_host:
+        smtp_port = input("  SMTP port [587]: ").strip() or "587"
+        smtp_user = input("  SMTP username: ").strip()
+        smtp_pass = input("  SMTP password (or ${ENV_VAR}): ").strip()
+        smtp_to = input("  Recipient email: ").strip()
+        config["channels"].append(
+            {
+                "type": "email",
+                "host": smtp_host,
+                "port": int(smtp_port) if smtp_port.isdigit() else 587,
+                "username": smtp_user,
+                "password": smtp_pass,
+                "to": smtp_to,
+                "severity_filter": ["critical", "high"],
+            }
+        )
+        print("  ✓ Email configured")
+    print()
+
+    # Webhook
+    print("Generic webhook notifications")
+    webhook_url = input("  Webhook URL (or press Enter to skip): ").strip()
+    if webhook_url:
+        config["channels"].append(
+            {
+                "type": "webhook",
+                "url": webhook_url,
+                "severity_filter": ["critical", "high", "normal"],
+            }
+        )
+        print("  ✓ Webhook configured")
+    print()
+
+    # Log channel (always enabled by default)
+    config["channels"].append({"type": "log"})
+    print("✓ Log channel (always enabled)")
+    print()
+
+    # Rate limiting
+    print("Rate limiting")
+    cooldown = input("  Cooldown per finding (hours) [24]: ").strip()
+    hourly_cap = input("  Hourly cap per channel [10]: ").strip()
+    config["rate_limiting"] = {
+        "cooldown_hours": int(cooldown) if cooldown.isdigit() else 24,
+        "hourly_cap": int(hourly_cap) if hourly_cap.isdigit() else 10,
+    }
+
+    # Determine output path
+    if is_global:
+        workspace = Path.cwd()
+        config_path = workspace / "notifications.yaml"
+    else:
+        workspace = Path.cwd()
+        config_path = workspace / "state" / repo / "notifications.yaml"
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Confirm
+    print()
+    print(f"Will write to: {config_path}")
+    preview = yaml.dump(config, default_flow_style=False).strip()
+    print()
+    print(preview)
+    print()
+    confirm = input("Write this configuration? [y/N]: ").strip().lower()
+    if confirm not in ("y", "yes"):
+        print("Cancelled.")
+        return 0
+
+    config_path.write_text(preview + "\n")
+    print(f"\n✓ Configuration written to {config_path}")
+    print(
+        f"  Test with: bluei notify test {'--global' if is_global else '--repo ' + repo}"
+    )
+    return 0
+
+
 def _notify_config(sub_rest: list[str]) -> int:
     import yaml
     from bluei.engine.notify import load_notification_config, mask_sensitive
+
+    # Notif 1: --init wizard
+    if _has_flag(sub_rest, "--init"):
+        return _notify_init(sub_rest)
 
     if _has_flag(sub_rest, "--global"):
         config = load_notification_config(None)

@@ -1,5 +1,6 @@
 """Notification channel base classes and registry."""
 
+import logging
 import os
 import re
 from abc import ABC, abstractmethod
@@ -7,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 
-_ENV_VAR_RE = re.compile(r'\$\{([^}]+)\}')
+_ENV_VAR_RE = re.compile(r"\$\{([^}]+)\}")
 
 
 @dataclass
@@ -36,12 +37,14 @@ class BaseNotifier(ABC):
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
+        self.logger = logging.getLogger(f"bluei.notify.{self.channel_type}")
 
     @abstractmethod
-    def send(self, payload: NotificationPayload) -> DeliveryResult:
-        ...
+    def send(self, payload: NotificationPayload) -> DeliveryResult: ...
 
-    def should_send(self, payload: NotificationPayload, severity_filter: List[str]) -> bool:
+    def should_send(
+        self, payload: NotificationPayload, severity_filter: List[str]
+    ) -> bool:
         if not severity_filter:
             return True
         return payload.severity in severity_filter
@@ -57,8 +60,10 @@ def register_notifier(cls):
 
 def resolve_env_vars(value: str) -> str:
     """Replace ${VAR} patterns with os.environ values."""
+
     def _replace(match):
         return os.environ.get(match.group(1), match.group(0))
+
     return _ENV_VAR_RE.sub(_replace, value)
 
 

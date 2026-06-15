@@ -203,17 +203,22 @@ passwords, private keys, high-entropy strings).{RESET}
     "report": f"""{BOLD}bluei report{RESET} {CYAN}<project-name>{RESET} [{YELLOW}options{RESET}]
 
 {DIM}Generate a comprehensive vitality report for a project.
-PDF by default. Also supports text, JSON, HTML, and WhatsApp formats.{RESET}
+Supports text, JSON, HTML, and PDF formats.{RESET}
 
 {BOLD}Usage:{RESET}
   bluei report {CYAN}<project-name>{RESET}
-  bluei report {CYAN}<project-name>{RESET} --format text
-  bluei report {CYAN}<project-name>{RESET} -o report.pdf
+  bluei report {CYAN}<project-name>{RESET} --format json
+  bluei report {CYAN}<project-name>{RESET} --format html -o report.html
+  bluei report {CYAN}<project-name>{RESET} --watch --interval 60
+  bluei report {CYAN}<project-name>{RESET} --notify-webhook https://hooks.example.com/report
 
 {BOLD}Options:{RESET}
-  --format {CYAN}<fmt>{RESET}           Output format: pdf, text, json, html, whatsapp
-  --output, -o {CYAN}<path>{RESET}      Output file path
-  --days {CYAN}<n>{RESET}               Days of history (default: 30)
+  --format {CYAN}<fmt>{RESET}               Output format: text, json, html, pdf
+  --output, -o {CYAN}<path>{RESET}          Output file path
+  --days {CYAN}<n>{RESET}                   Days of history (default: 30)
+  --watch                    {DIM}Continuously regenerate report{RESET}
+  --interval {CYAN}<seconds>{RESET}         Watch interval (default: 30)
+  --notify-webhook {CYAN}<url>{RESET}       POST report JSON to a webhook URL
 """,
     "dashboard": f"""{BOLD}bluei dashboard{RESET} [{YELLOW}options{RESET}]
 
@@ -503,6 +508,8 @@ by `bluei languages` on the next run.{RESET}
   bluei notify test --repo my-project     {DIM}# Test all channels{RESET}
   bluei notify config --repo my-project   {DIM}# Show merged config{RESET}
   bluei notify config --global            {DIM}# Show global config{RESET}
+  bluei notify config --init --global     {DIM}# Interactive setup wizard{RESET}
+  bluei notify config --init --repo my-project {DIM}# Per-repo setup wizard{RESET}
   bluei notify digest --repo my-project   {DIM}# Send digest now{RESET}
   bluei notify digest --all               {DIM}# Send digests for all repos{RESET}
   bluei notify log --repo my-project      {DIM}# Recent deliveries{RESET}
