@@ -1,0 +1,24 @@
+plugin_id: java
+enabled: true
+fix_engine: deterministic
+framework: gradle
+rule_pack: null
+discovery:
+  ecosystem: java
+  max_findings: 40
+baseline_checks:
+  - ["./gradlew", "test"]
+  - ["./gradlew", "checkstyleMain"]
+limits:
+  max_files_changed: 3
+  max_loc_diff: 120
+  max_fix_attempts: 2
+  open_issues_cap: 8
+  open_prs_cap: 2
+safety:
+  mode: observe
+  profile: conservative
+meta:
+  template_version: 2
+  ecosystem: java
+  template_type: gradle-service

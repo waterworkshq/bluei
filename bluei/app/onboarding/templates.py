@@ -69,6 +69,20 @@ def select_template(
     if language.name == "rust":
         return "rust-crate"
 
+    # H4: Java, Ruby, PHP templates
+    if language.name == "java":
+        if (repo_path / "build.gradle").exists() or (
+            repo_path / "build.gradle.kts"
+        ).exists():
+            return "java-gradle"
+        return "java-maven"
+
+    if language.name == "ruby":
+        return "ruby-bundler"
+
+    if language.name == "php":
+        return "php-composer"
+
     return None
 
 
