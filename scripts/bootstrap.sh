@@ -37,19 +37,59 @@ if [ ! -d .venv ]; then
 fi
 
 source .venv/bin/activate
-uv pip install --quiet pytest
-uv pip install -e .
+
+# G1: Install with all optional deps via pyproject.toml
+uv pip install -e ".[dev,ast]"
 
 # Verify pyyaml is available (critical dependency)
 python -c "import yaml" 2>/dev/null || uv pip install pyyaml
 
-uv pip install --quiet tree-sitter 2>/dev/null || true
-uv pip install --quiet tree-sitter-typescript tree-sitter-javascript 2>/dev/null || true
-uv pip install --quiet tree-sitter-go tree-sitter-rust 2>/dev/null || true
-
 mkdir -p repos plugins templates logs docs reports locks
 
+# G2: Optional plugin tool installation
+echo ""
+echo "── Optional Plugin Tools ──────────────────────────────"
+echo "bluei plugins use external linters for discovery. Install them now?"
+echo ""
+
+install_tool() {
+  local tool="$1"
+  local label="$2"
+  local check_cmd="$3"
+
+  if eval "$check_cmd" >/dev/null 2>&1; then
+    echo "  ✓ $label already installed"
+    return 0
+  fi
+
+  read -rp "  Install $label? [y/N] " response
+  case "$response" in
+    y|Y|yes|YES)
+      echo "  Installing $tool..."
+      if need_bin brew; then
+        brew install "$tool" 2>/dev/null && echo "  ✓ $label installed via brew" || echo "  ✗ brew install failed — install $tool manually"
+      elif need_bin apt-get; then
+        sudo apt-get install -y "$tool" 2>/dev/null && echo "  ✓ $label installed via apt" || echo "  ✗ apt install failed — install $tool manually"
+      else
+        echo "  ✗ No package manager detected — install $tool manually"
+      fi
+      ;;
+    *)
+      echo "  Skipped $label (bluei will use text-scanning fallback)"
+      ;;
+  esac
+}
+
+install_tool "ruff" "ruff (Python linter — used by python plugin)" "ruff --version"
+install_tool "shellcheck" "shellcheck (Shell linter)" "shellcheck --version"
+install_tool "staticcheck" "staticcheck (Go analyzer)" "staticcheck -version"
+install_tool "hadolint" "hadolint (Dockerfile linter)" "hadolint --version"
+install_tool "markdownlint-cli" "markdownlint (Markdown linter)" "markdownlint --version"
+
+echo "───────────────────────────────────────────────────────"
+
 cat <<EOF
+
 bluei bootstrap complete.
 
 Workspace: $ROOT

@@ -7,7 +7,8 @@
     "bluei": "./bin/bluei"
   },
   "scripts": {
-    "postinstall": "bin/bluei init || true"
+    "postinstall": "bin/bluei init || true",
+    "prepublishOnly": "bash scripts/prepublish-check.sh"
   },
   "engines": {
     "node": ">=18.0.0"
