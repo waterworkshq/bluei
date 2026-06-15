@@ -101,6 +101,9 @@ language, then registers in the local registry.{RESET}
   --profile {CYAN}<profile>{RESET}        Care style: conservative, balanced, aggressive
   --skip-baseline            Skip starting point capture
   --allow-dirty-worktree     Allow onboarding with dirty working tree
+  --skip-preflight           Skip plugin tool verification before onboarding
+  --fix-engine {CYAN}<engine>{RESET}      Set fix engine (auto, deterministic, claude, opencode)
+  --yes                      Skip confirmation prompts for high-risk modes
 """,
     "install": f"""{BOLD}bluei install{RESET}
 

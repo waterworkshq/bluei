@@ -237,6 +237,35 @@ class TestDeepMerge:
         result = _deep_merge({"a": {"x": 1}}, {"a": 42})
         assert result == {"a": 42}
 
+    def test_baseline_checks_union_merged(self):
+        """E5: baseline_checks lists should be unioned (deduped), not replaced."""
+        from bluei.app.config import _deep_merge
+
+        base = {"baseline_checks": [["pytest"], ["ruff", "check"]]}
+        override = {"baseline_checks": [["pytest"], ["mypy"]]}
+        result = _deep_merge(base, override)
+        # Should have all 3 unique commands, no duplicates
+        assert len(result["baseline_checks"]) == 3
+        assert [["pytest"], ["ruff", "check"], ["mypy"]] == result["baseline_checks"]
+
+    def test_baseline_checks_union_empty_override(self):
+        """E5: empty override list should keep base list."""
+        from bluei.app.config import _deep_merge
+
+        base = {"baseline_checks": [["pytest"]]}
+        override = {"baseline_checks": []}
+        result = _deep_merge(base, override)
+        assert result["baseline_checks"] == [["pytest"]]
+
+    def test_other_list_keys_still_replace(self):
+        """E5: non-baseline_checks lists should still use replace semantics."""
+        from bluei.app.config import _deep_merge
+
+        base = {"rules_disabled": ["a", "b"]}
+        override = {"rules_disabled": ["c"]}
+        result = _deep_merge(base, override)
+        assert result["rules_disabled"] == ["c"]
+
 
 class TestConfigManagerTemplates:
     """Tests for ConfigManager template and rule-pack operations."""

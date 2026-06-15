@@ -4,6 +4,8 @@ Pure functions — no class, no constructor deps.
 """
 
 import logging
+import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -26,11 +28,21 @@ def infer_baseline_checks(repo_path: Path, language: LanguageInfo) -> List[List[
     For mixed-language repos, checks are inferred for ALL detected languages
     (primary + secondary), so that e.g. a Python+TypeScript repo gets both
     pytest and npm test commands.
+
+    E2: language-agnostic build systems (Make, tox, nox, just, Task, GitHub
+    Actions) are merged in once per repo.
+    E3: when per-language inference returns nothing, fall back to the matching
+    plugin manifest's ``validation.baseline_checks``.
     """
     commands: List[List[str]] = []
 
     for lang in [language.name] + language.secondary_languages:
-        commands.extend(_infer_baseline_checks_for_language(repo_path, lang))
+        lang_commands = _infer_baseline_checks_for_language(repo_path, lang)
+        if not lang_commands:
+            lang_commands = _infer_plugin_baseline_fallback(repo_path, lang)
+        commands.extend(lang_commands)
+
+    commands.extend(_infer_build_system_checks(repo_path))
 
     deduped: List[List[str]] = []
     seen: set = set()
@@ -40,6 +52,274 @@ def infer_baseline_checks(repo_path: Path, language: LanguageInfo) -> List[List[
             deduped.append(cmd)
             seen.add(key)
     return deduped
+
+
+# ── E3: plugin manifest fallback ────────────────────────────────
+def _plugins_root() -> Path:
+    """Locate the canonical bluei plugins/ directory relative to this file."""
+    return Path(__file__).resolve().parents[3] / "plugins"
+
+
+def _infer_plugin_baseline_fallback(
+    repo_path: Path, language_name: str
+) -> List[List[str]]:
+    """E3: fall back to a plugin manifest's ``validation.baseline_checks``.
+
+    Used when per-language inference returns no commands. Looks up the plugin
+    whose ``languages`` list includes ``language_name`` and returns its
+    declared baseline checks (a list of command lists).
+    """
+    if not language_name:
+        return []
+    try:
+        from bluei.engine.plugin_loader import discover_plugins
+    except ImportError:
+        return []
+
+    plugins_dir = _plugins_root()
+    if not plugins_dir.exists() or not plugins_dir.is_dir():
+        return []
+
+    try:
+        manifests = discover_plugins(plugins_dir)
+    except Exception:
+        _logger.debug("Failed to discover plugins at %s", plugins_dir)
+        return []
+
+    target = language_name.lower()
+    for manifest in manifests.values():
+        plugin_languages = [str(l).lower() for l in (manifest.get("languages") or [])]
+        if target not in plugin_languages:
+            continue
+        validation = manifest.get("validation") or {}
+        raw = validation.get("baseline_checks") or []
+        result: List[List[str]] = []
+        for entry in raw:
+            if isinstance(entry, list):
+                cmd = [str(x) for x in entry if x is not None]
+                if cmd:
+                    result.append(cmd)
+        return result
+    return []
+
+
+# ── E2: build-system detection ─────────────────────────────────
+_BUILD_TARGETS = ("test", "lint", "check", "typecheck")
+
+
+def _infer_build_system_checks(repo_path: Path) -> List[List[str]]:
+    """E2: detect language-agnostic build/test runner commands.
+
+    Scans for Makefile, tox.ini, noxfile.py, justfile, Taskfile, and
+    ``.github/workflows/*.yml``. Returns commands like ``["make", "test"]``.
+    """
+    commands: List[List[str]] = []
+    commands.extend(_infer_makefile_checks(repo_path))
+    commands.extend(_infer_tox_checks(repo_path))
+    commands.extend(_infer_nox_checks(repo_path))
+    commands.extend(_infer_just_checks(repo_path))
+    commands.extend(_infer_taskfile_checks(repo_path))
+    commands.extend(_infer_github_workflow_checks(repo_path))
+    return commands
+
+
+def _infer_makefile_checks(repo_path: Path) -> List[List[str]]:
+    commands: List[List[str]] = []
+    for name in ("GNUmakefile", "Makefile", "makefile"):
+        makefile = repo_path / name
+        if not makefile.exists():
+            continue
+        try:
+            content = makefile.read_text(errors="replace")
+        except OSError:
+            break
+        for target in _BUILD_TARGETS:
+            pattern = re.compile(rf"^{re.escape(target)}\s*:", re.MULTILINE)
+            if pattern.search(content):
+                commands.append(["make", target])
+        break
+    return commands
+
+
+def _infer_tox_checks(repo_path: Path) -> List[List[str]]:
+    if (repo_path / "tox.ini").exists():
+        return [["tox"]]
+    pyproject = repo_path / "pyproject.toml"
+    if pyproject.exists():
+        try:
+            content = pyproject.read_text(errors="replace")
+            if "[tool.tox]" in content:
+                return [["tox"]]
+        except OSError:
+            pass
+    return []
+
+
+def _infer_nox_checks(repo_path: Path) -> List[List[str]]:
+    if (repo_path / "noxfile.py").exists():
+        return [["nox"]]
+    pyproject = repo_path / "pyproject.toml"
+    if pyproject.exists():
+        try:
+            content = pyproject.read_text(errors="replace")
+            if "[tool.nox]" in content:
+                return [["nox"]]
+        except OSError:
+            pass
+    return []
+
+
+def _infer_just_checks(repo_path: Path) -> List[List[str]]:
+    for name in ("justfile", "Justfile", "JUSTFILE"):
+        justfile = repo_path / name
+        if not justfile.exists():
+            continue
+        try:
+            content = justfile.read_text(errors="replace")
+        except OSError:
+            return []
+        commands: List[List[str]] = []
+        for target in _BUILD_TARGETS:
+            pattern = re.compile(rf"^{re.escape(target)}\s*:", re.MULTILINE)
+            if pattern.search(content):
+                commands.append(["just", target])
+        return commands
+    return []
+
+
+def _infer_taskfile_checks(repo_path: Path) -> List[List[str]]:
+    for name in (
+        "Taskfile.yml",
+        "Taskfile.yaml",
+        "taskfile.yml",
+        "taskfile.yaml",
+    ):
+        taskfile = repo_path / name
+        if not taskfile.exists():
+            continue
+        commands: List[List[str]] = []
+        try:
+            import yaml
+
+            with open(taskfile) as f:
+                data = yaml.safe_load(f) or {}
+        except Exception:
+            _logger.debug("Failed to parse %s", taskfile)
+            return []
+        tasks = data.get("tasks") if isinstance(data, dict) else None
+        if not isinstance(tasks, dict):
+            return []
+        for target in _BUILD_TARGETS:
+            if target in tasks:
+                commands.append(["task", target])
+        return commands
+    return []
+
+
+_GITHUB_JOB_KEYWORDS = ("test", "lint", "build", "check")
+_GITHUB_RUN_KEYWORDS = (
+    "test",
+    "lint",
+    "build",
+    "check",
+    "pytest",
+    "jest",
+    "vitest",
+    "mocha",
+    "ruff",
+    "mypy",
+    "eslint",
+    "cargo",
+)
+
+
+def _parse_run_step(run_text: str) -> List[List[str]]:
+    """Parse a GitHub Actions ``run:`` step into one or more shell commands.
+
+    Single-line steps are returned as-is. Multi-line steps prefer lines that
+    look like test/lint/build commands; setup lines (``pip install``, etc.)
+    are skipped.
+    """
+    if not isinstance(run_text, str):
+        return []
+    lines: List[str] = []
+    for raw in run_text.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            continue
+        lines.append(stripped)
+    if not lines:
+        return []
+    parsed: List[List[str]] = []
+    for line in lines:
+        try:
+            parts = shlex.split(line)
+        except ValueError:
+            continue
+        if parts:
+            parsed.append(parts)
+    if not parsed:
+        return []
+    if len(parsed) == 1:
+        return parsed
+    preferred: List[List[str]] = []
+    for parts in parsed:
+        joined = " ".join(parts).lower()
+        if any(kw in joined for kw in _GITHUB_RUN_KEYWORDS):
+            preferred.append(parts)
+    return preferred
+
+
+def _infer_github_workflow_checks(repo_path: Path) -> List[List[str]]:
+    workflows_dir = repo_path / ".github" / "workflows"
+    if not workflows_dir.exists() or not workflows_dir.is_dir():
+        return []
+    try:
+        import yaml
+    except ImportError:
+        return []
+    workflow_files = sorted(workflows_dir.glob("*.yml")) + sorted(
+        workflows_dir.glob("*.yaml")
+    )
+    commands: List[List[str]] = []
+    seen: set = set()
+    for yml_file in workflow_files:
+        try:
+            with open(yml_file) as f:
+                data = yaml.safe_load(f)
+        except Exception:
+            _logger.debug("Failed to parse workflow %s", yml_file)
+            continue
+        if not isinstance(data, dict):
+            continue
+        jobs = data.get("jobs") or {}
+        if not isinstance(jobs, dict):
+            continue
+        for job_key, job in jobs.items():
+            if not isinstance(job, dict):
+                continue
+            label = " ".join(
+                str(s).lower() for s in (job.get("name") or job_key or "").split()
+            )
+            if not any(kw in label for kw in _GITHUB_JOB_KEYWORDS):
+                continue
+            steps = job.get("steps") or []
+            if not isinstance(steps, list):
+                continue
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                run_cmd = step.get("run")
+                if not run_cmd:
+                    continue
+                for parsed in _parse_run_step(run_cmd):
+                    key = tuple(parsed)
+                    if key not in seen:
+                        commands.append(parsed)
+                        seen.add(key)
+    return commands
 
 
 def _infer_baseline_checks_for_language(

@@ -12,11 +12,30 @@ import yaml
 _logger = logging.getLogger(__name__)
 
 
+# Keys whose list values should be union-merged (deduped) instead of replaced
+_UNION_MERGE_KEYS = {"baseline_checks"}
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     result = base.copy()
     for key, val in override.items():
         if key in result and isinstance(result[key], dict) and isinstance(val, dict):
             result[key] = _deep_merge(result[key], val)
+        elif (
+            key in _UNION_MERGE_KEYS
+            and key in result
+            and isinstance(result[key], list)
+            and isinstance(val, list)
+        ):
+            # Union-merge: dedupe list-of-lists or list-of-strings, preserve order
+            seen = set()
+            merged = []
+            for item in list(result[key]) + list(val):
+                key_item = tuple(item) if isinstance(item, list) else item
+                if key_item not in seen:
+                    seen.add(key_item)
+                    merged.append(item)
+            result[key] = merged
         else:
             result[key] = val
     return result
