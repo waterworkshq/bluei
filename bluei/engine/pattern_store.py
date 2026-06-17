@@ -29,6 +29,7 @@ PATTERN_STORE_MAX_BYTES = 5 * 1024 * 1024
 PATTERN_STORE_MAX_LINES = 10_000
 
 
+from bluei.engine.jsonl import read_jsonl
 from bluei.engine.models import now_iso  # noqa: E402
 
 
@@ -477,18 +478,7 @@ class FixPatternStore:
         os.replace(tmp, self.index_path)
 
     def _load_records_unlocked(self) -> List[Dict[str, Any]]:
-        if not self.store_path.exists():
-            return []
-        records: List[Dict[str, Any]] = []
-        with self.store_path.open("r", encoding="utf-8") as f:
-            for raw in f:
-                if not raw.strip():
-                    continue
-                try:
-                    records.append(json.loads(raw))
-                except json.JSONDecodeError:
-                    continue
-        return records
+        return read_jsonl(self.store_path)
 
     def _find_duplicate(
         self,

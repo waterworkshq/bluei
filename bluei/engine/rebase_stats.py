@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+from bluei.engine.jsonl import read_jsonl
 from bluei.engine.models import now_iso
 
 
@@ -54,25 +55,9 @@ def load_rebase_stats(
         List of dicts, one per JSONL line, ordered newest-first.
         Returns an empty list if the file does not exist.
     """
-    if not stats_path.exists():
-        return []
-
-    entries: List[Dict[str, Any]] = []
-    try:
-        with stats_path.open("r", encoding="utf-8") as f:
-            for line in f:
-                stripped = line.strip()
-                if stripped:
-                    try:
-                        entries.append(json.loads(stripped))
-                    except (json.JSONDecodeError, ValueError):
-                        continue
-    except OSError:
-        return []
-
-    # Reverse so newest comes first, then apply limit
+    entries = read_jsonl(stats_path, limit=limit)
     entries.reverse()
-    return entries[:limit]
+    return entries
 
 
 def summary_from_stats(
@@ -104,7 +89,9 @@ def summary_from_stats(
     total_skipped = sum(e.get("rebases_skipped", 0) for e in entries)
     total_attempted = sum(e.get("rebases_attempted", 0) for e in entries)
     total_sweep_time = sum(
-        e.get("duration_seconds", 0.0) for e in entries if isinstance(e.get("duration_seconds"), (int, float))
+        e.get("duration_seconds", 0.0)
+        for e in entries
+        if isinstance(e.get("duration_seconds"), (int, float))
     )
 
     return {
@@ -113,7 +100,9 @@ def summary_from_stats(
         "total_conflicted": total_conflicted,
         "total_skipped": total_skipped,
         "total_attempted": total_attempted,
-        "avg_duration_seconds": round(total_sweep_time / total, 2) if total > 0 else 0.0,
+        "avg_duration_seconds": round(total_sweep_time / total, 2)
+        if total > 0
+        else 0.0,
         "success_rate_pct": round(
             (total_rebased / total_attempted * 100) if total_attempted > 0 else 0.0, 1
         ),

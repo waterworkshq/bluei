@@ -8,6 +8,7 @@ import json
 import math
 from pathlib import Path
 
+from bluei.engine.jsonl import read_jsonl
 from bluei.engine.models import Finding
 from .models import HealthScore, Baseline, generate_id, now_iso
 
@@ -509,17 +510,7 @@ class HealthEngine:
     ) -> List[Dict]:
         """Get health history for a repo."""
         history_file = state_dir / "health_history.jsonl"
-        if not history_file.exists():
-            return []
-
-        snapshots = []
-        with open(history_file) as f:
-            for line in f:
-                if line.strip():
-                    snapshots.append(json.loads(line))
-
-        # Return last N days
-        return snapshots[-days:] if len(snapshots) > days else snapshots
+        return read_jsonl(history_file, limit=days, skip_errors=False)
 
     def get_improvement_summary(
         self,

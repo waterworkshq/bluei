@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
 
+from bluei.engine.jsonl import read_jsonl
+
 logger = logging.getLogger(__name__)
 
 # Known model per-token rates (USD per 1K tokens).
@@ -112,7 +114,9 @@ class CostTracker:
         """
         rates = MODEL_RATES.get(model) or MODEL_RATES["default"]
         input_rate = rates.get("input_per_1k", MODEL_RATES["default"]["input_per_1k"])
-        output_rate = rates.get("output_per_1k", MODEL_RATES["default"]["output_per_1k"])
+        output_rate = rates.get(
+            "output_per_1k", MODEL_RATES["default"]["output_per_1k"]
+        )
 
         input_cost = input_tokens * input_rate / 1000.0
         output_cost = output_tokens * output_rate / 1000.0
@@ -185,7 +189,9 @@ class CostTracker:
             with self._log_path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, sort_keys=True) + "\n")
         except OSError as exc:
-            logger.warning("cost_tracker: failed to write savings %s — %s", self._log_path, exc)
+            logger.warning(
+                "cost_tracker: failed to write savings %s — %s", self._log_path, exc
+            )
 
     def estimate_invocation_cost(
         self,
@@ -199,7 +205,9 @@ class CostTracker:
         """
         rates = MODEL_RATES.get(model) or MODEL_RATES["default"]
         input_rate = rates.get("input_per_1k", MODEL_RATES["default"]["input_per_1k"])
-        output_rate = rates.get("output_per_1k", MODEL_RATES["default"]["output_per_1k"])
+        output_rate = rates.get(
+            "output_per_1k", MODEL_RATES["default"]["output_per_1k"]
+        )
         input_cost = input_tokens * input_rate / 1000.0
         output_cost = output_tokens * output_rate / 1000.0
         return input_cost + output_cost
@@ -228,18 +236,7 @@ class CostTracker:
         log_path: Path,
     ) -> list[dict]:
         """Load all cost log entries for read-only inspection."""
-        if not log_path.exists():
-            return []
-        entries: list[dict] = []
-        with log_path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        entries.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-        return entries
+        return read_jsonl(log_path)
 
     @classmethod
     def summary(
@@ -279,7 +276,10 @@ class CostTracker:
         result: dict = {
             "total_cost": round(total, 6),
             "total_invocations": len(entries) - savings_count,
-            "per_model": {m: {"count": v["count"], "cost": round(v["cost"], 6)} for m, v in per_model.items()},
+            "per_model": {
+                m: {"count": v["count"], "cost": round(v["cost"], 6)}
+                for m, v in per_model.items()
+            },
             "earliest": entries[0].get("timestamp"),
             "latest": entries[-1].get("timestamp"),
         }

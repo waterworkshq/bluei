@@ -20,16 +20,19 @@ from typing import Any, Dict, List, Optional, Tuple
 
 _logger = logging.getLogger(__name__)
 
+from bluei.engine.jsonl import read_jsonl
 from bluei.engine.utils import run_capture
 
 
 def _now_iso() -> str:
     from datetime import datetime, timezone
+
     return datetime.now(timezone.utc).isoformat()
 
 
 def _generate_composite_id() -> str:
     import uuid
+
     return f"comp-{uuid.uuid4().hex[:12]}"
 
 
@@ -116,7 +119,6 @@ class CompositePattern:
 
 
 class CompositePatternApplier:
-
     def apply(
         self,
         pattern: CompositePattern,
@@ -142,7 +144,11 @@ class CompositePatternApplier:
             target_file = self._resolve_target(step, finding_path, worktree)
             if target_file is None:
                 self._rollback(snapshots, worktree)
-                return False, [], f"no file matches scope={step.scope} file_pattern={step.file_pattern}"
+                return (
+                    False,
+                    [],
+                    f"no file matches scope={step.scope} file_pattern={step.file_pattern}",
+                )
 
             rel = str(target_file.relative_to(worktree))
             if rel not in snapshots:
@@ -261,10 +267,9 @@ class CompositePatternApplier:
 
 
 class CompositePatternStore:
-
     def __init__(self, store_path: Path):
         self.store_path = Path(store_path)
-        self.lock_path = self.store_path.with_suffix(self.store_path.suffix + '.lock')
+        self.lock_path = self.store_path.with_suffix(self.store_path.suffix + ".lock")
         self._thread_lock = threading.RLock()
         self._composites: Dict[str, CompositePattern] = {}
         self._by_rule: Dict[str, List[str]] = {}
@@ -359,25 +364,17 @@ class CompositePatternStore:
         """Reload the in-memory index from the JSONL store file."""
         self._composites = {}
         self._by_rule = {}
-        if not self.store_path.exists():
-            return
-        with self.store_path.open("r", encoding="utf-8") as f:
-            for raw in f:
-                if not raw.strip():
-                    continue
-                try:
-                    record = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if record.get("type") != "composite":
-                    continue
-                pat = CompositePattern.from_dict(record)
-                self._composites[pat.pattern_id] = pat
-                self._by_rule.setdefault(pat.rule, []).append(pat.pattern_id)
+        for record in read_jsonl(self.store_path):
+            if record.get("type") != "composite":
+                continue
+            pat = CompositePattern.from_dict(record)
+            self._composites[pat.pattern_id] = pat
+            self._by_rule.setdefault(pat.rule, []).append(pat.pattern_id)
 
     def _rewrite_all(self) -> None:
         """Atomically rewrite the entire JSONL store from the in-memory index."""
         import os
+
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
         records = []
         for pat in self._composites.values():

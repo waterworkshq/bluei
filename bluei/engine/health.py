@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from bluei.engine.jsonl import read_jsonl
+
 
 def enrich_health_with_cost(
     health_summary: Dict[str, Any],
@@ -37,12 +39,7 @@ def enrich_health_with_cost(
         return health_summary
 
     try:
-        entries: list[dict] = []
-        with cost_log_path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    entries.append(json.loads(line))
+        entries = read_jsonl(cost_log_path, skip_errors=False)
     except (OSError, json.JSONDecodeError):
         return health_summary
 

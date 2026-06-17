@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from bluei.engine.jsonl import read_jsonl
+
 _logger = logging.getLogger(__name__)
 
 
@@ -340,27 +342,11 @@ def extract_report_data(
 
     # findings.jsonl
     findings_file = state_dir / "findings.jsonl"
-    findings: List[Dict] = []
-    if findings_file.exists():
-        try:
-            with open(findings_file) as f:
-                for line in f:
-                    if line.strip():
-                        findings.append(json.loads(line))
-        except (json.JSONDecodeError, OSError):
-            _logger.debug("Failed to read findings JSONL")
+    findings: List[Dict] = read_jsonl(findings_file)
 
     # health_history.jsonl
     history_file = state_dir / "health_history.jsonl"
-    health_history: List[Dict] = []
-    if history_file.exists():
-        try:
-            with open(history_file) as f:
-                for line in f:
-                    if line.strip():
-                        health_history.append(json.loads(line))
-        except (json.JSONDecodeError, OSError):
-            _logger.debug("Failed to read health history")
+    health_history: List[Dict] = read_jsonl(history_file)
 
     # state.json (for reconciliation_events)
     state_file = state_dir / "state.json"

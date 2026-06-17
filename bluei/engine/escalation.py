@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional
 
 _logger = logging.getLogger(__name__)
 
+from bluei.engine.jsonl import read_jsonl
+from bluei.engine.models import IssueStatus
 from bluei.engine.state import _append_text
 
 
@@ -175,16 +177,7 @@ def log_escalation_event(
 
 def _load_rebase_stats(stats_file: Path) -> List[Dict[str, Any]]:
     """Load rebase telemetry for trend detection."""
-    if not stats_file.exists():
-        return []
-    records: List[Dict[str, Any]] = []
-    try:
-        for line in stats_file.read_text().strip().splitlines():
-            if line.strip():
-                records.append(json.loads(line))
-    except (json.JSONDecodeError, OSError):
-        _logger.debug("Failed to read escalation stats")
-    return records
+    return read_jsonl(stats_file)
 
 
 def check_merge_failure_pattern(
@@ -287,16 +280,17 @@ def load_escalation_log(
         List of escalation record dicts, newest first.
     """
     log_path = config.escalation_log_path
-    if log_path is None or not log_path.exists():
+    if log_path is None:
         return []
-    records: List[Dict[str, Any]] = []
+    # Preserve original "any bad line → empty" semantics: a single
+    # malformed line aborts the whole read. Use skip_errors=False and
+    # catch the propagated exception to return [].
     try:
-        for line in log_path.read_text().strip().splitlines():
-            if line.strip():
-                records.append(json.loads(line))
+        records = read_jsonl(log_path, skip_errors=False)
     except (json.JSONDecodeError, OSError):
         _logger.debug("Failed to read escalation log")
-    # Return newest first
+        return []
+    # read_jsonl returns oldest-first; reverse for newest-first.
     records.reverse()
     return records
 
@@ -463,10 +457,13 @@ def handle_max_duplicate_escalation(
         # 2. Route matching issues to human review
         for issue in issues_data.get("issues", []):
             if issue.get("finding_id") == finding_id:
-                if issue.get("status") != "needs-human-max-duplicates-exceeded":
+                if (
+                    issue.get("status")
+                    != IssueStatus.NEEDS_HUMAN_MAX_DUPLICATES_EXCEEDED.value
+                ):
                     set_issue_status(
                         issue,
-                        "needs-human-max-duplicates-exceeded",
+                        IssueStatus.NEEDS_HUMAN_MAX_DUPLICATES_EXCEEDED.value,
                         f"{open_count} open PRs for finding {finding_id} (threshold: {esc.get('threshold', 3)})",
                     )
                     routed_findings.append(finding_id)
@@ -610,14 +607,7 @@ def check_escalation_status(repo_name: str) -> Dict[str, Any]:
     """
     escalation_file = DEFAULT_ESCALATION_FILE
 
-    records: list[Dict[str, Any]] = []
-    if escalation_file.exists():
-        try:
-            for line in escalation_file.read_text().strip().splitlines():
-                if line.strip():
-                    records.append(json.loads(line))
-        except (json.JSONDecodeError, OSError):
-            _logger.debug("Failed to read escalation log")
+    records: list[Dict[str, Any]] = read_jsonl(escalation_file)
 
     repo_records: list[Dict[str, Any]] = []
     for r in records:

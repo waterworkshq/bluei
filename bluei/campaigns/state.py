@@ -14,6 +14,7 @@ from typing import Any, Dict
 from .planner import Campaign
 from bluei.app.models import now_iso
 from bluei.app.state import _atomic_json_write
+from bluei.engine.jsonl import read_jsonl
 
 _logger = logging.getLogger(__name__)
 
@@ -42,7 +43,9 @@ class CampaignStateManager:
         phases_dir.mkdir(parents=True, exist_ok=True)
 
         _atomic_json_write(campaign_dir / "campaign.json", campaign.to_dict())
-        _atomic_json_write(campaign_dir / "dependency_graph.json", campaign.dependency_graph)
+        _atomic_json_write(
+            campaign_dir / "dependency_graph.json", campaign.dependency_graph
+        )
         for phase in campaign.phases:
             _atomic_json_write(phases_dir / f"{phase.phase_id}.json", phase.to_dict())
 
@@ -120,7 +123,9 @@ class CampaignStateManager:
             return None
         return events[-1]
 
-    def events(self, campaign_id: str, limit: int | None = None) -> list[Dict[str, Any]]:
+    def events(
+        self, campaign_id: str, limit: int | None = None
+    ) -> list[Dict[str, Any]]:
         """Read the full event log for a campaign, optionally limited to the last N entries.
 
         Args:
@@ -131,19 +136,9 @@ class CampaignStateManager:
             List of event dicts ordered chronologically.
         """
         events_file = self._campaign_dir(campaign_id) / "events.jsonl"
-        if not events_file.exists():
-            return []
-        records: list[Dict[str, Any]] = []
-        for line in events_file.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
         if limit is not None and limit > 0:
-            return records[-limit:]
-        return records
+            return read_jsonl(events_file, limit=limit)
+        return read_jsonl(events_file)
 
     def _campaign_dir(self, campaign_id: str) -> Path:
         return self.campaigns_dir / campaign_id

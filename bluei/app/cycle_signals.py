@@ -17,6 +17,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from bluei.engine.jsonl import read_jsonl
+
 _logger = logging.getLogger(__name__)
 
 
@@ -34,27 +36,31 @@ class CycleSignalStore:
 
     def load(self) -> Dict[str, Any]:
         if not self.path.exists():
-            return {'suppressed_rules': {}}
+            return {"suppressed_rules": {}}
         try:
             return json.loads(self.path.read_text())
         except (json.JSONDecodeError, OSError):
-            return {'suppressed_rules': {}}
+            return {"suppressed_rules": {}}
 
     def _save(self, data: Dict[str, Any]) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps(data, indent=2) + '\n')
+            self.path.write_text(json.dumps(data, indent=2) + "\n")
         except OSError:
             _logger.debug("Failed to save cycle signals")
 
-    def suppress_rule(self, rule: str, reason: str, duration_cycles: int = SUPPRESSION_DURATION_CYCLES) -> None:
+    def suppress_rule(
+        self, rule: str, reason: str, duration_cycles: int = SUPPRESSION_DURATION_CYCLES
+    ) -> None:
         """Mark a finding rule as suppressed for N cycles."""
         data = self.load()
-        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=30 * duration_cycles)).isoformat()
-        data['suppressed_rules'][rule] = {
-            'expires_at': expires_at,
-            'reason': reason,
-            'duration_cycles': duration_cycles,
+        expires_at = (
+            datetime.now(timezone.utc) + timedelta(minutes=30 * duration_cycles)
+        ).isoformat()
+        data["suppressed_rules"][rule] = {
+            "expires_at": expires_at,
+            "reason": reason,
+            "duration_cycles": duration_cycles,
         }
         self._save(data)
 
@@ -69,29 +75,29 @@ class CycleSignalStore:
 
         # Prune expired
         pruned = False
-        for r in list(data['suppressed_rules'].keys()):
-            expires = data['suppressed_rules'][r].get('expires_at')
+        for r in list(data["suppressed_rules"].keys()):
+            expires = data["suppressed_rules"][r].get("expires_at")
             if expires:
                 try:
                     if datetime.fromisoformat(expires) < now:
-                        del data['suppressed_rules'][r]
+                        del data["suppressed_rules"][r]
                         pruned = True
                 except (ValueError, TypeError):
-                    del data['suppressed_rules'][r]
+                    del data["suppressed_rules"][r]
                     pruned = True
 
         if pruned:
             self._save(data)
 
-        entry = data['suppressed_rules'].get(rule)
+        entry = data["suppressed_rules"].get(rule)
         if entry:
-            return entry.get('reason', 'suppressed')
+            return entry.get("reason", "suppressed")
         return None
 
     def lift_suppression(self, rule: str) -> None:
         """Manually lift suppression for a rule."""
         data = self.load()
-        data['suppressed_rules'].pop(rule, None)
+        data["suppressed_rules"].pop(rule, None)
         self._save(data)
 
     def get_all_suppressed(self) -> Dict[str, Any]:
@@ -100,15 +106,15 @@ class CycleSignalStore:
         data = self.load()
         now = datetime.now(timezone.utc)
         result = {}
-        for rule, info in data.get('suppressed_rules', {}).items():
-            expires = info.get('expires_at')
+        for rule, info in data.get("suppressed_rules", {}).items():
+            expires = info.get("expires_at")
             if expires:
                 try:
                     if datetime.fromisoformat(expires) < now:
                         continue  # expired, will be pruned on next is_rule_suppressed call
                 except (ValueError, TypeError):
                     continue
-            result[rule] = info.get('reason', 'suppressed')
+            result[rule] = info.get("reason", "suppressed")
         return result
 
 
@@ -132,18 +138,15 @@ def record_retry_failure_pattern(
         return False
 
     try:
-        lines = review_stats_file.read_text().strip().splitlines()
+        records = read_jsonl(review_stats_file, skip_errors=False)
         consecutive = 0
-        for line in reversed(lines):
-            if not line.strip():
-                continue
-            rec = json.loads(line)
-            if rec.get('retry_failed', 0) > 0:
+        for rec in reversed(records):
+            if rec.get("retry_failed", 0) > 0:
                 consecutive += 1
             else:
                 break
         if consecutive >= threshold:
-            store.suppress_rule(rule, f'retry_failed x{consecutive} consecutive cycles')
+            store.suppress_rule(rule, f"retry_failed x{consecutive} consecutive cycles")
             return True
     except (json.JSONDecodeError, OSError):
         _logger.debug("Failed to read cycle signal history")

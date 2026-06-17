@@ -4,6 +4,7 @@ Stores high-confidence fix patterns keyed by structural hash. Lookup uses
 exact hash match first, then fuzzy structural similarity. Patterns are
 privacy-normalized before storage (identifiers and literals stripped).
 """
+
 import logging
 import json
 import threading
@@ -14,6 +15,7 @@ from typing import Any, Dict, List, Optional, Set
 
 _logger = logging.getLogger(__name__)
 
+from bluei.engine.jsonl import read_jsonl
 from bluei.engine.structural_hash import (
     compute_structural_hash,
     fuzzy_structural_match,
@@ -176,7 +178,9 @@ class SharedPatternLibrary:
                     continue
                 if len(pattern.source_repos) < MIN_REPOS_FOR_LOOKUP:
                     continue
-                score = fuzzy_structural_match(snippet, pattern.before_snippet, language)
+                score = fuzzy_structural_match(
+                    snippet, pattern.before_snippet, language
+                )
                 if score > best_score and score >= threshold:
                     best_score = score
                     best = pattern
@@ -201,11 +205,14 @@ class SharedPatternLibrary:
                 if repo_id not in existing["source_repos"]:
                     existing["source_repos"].append(repo_id)
                 existing["confidence"] = self._merge_confidence_raw(
-                    existing.get("confidence", 0.5), pattern.confidence,
-                    existing.get("success_count", 0), existing.get("failure_count", 0),
+                    existing.get("confidence", 0.5),
+                    pattern.confidence,
+                    existing.get("success_count", 0),
+                    existing.get("failure_count", 0),
                 )
             else:
                 import copy
+
                 d = pattern.to_dict()
                 d["source_repos"] = [repo_id]
                 records[key] = d
@@ -228,23 +235,14 @@ class SharedPatternLibrary:
 
     def _load_composite_language(self, lang_file: Path) -> Dict[str, Dict[str, Any]]:
         records: Dict[str, Dict[str, Any]] = {}
-        if not lang_file.exists():
-            return records
-        try:
-            for line in lang_file.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    rec = json.loads(line)
-                    key = f"{rec.get('rule', '')}::{rec.get('pattern_id', '')}"
-                    records[key] = rec
-                except (json.JSONDecodeError, KeyError):
-                    continue
-        except OSError:
-            _logger.debug("Failed to read pattern library records")
+        for rec in read_jsonl(lang_file):
+            key = f"{rec.get('rule', '')}::{rec.get('pattern_id', '')}"
+            records[key] = rec
         return records
 
-    def _flush_composite_language(self, lang_file: Path, records: Dict[str, Dict[str, Any]]) -> None:
+    def _flush_composite_language(
+        self, lang_file: Path, records: Dict[str, Dict[str, Any]]
+    ) -> None:
         tmp = lang_file.with_suffix(".jsonl.tmp")
         lines = []
         for rec in records.values():
@@ -252,8 +250,9 @@ class SharedPatternLibrary:
         tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
         tmp.replace(lang_file)
 
-    def _merge_confidence_raw(self, existing_conf: float, new_conf: float,
-                              success: int, failure: int) -> float:
+    def _merge_confidence_raw(
+        self, existing_conf: float, new_conf: float, success: int, failure: int
+    ) -> float:
         total = success + failure + 1
         weighted = (existing_conf * (total - 1) + new_conf) / total
         return min(1.0, max(0.0, weighted))
@@ -264,21 +263,17 @@ class SharedPatternLibrary:
             lang = lang_file.stem
             count = 0
             repos: Set[str] = set()
-            try:
-                for line in lang_file.read_text(encoding="utf-8").splitlines():
-                    if not line.strip():
-                        continue
-                    rec = json.loads(line)
-                    count += 1
-                    for r in rec.get("source_repos", []):
-                        repos.add(r)
-            except (json.JSONDecodeError, OSError):
-                _logger.debug("Failed to read shared pattern stats")
+            for rec in read_jsonl(lang_file):
+                count += 1
+                for r in rec.get("source_repos", []):
+                    repos.add(r)
             stats["languages"][lang] = {"pattern_count": count, "repos": sorted(repos)}
             stats["total_patterns"] += count
         return stats
 
-    def _merge_confidence(self, existing: CrossRepoPattern, new_confidence: float) -> float:
+    def _merge_confidence(
+        self, existing: CrossRepoPattern, new_confidence: float
+    ) -> float:
         total = existing.success_count + existing.failure_count + 1
         weighted = (existing.confidence * (total - 1) + new_confidence) / total
         return min(1.0, max(0.0, weighted))
@@ -286,24 +281,18 @@ class SharedPatternLibrary:
     def _load_language(self, language: str) -> Dict[str, CrossRepoPattern]:
         records: Dict[str, CrossRepoPattern] = {}
         lang_file = self.library_path / f"{language}.jsonl"
-        if not lang_file.exists():
-            return records
-        try:
-            for line in lang_file.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    rec = json.loads(line)
-                    pat = CrossRepoPattern.from_dict(rec)
-                    key = f"{pat.rule}::{pat.structural_hash}"
-                    records[key] = pat
-                except (json.JSONDecodeError, KeyError):
-                    continue
-        except OSError:
-            _logger.debug("Failed to read cross-repo patterns")
+        for rec in read_jsonl(lang_file):
+            try:
+                pat = CrossRepoPattern.from_dict(rec)
+            except KeyError:
+                continue
+            key = f"{pat.rule}::{pat.structural_hash}"
+            records[key] = pat
         return records
 
-    def _flush_language(self, language: str, records: Dict[str, CrossRepoPattern]) -> None:
+    def _flush_language(
+        self, language: str, records: Dict[str, CrossRepoPattern]
+    ) -> None:
         lang_file = self.library_path / f"{language}.jsonl"
         tmp = lang_file.with_suffix(".jsonl.tmp")
         lines = []
@@ -314,6 +303,7 @@ class SharedPatternLibrary:
 
     def _get_cached(self, language: str) -> Dict[str, CrossRepoPattern]:
         import time
+
         now = time.monotonic()
         ts = self._cache_ts.get(language, 0.0)
         if language in self._cache and (now - ts) < self._CACHE_TTL:
@@ -357,6 +347,7 @@ def promote_pattern_to_recipe(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     import yaml
+
     safe_hash = pattern.structural_hash[:8]
     rule_safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in pattern.rule)
     recipe_id = f"auto-{rule_safe[:32]}-{safe_hash}"
@@ -391,5 +382,8 @@ def promote_pattern_to_recipe(
     }
 
     out_path = output_dir / f"{recipe_id}.yaml"
-    out_path.write_text(yaml.safe_dump(recipe_data, default_flow_style=False, sort_keys=False), encoding="utf-8")
+    out_path.write_text(
+        yaml.safe_dump(recipe_data, default_flow_style=False, sort_keys=False),
+        encoding="utf-8",
+    )
     return out_path

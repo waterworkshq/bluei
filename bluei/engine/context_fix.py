@@ -15,6 +15,7 @@ from typing import Dict, Optional, TYPE_CHECKING
 
 _logger = logging.getLogger(__name__)
 
+from bluei.engine.jsonl import read_jsonl
 from bluei.engine.reforge import ContextOverride, get_context_rule, match_context
 from bluei.engine.state import _append_text
 
@@ -112,15 +113,9 @@ def load_context_failures(failures_path: Path) -> Dict[str, ContextFailure]:
     Returns:
         Mapping of ``"rule::file::framework"`` → ContextFailure.
     """
-    if not failures_path.exists():
-        return {}
     records = {}
-    for line in failures_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    for d in read_jsonl(failures_path):
         try:
-            d = json.loads(line)
             key = f"{d['rule']}::{d['file_path']}::{d['framework']}"
             records[key] = ContextFailure(
                 rule=d["rule"],
@@ -129,7 +124,7 @@ def load_context_failures(failures_path: Path) -> Dict[str, ContextFailure]:
                 strategy=d.get("strategy", ""),
                 count=d.get("count", 1),
             )
-        except (json.JSONDecodeError, KeyError):
+        except KeyError:
             continue
     return records
 
