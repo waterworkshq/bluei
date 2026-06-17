@@ -226,11 +226,21 @@ def _detect_framework(
     Args:
         worktree_path: Root of the working tree to scan.
         detected_frameworks: Optional pre-detected framework list. If None,
-            lazily imports ``detect_frameworks`` from ``bluei.app.onboarding``.
+            falls back to the deferred app-layer detector (see debt note
+            below).
     """
     if detected_frameworks is not None:
         return detected_frameworks[0] if detected_frameworks else None
     try:
+        # NOTE: deferred engine→app import (rec-08 layering violation).
+        # The clean fix is parameterization — callers should pass
+        # ``detected_frameworks`` from the app/onboarding layer. That requires
+        # threading a new param through ``extract()`` and ``lifecycle.
+        # _extract_fix_pattern()`` (4 call sites in lifecycle.py) plus
+        # updating ``tests/test_pattern_extractor.py::TestDetectFramework``
+        # which currently exercises this fallback. Out of scope for this
+        # isolated fix; accepted as debt 2026-06-18. Tracked exemption lives
+        # in ``scripts/tools/enforce_architecture.py`` (check_engine_imports_app).
         from bluei.app.onboarding import detect_frameworks
 
         frameworks = detect_frameworks(worktree_path)
