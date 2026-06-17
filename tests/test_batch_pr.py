@@ -174,7 +174,10 @@ class TestApplyBatchFixes:
             diff_lines=1,
             fix_method="autofix",
         )
-        with patch("bluei.engine.batch_pr._apply_single_fix", return_value=result):
+        with patch(
+            # Phase 2: retarget — apply_batch_fixes now lives in batch_execution
+            "bluei.engine.batch_execution._apply_single_fix", return_value=result
+        ):
             successes, failures = apply_batch_fixes(
                 batch, tmp_path, tmp_path, args, log
             )
@@ -192,7 +195,10 @@ class TestApplyBatchFixes:
         result = FixResult(
             finding_id=f.finding_id, status="skipped", error="not-fixable"
         )
-        with patch("bluei.engine.batch_pr._apply_single_fix", return_value=result):
+        with patch(
+            # Phase 2: retarget — apply_batch_fixes now lives in batch_execution
+            "bluei.engine.batch_execution._apply_single_fix", return_value=result
+        ):
             successes, failures = apply_batch_fixes(
                 batch, tmp_path, tmp_path, args, log
             )
@@ -208,7 +214,10 @@ class TestApplyBatchFixes:
         args = _make_mock_args()
 
         result = FixResult(finding_id=f.finding_id, status="failed", error="bad-fix")
-        with patch("bluei.engine.batch_pr._apply_single_fix", return_value=result):
+        with patch(
+            # Phase 2: retarget — apply_batch_fixes now lives in batch_execution
+            "bluei.engine.batch_execution._apply_single_fix", return_value=result
+        ):
             successes, failures = apply_batch_fixes(
                 batch, tmp_path, tmp_path, args, log
             )
@@ -229,7 +238,10 @@ class TestApplySingleFixAutofix:
 
         with (
             patch("bluei.engine.lifecycle.apply_autofix", return_value=True),
-            patch("bluei.engine.batch_pr.verify_finding_closed", return_value=True),
+            patch(
+                # Phase 2: retarget — _apply_single_fix now lives in batch_execution
+                "bluei.engine.batch_execution.verify_finding_closed", return_value=True
+            ),
             patch("bluei.engine.constants.load_llm_fixable_rules", return_value=[]),
         ):
             result = _apply_single_fix(f, tmp_path, tmp_path, args, log)
@@ -245,7 +257,10 @@ class TestApplySingleFixAutofix:
 
         with (
             patch("bluei.engine.lifecycle.apply_autofix", return_value=True),
-            patch("bluei.engine.batch_pr.verify_finding_closed", return_value=False),
+            patch(
+                # Phase 2: retarget — _apply_single_fix now lives in batch_execution
+                "bluei.engine.batch_execution.verify_finding_closed", return_value=False
+            ),
             patch("bluei.engine.constants.load_llm_fixable_rules", return_value=[]),
         ):
             result = _apply_single_fix(f, tmp_path, tmp_path, args, log)
@@ -265,7 +280,10 @@ class TestApplySingleFixAutofix:
             patch("bluei.engine.lifecycle.apply_autofix", return_value=False),
             patch("bluei.engine.constants.load_llm_fixable_rules", return_value=[]),
             patch("bluei.engine.context_fix.apply_contextual_fix", return_value=True),
-            patch("bluei.engine.batch_pr.verify_finding_closed", return_value=True),
+            patch(
+                # Phase 2: retarget — _apply_single_fix now lives in batch_execution
+                "bluei.engine.batch_execution.verify_finding_closed", return_value=True
+            ),
         ):
             result = _apply_single_fix(f, tmp_path, tmp_path, args, log)
         assert result.status == "success"
@@ -282,7 +300,10 @@ class TestApplySingleFixAutofix:
             patch("bluei.engine.lifecycle.apply_autofix", return_value=False),
             patch("bluei.engine.constants.load_llm_fixable_rules", return_value=[]),
             patch("bluei.engine.context_fix.apply_contextual_fix", return_value=True),
-            patch("bluei.engine.batch_pr.verify_finding_closed", return_value=False),
+            patch(
+                # Phase 2: retarget — _apply_single_fix now lives in batch_execution
+                "bluei.engine.batch_execution.verify_finding_closed", return_value=False
+            ),
         ):
             result = _apply_single_fix(f, tmp_path, tmp_path, args, log)
         assert result.status == "failed"

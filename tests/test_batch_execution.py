@@ -157,7 +157,8 @@ class TestSoloBatchDelegation:
 
 
 class TestApplyBatchFixes:
-    @patch("bluei.engine.batch_pr._apply_single_fix")
+    # Phase 2: retarget — apply_batch_fixes now lives in batch_execution
+    @patch("bluei.engine.batch_execution._apply_single_fix")
     def test_all_fixes_succeed(self, mock_fix):
         """All findings get fixed successfully."""
         mock_fix.return_value = FixResult(
@@ -183,7 +184,8 @@ class TestApplyBatchFixes:
         assert len(batch.fix_results) == 3
         assert all(r.status == "success" for r in batch.fix_results.values())
 
-    @patch("bluei.engine.batch_pr._apply_single_fix")
+    # Phase 2: retarget — apply_batch_fixes now lives in batch_execution
+    @patch("bluei.engine.batch_execution._apply_single_fix")
     def test_partial_success(self, mock_fix):
         """Some fixes succeed, some fail."""
         results = [
@@ -209,7 +211,8 @@ class TestApplyBatchFixes:
         assert successes == 2
         assert failures == 1
 
-    @patch("bluei.engine.batch_pr._apply_single_fix")
+    # Phase 2: retarget — apply_batch_fixes now lives in batch_execution
+    @patch("bluei.engine.batch_execution._apply_single_fix")
     def test_all_fixes_fail(self, mock_fix):
         mock_fix.return_value = FixResult(
             finding_id="f001",
@@ -237,7 +240,8 @@ class TestApplyBatchFixes:
 
 
 class TestApplySingleFix:
-    @patch("bluei.engine.batch_pr.verify_finding_closed", return_value=True)
+    # Phase 2: retarget — _apply_single_fix now lives in batch_execution
+    @patch("bluei.engine.batch_execution.verify_finding_closed", return_value=True)
     @patch("bluei.engine.lifecycle.apply_autofix", return_value=True)
     @patch("bluei.engine.state._append_text")
     def test_autofix_succeeds(
@@ -256,7 +260,8 @@ class TestApplySingleFix:
         assert result.status == "success"
         assert result.fix_method == "autofix"
 
-    @patch("bluei.engine.batch_pr.verify_finding_closed", return_value=False)
+    # Phase 2: retarget — _apply_single_fix now lives in batch_execution
+    @patch("bluei.engine.batch_execution.verify_finding_closed", return_value=False)
     @patch("bluei.engine.lifecycle.apply_autofix", return_value=True)
     @patch("bluei.engine.state._append_text")
     def test_autofix_verification_fails(
