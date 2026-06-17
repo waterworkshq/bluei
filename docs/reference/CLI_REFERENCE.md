@@ -13,7 +13,7 @@ rendering, and dispatch to the canonical `bluei` app and engine modules.
 
 ```
 bin/bluei (bash shebang)
-  → bin/bluei.py (CLI dispatcher — 1796 lines, 27 commands)
+  → bin/bluei.py (CLI dispatcher — 1106 lines, ~27 commands)
     → bluei/app/ (runner, config, health, registry, etc.)
       → bluei/engine/ (execution engine)
         → repo worktrees / GitHub / linters / LLM fixers

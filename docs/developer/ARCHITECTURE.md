@@ -15,7 +15,7 @@ fixes them, opens pull requests, and can auto-merge — all configurable by care
 ```
   bin/bluei (shebang)
        ↓
-  bin/bluei.py (CLI dispatcher: 27 commands)
+  bin/bluei.py (CLI dispatcher: ~27 commands)
        ↓
   bluei/app/ (core app: runner, health, registry, onboarding, reports, etc.)
        ↓
@@ -50,7 +50,7 @@ report generation, campaign orchestration, and emergent rule discovery.
 | `runner.py` | Wraps `bluei.engine` via subprocess. Cycle orchestration. |
 | `config.py` | Configuration management, workspace resolution. |
 | `registry.py` | YAML-based repo registry with CRUD. |
-| `onboard.py` | Repository onboarding: clone, language detection, template bootstrapping. |
+| `bluei.app.onboarding/` | Repository onboarding package: detection, inference, templates, engine (5-module split per rec-22). |
 | `health.py` | Health score engine (0-100). Aggregates findings, test coverage, CI status. |
 | `bluei.review.cycle` | GitHub-native PR review lifecycle management. The largest module. |
 | `report.py` | Report generation in text, PDF, HTML, JSON, and WhatsApp formats. |
@@ -67,8 +67,9 @@ report generation, campaign orchestration, and emergent rule discovery.
 
 ### 3. Execution Engine (`bluei/engine/`)
 
-The 36-module execution engine. Handles discovery, fixing, PR management, batch
-operations, and pattern learning.
+The execution engine (~50 modules plus 6 subpackages: `ast_engine/`, `commands/`,
+`notifiers/`, `recipes/`, `scaffold/`, `structural_hash/`). Handles discovery,
+fixing, PR management, batch operations, and pattern learning.
 
 | Module | Responsibility |
 |--------|---------------|
@@ -81,7 +82,7 @@ operations, and pattern learning.
 | `constants.py` | Catalog of detection rules, tool paths, cooldown configs, cost rates. See [RULES_REFERENCE.md](../reference/RULES_REFERENCE.md) for the full rule catalog. |
 | `cascade.py` | Multi-engine cascade: tries deterministic fixes before falling to LLM. |
 | `prompts.py` | LLM prompt rendering with directive seeding context injection. |
-| `structural_hash.py` | AST-based structural hashing for finding deduplication. |
+| `structural_hash/` | AST-based structural hashing package (split per S4: `__init__.py`, `python.py`, `text.py`). |
 | `recipe_engine.py` | Declarative YAML fix recipe system. See [RULES_REFERENCE.md](../reference/RULES_REFERENCE.md#recipes) for all built-in recipes. |
 | `recipe_handlers.py` | Text, regex, and command-based recipe handlers. |
 | `pattern_store.py` | Persistent store for learned fix patterns. |
@@ -97,8 +98,9 @@ operations, and pattern learning.
 | `clean_prs.py` | Stale PR detection and cleanup. |
 | `cost_tracker.py` | Tracks model API invocation costs per cycle with soft/hard limits. |
 | `escalation.py` | Pattern detection and threshold-based escalation. |
-| `enforce_architecture.py` | AST-based architecture rule enforcement. |
-| `check_completeness.py` | Validates that every finding has a fix attempt. |
+
+> Recently added primitives (2026-06-17): `state_io.py` (atomic file I/O shared
+> with app layer, extracted per rec-08) and `jsonl.py` (canonical JSONL read/append).
 
 ### 4. Plugins (`plugins/`)
 
@@ -382,19 +384,11 @@ and routes to `needs-human-max-duplicates-exceeded` status.
 
 ### Architecture Enforcement
 
-`enforce_architecture.py` provides AST-based module boundary enforcement. It
-checks that imports between packages follow the declared architecture rules —
-for example, preventing execution engine modules from importing core engine
-modules or enforcing that plugins do not import internal implementation details.
-Violations are logged and can block the fix pipeline.
+`scripts/tools/enforce_architecture.py` provides AST-based module boundary enforcement. It checks that imports between packages follow the declared architecture rules — for example, preventing execution engine modules from importing `bluei.app.*` (rec-08 layering violations). The script runs as a CI gate; it is NOT a runtime module and is not importable as `bluei.engine.enforce_architecture`. Violations are logged and fail the CI build.
 
 ### Completeness Checking
 
-`check_completeness.py` validates that every finding in the system has a fix
-attempt. After each cycle, it scans the findings log and verifies that each
-finding is either resolved, has a pending fix attempt, or is explicitly marked
-as needing human review. Orphaned findings (no fix attempt and not human-gated)
-trigger an escalation.
+`scripts/tools/check_completeness.py` validates that every finding in the system has a fix attempt. It is a standalone audit script run ad-hoc or as a CI gate; it is NOT a runtime module and is not importable as `bluei.engine.check_completeness`. The script scans the findings log and verifies that each finding is either resolved, has a pending fix attempt, or is explicitly marked as needing human review. Orphaned findings (no fix attempt and not human-gated) are reported.
 
 ---
 
@@ -504,7 +498,7 @@ with all available keys. See also `docs/CONFIG_REFERENCE.md`.
 
 ## Testing
 
-2491 tests across 111 files. All use `tmp_path` fixtures — no external services
+~5761 tests across 200+ files (2026-06-17). All use `tmp_path` fixtures — no external services
 needed. Run with:
 
 ```bash
