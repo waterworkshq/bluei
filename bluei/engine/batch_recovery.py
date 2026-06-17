@@ -141,7 +141,10 @@ def split_batch(
     - Respects max_split_depth (from args, default 3)
     - Each sub-batch inherits batch_id prefix with split suffix
     """
-    from bluei.engine.batch_pr import _find_issue_for_finding, check_batch_conflicts
+    from bluei.engine.batch_grouping import (
+        _find_issue_for_finding,
+        check_batch_conflicts,
+    )
     from bluei.engine.state import _append_text
 
     failed_findings = []
@@ -232,7 +235,10 @@ def split_on_conflicts(batch: BatchGroup) -> List[BatchGroup]:
     Isolates conflicting findings as solo batches.
     Returns list of conflict-free sub-batches.
     """
-    from bluei.engine.batch_pr import _find_issue_for_finding, check_batch_conflicts
+    from bluei.engine.batch_grouping import (
+        _find_issue_for_finding,
+        check_batch_conflicts,
+    )
 
     conflicts = check_batch_conflicts(batch.findings)
     if not conflicts:
