@@ -13,8 +13,8 @@ from bluei.engine.pattern_extractor import (
     _per_file_snippets,
     _compute_file_pattern,
     _detect_framework,
-    _append_log,
     _extract_composite,
+    append_log,
 )
 from bluei.engine.pattern_store import FixPatternStore
 
@@ -233,9 +233,13 @@ def test_extract_logs_extraction_event(git_repo, store, tmp_path, make_finding):
         git_repo, _pf(make_finding, rule="rename"), "contextual", store, log_file
     )
 
-    assert log_file.read_text(encoding="utf-8").strip() == (
+    # Canonical append_log format is ``[ISO] message``. Substring match
+    # keeps the assertion robust against timestamp variance.
+    log_text = log_file.read_text(encoding="utf-8").strip()
+    assert log_text.endswith(
         f"pattern-extract: rule=rename pattern_id={pattern_id} source=contextual"
     )
+    assert log_text.startswith("[")
 
 
 def test_integration_extract_from_real_git_worktree_writes_jsonl(
@@ -403,7 +407,7 @@ class TestExtractException:
             side_effect=RuntimeError("boom"),
         ):
             with patch(
-                "bluei.engine.pattern_extractor._append_log",
+                "bluei.engine.pattern_extractor.append_log",
                 side_effect=OSError("log fail"),
             ):
                 result = extract(tmp_path, finding, "autofix", store, log_file)
@@ -535,7 +539,7 @@ class TestExtractCompositeEdgeCases:
             side_effect=RuntimeError("boom"),
         ):
             with patch(
-                "bluei.engine.pattern_extractor._append_log",
+                "bluei.engine.pattern_extractor.append_log",
                 side_effect=OSError("log fail"),
             ):
                 result = _extract_composite(
@@ -560,6 +564,6 @@ class TestInferLanguageEdgeCases:
 class TestAppendLog:
     def test_creates_parent_dirs(self, tmp_path):
         log_file = tmp_path / "deep" / "nested" / "run.log"
-        _append_log(log_file, "test message")
+        append_log(log_file, "test message")
         assert log_file.exists()
         assert "test message" in log_file.read_text()

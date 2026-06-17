@@ -572,10 +572,10 @@ from unittest.mock import MagicMock as _MagicMock
 
 from bluei.engine.pattern_replay import (
     _PATTERN_CACHE,
-    _append_log,
     _clear_pattern_cache,
     _find_snippet_in_file as _find_snippet,
     _resolve_pattern,
+    append_log,
     format_pattern_hint,
 )
 
@@ -609,7 +609,7 @@ def test_try_replay_exception_and_log_failure(tmp_path, make_finding):
         rule="broad-except", path="src/example.py", snippet="except:\n    pass"
     )
     with patch(
-        "bluei.engine.pattern_replay._append_log", side_effect=OSError("log dead")
+        "bluei.engine.pattern_replay.append_log", side_effect=OSError("log dead")
     ):
         result = try_replay(worktree, finding, store, {}, log)
     assert result == (False, None)
@@ -747,13 +747,17 @@ def test_find_snippet_exact_empty_snippet_returns_match():
     assert length == 0
 
 
-def test_append_log_exception_suppressed(tmp_path):
+def test_append_log_propagates_on_restricted_parent(tmp_path):
+    # After migration to canonical bluei.engine.state.append_log, write
+    # failures are no longer swallowed. The old local helper had a
+    # try/except wrapper; the canonical does not.
     log = tmp_path / "nonexistent" / "deep" / "test.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("")
     _os.chmod(str(log.parent), 0o000)
     try:
-        _append_log(log, "should not crash")
+        with pytest.raises(PermissionError):
+            append_log(log, "should raise")
     finally:
         _os.chmod(str(log.parent), 0o755)
 

@@ -160,10 +160,11 @@ class TestInferLanguageFromPath:
         assert infer_language_from_path("src/ui/app.ts") == "typescript"
         assert infer_language_from_path("src/ui/App.tsx") == "typescript"
 
-    def test_javascript_maps_to_typescript(self):
-        # Historical behavior preserved: .js/.jsx also map to "typescript".
-        assert infer_language_from_path("src/legacy.js") == "typescript"
-        assert infer_language_from_path("src/legacy.jsx") == "typescript"
+    def test_javascript_suffix(self):
+        # Aligned with codebase convention (48+ refs map .js/.jsx → javascript);
+        # was "typescript" pre-2026-06-17.
+        assert infer_language_from_path("src/legacy.js") == "javascript"
+        assert infer_language_from_path("src/legacy.jsx") == "javascript"
 
     def test_go(self):
         assert infer_language_from_path("cmd/main.go") == "go"
@@ -1331,3 +1332,27 @@ class TestPlaceholderHealthTrendColors:
         }
         html = _generate_placeholder_html(data)
         assert expected_band in html
+
+
+def test_pattern_replay_uses_canonical_language_inference():
+    """Verify pattern_replay delegates to engine.report.infer_language_from_path."""
+    from bluei.engine import pattern_replay
+    from bluei.engine.report import infer_language_from_path
+
+    # The local _infer_language_from_path should no longer exist
+    assert not hasattr(pattern_replay, "_infer_language_from_path"), (
+        "pattern_replay should use engine.report.infer_language_from_path, "
+        "not a local copy"
+    )
+
+    # All extensions should resolve consistently
+    for ext, expected in [
+        (".py", "python"),
+        (".ts", "typescript"),
+        (".tsx", "typescript"),
+        (".js", "javascript"),
+        (".jsx", "javascript"),
+        (".go", "go"),
+        (".rs", "rust"),
+    ]:
+        assert infer_language_from_path(f"foo{ext}") == expected

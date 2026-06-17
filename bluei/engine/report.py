@@ -75,8 +75,9 @@ _PATH_LANGUAGE_SUFFIXES = {
     ".py": "python",
     ".ts": "typescript",
     ".tsx": "typescript",
-    ".js": "typescript",
-    ".jsx": "typescript",
+    # Aligned with codebase convention (48+ refs); was "typescript" pre-2026-06-17
+    ".js": "javascript",
+    ".jsx": "javascript",
     ".go": "go",
     ".rs": "rust",
 }

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import fnmatch
-import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -13,6 +12,8 @@ _logger = logging.getLogger(__name__)
 
 from bluei.engine.models import Finding
 from bluei.engine.pattern_store import FixPattern, FixPatternStore, normalize_snippet
+from bluei.engine.report import infer_language_from_path
+from bluei.engine.state import append_log
 from bluei.engine.utils import run_capture
 
 
@@ -22,24 +23,24 @@ _PATTERN_CACHE: Dict[str, Tuple[float, Optional[FixPattern]]] = {}
 _PATTERN_CACHE_TTL = 300.0
 
 
-def format_pattern_hint(pattern: 'FixPattern') -> str:
+def format_pattern_hint(pattern: "FixPattern") -> str:
     """Format a mid-confidence pattern as a prompt hint for the LLM."""
     lines = [
-        f'A previous fix for rule `{pattern.rule}` succeeded with a similar code pattern (confidence: {pattern.confidence:.0%}):',
-        '',
-        '**Before:**',
-        '```',
+        f"A previous fix for rule `{pattern.rule}` succeeded with a similar code pattern (confidence: {pattern.confidence:.0%}):",
+        "",
+        "**Before:**",
+        "```",
         pattern.before_snippet,
-        '```',
-        '',
-        '**After:**',
-        '```',
+        "```",
+        "",
+        "**After:**",
+        "```",
         pattern.after_snippet,
-        '```',
-        '',
-        'Consider applying a similar transformation.',
+        "```",
+        "",
+        "Consider applying a similar transformation.",
     ]
-    return '\n'.join(lines)
+    return "\n".join(lines)
 
 
 def try_replay(
@@ -51,13 +52,18 @@ def try_replay(
     shared_library: Any = None,
 ) -> Tuple[bool, Optional[str]]:
     try:
-        return _try_replay_inner(worktree_path, finding, store, baseline_checks, log_file, shared_library)
+        return _try_replay_inner(
+            worktree_path, finding, store, baseline_checks, log_file, shared_library
+        )
     except Exception as exc:
         try:
-            _append_log(log_file, (
-                f'pattern-replay-error: rule={finding.rule} '
-                f'reason=exception error={type(exc).__name__}'
-            ))
+            append_log(
+                log_file,
+                (
+                    f"pattern-replay-error: rule={finding.rule} "
+                    f"reason=exception error={type(exc).__name__}"
+                ),
+            )
         except Exception:
             _logger.debug("Failed to log pattern-replay-error")
         return (False, None)
@@ -69,14 +75,18 @@ def _resolve_pattern(
     log_file: Path,
     shared_library: Any = None,
 ) -> Optional[FixPattern]:
-    cache_key = f"{finding.rule}::{finding.path}::{normalize_snippet(finding.snippet)[:64]}"
+    cache_key = (
+        f"{finding.rule}::{finding.path}::{normalize_snippet(finding.snippet)[:64]}"
+    )
     now = time.monotonic()
     cached = _PATTERN_CACHE.get(cache_key)
     if cached is not None and (now - cached[0]) < _PATTERN_CACHE_TTL:
         return cached[1]
 
     normalized = normalize_snippet(finding.snippet)
-    language = getattr(finding, 'language', None) or _infer_language_from_path(finding.path)
+    language = getattr(finding, "language", None) or infer_language_from_path(
+        finding.path, fallback="python"
+    )
 
     result: Optional[FixPattern] = None
 
@@ -87,37 +97,52 @@ def _resolve_pattern(
     if result is None:
         pattern = store.lookup_structural(finding.rule, normalized, language)
         if pattern is not None:
-            _append_log(log_file, (
-                f'pattern-replay-structural-hit: rule={finding.rule} '
-                f'pattern_id={pattern.pattern_id}'
-            ))
+            append_log(
+                log_file,
+                (
+                    f"pattern-replay-structural-hit: rule={finding.rule} "
+                    f"pattern_id={pattern.pattern_id}"
+                ),
+            )
             result = pattern
 
     if result is None:
         from bluei.engine.constants import DETECTOR_CATALOG
+
         pattern = store.lookup_fuzzy(
-            finding.rule, normalized, language,
+            finding.rule,
+            normalized,
+            language,
             catalog=DETECTOR_CATALOG,
         )
         if pattern is not None:
-            _append_log(log_file, (
-                f'pattern-replay-fuzzy-hit: rule={finding.rule} '
-                f'pattern_id={pattern.pattern_id}'
-            ))
+            append_log(
+                log_file,
+                (
+                    f"pattern-replay-fuzzy-hit: rule={finding.rule} "
+                    f"pattern_id={pattern.pattern_id}"
+                ),
+            )
             result = pattern
 
     if result is None and shared_library is not None:
         from bluei.engine.constants import DETECTOR_CATALOG
+
         xrepo_pattern = shared_library.lookup(
-            finding.rule, normalized, language,
+            finding.rule,
+            normalized,
+            language,
             catalog=DETECTOR_CATALOG,
         )
         if xrepo_pattern is not None:
-            _append_log(log_file, (
-                f'pattern-replay-xrepo-hit: rule={finding.rule} '
-                f'pattern_id={xrepo_pattern.pattern_id} '
-                f'source_repos={len(xrepo_pattern.source_repos)}'
-            ))
+            append_log(
+                log_file,
+                (
+                    f"pattern-replay-xrepo-hit: rule={finding.rule} "
+                    f"pattern_id={xrepo_pattern.pattern_id} "
+                    f"source_repos={len(xrepo_pattern.source_repos)}"
+                ),
+            )
             result = FixPattern(
                 pattern_id=xrepo_pattern.pattern_id,
                 rule=xrepo_pattern.rule,
@@ -143,16 +168,6 @@ def _clear_pattern_cache() -> None:
     _PATTERN_CACHE.clear()
 
 
-def _infer_language_from_path(file_path: str) -> str:
-    ext = Path(file_path).suffix.lower()
-    _EXT_MAP = {
-        '.py': 'python', '.ts': 'typescript', '.tsx': 'typescript',
-        '.js': 'javascript', '.jsx': 'javascript',
-        '.go': 'go', '.rs': 'rust',
-    }
-    return _EXT_MAP.get(ext, 'python')
-
-
 def _try_replay_inner(
     worktree_path: Path,
     finding: Finding,
@@ -164,24 +179,31 @@ def _try_replay_inner(
     pattern = _resolve_pattern(finding, store, log_file, shared_library)
 
     if pattern is None:
-        _append_log(log_file, (
-            f'pattern-replay-miss: rule={finding.rule} reason=no_matching_pattern'
-        ))
+        append_log(
+            log_file,
+            (f"pattern-replay-miss: rule={finding.rule} reason=no_matching_pattern"),
+        )
         return (False, None)
 
     if not fnmatch.fnmatch(finding.path, pattern.file_pattern):
-        _append_log(log_file, (
-            f'pattern-replay-skip: rule={finding.rule} pattern_id={pattern.pattern_id} reason=file_pattern_mismatch pattern={pattern.file_pattern} path={finding.path}'
-        ))
+        append_log(
+            log_file,
+            (
+                f"pattern-replay-skip: rule={finding.rule} pattern_id={pattern.pattern_id} reason=file_pattern_mismatch pattern={pattern.file_pattern} path={finding.path}"
+            ),
+        )
         return (False, None)
 
     pid = pattern.pattern_id
     confidence = pattern.confidence
 
-    _append_log(log_file, (
-        f'pattern-replay-hit: rule={finding.rule} '
-        f'pattern_id={pid} confidence={confidence:.2f}'
-    ))
+    append_log(
+        log_file,
+        (
+            f"pattern-replay-hit: rule={finding.rule} "
+            f"pattern_id={pid} confidence={confidence:.2f}"
+        ),
+    )
 
     if confidence < PROMPT_HINT_THRESHOLD:
         return (False, None)
@@ -191,51 +213,62 @@ def _try_replay_inner(
 
     target_file = Path(worktree_path) / finding.path
     if not target_file.exists():
-        _append_log(log_file, (
-            f'pattern-replay-fail: pattern_id={pid} reason=file_not_found '
-            f'path={finding.path}'
-        ))
+        append_log(
+            log_file,
+            (
+                f"pattern-replay-fail: pattern_id={pid} reason=file_not_found "
+                f"path={finding.path}"
+            ),
+        )
         return (False, None)
 
-    file_text = target_file.read_text(encoding='utf-8')
+    file_text = target_file.read_text(encoding="utf-8")
     before_snippet = pattern.before_snippet
     after_snippet = pattern.after_snippet
 
     match_result = _find_snippet_in_file(file_text, before_snippet)
     if match_result is None:
-        _append_log(log_file, (
-            f'pattern-replay-fail: pattern_id={pid} reason=snippet_not_found_in_file'
-        ))
+        append_log(
+            log_file,
+            (f"pattern-replay-fail: pattern_id={pid} reason=snippet_not_found_in_file"),
+        )
         return (False, None)
 
     match_pos, matched_length = match_result
-    new_text = file_text[:match_pos] + after_snippet + file_text[match_pos + matched_length:]
-    target_file.write_text(new_text, encoding='utf-8')
+    new_text = (
+        file_text[:match_pos] + after_snippet + file_text[match_pos + matched_length :]
+    )
+    target_file.write_text(new_text, encoding="utf-8")
 
     validation_passed = _run_baseline_validation(
-        worktree_path, baseline_checks, log_file,
+        worktree_path,
+        baseline_checks,
+        log_file,
     )
 
     if not validation_passed:
         run_capture(
-            ['git', 'checkout', '--', finding.path],
+            ["git", "checkout", "--", finding.path],
             cwd=Path(worktree_path),
             timeout=30,
         )
         store.record_replay(pid, success=False)
-        _append_log(log_file, (
-            f'pattern-replay-fail: pattern_id={pid} reason=validation_failed'
-        ))
+        append_log(
+            log_file,
+            (f"pattern-replay-fail: pattern_id={pid} reason=validation_failed"),
+        )
         return (False, None)
 
     store.record_replay(pid, success=True)
-    _append_log(log_file, (
-        f'pattern-replay-success: pattern_id={pid} validation=passed'
-    ))
+    append_log(
+        log_file, (f"pattern-replay-success: pattern_id={pid} validation=passed")
+    )
     return (True, pid)
 
 
-def _find_snippet_in_file(file_text: str, before_snippet: str) -> Optional[Tuple[int, int]]:
+def _find_snippet_in_file(
+    file_text: str, before_snippet: str
+) -> Optional[Tuple[int, int]]:
     """Locate the normalized before-snippet within the file text.
 
     Uses normalized comparison so indentation differences don't block matching.
@@ -251,7 +284,7 @@ def _find_snippet_in_file(file_text: str, before_snippet: str) -> Optional[Tuple
     normalized_before = normalize_snippet(before_snippet)
     file_lines = file_text.splitlines(True)
 
-    snippet_line_count = normalized_before.count('\n') + 1
+    snippet_line_count = normalized_before.count("\n") + 1
     if snippet_line_count == 0:
         return None
 
@@ -259,7 +292,7 @@ def _find_snippet_in_file(file_text: str, before_snippet: str) -> Optional[Tuple
         end_idx = start_idx + snippet_line_count
         if end_idx > len(file_lines):
             break
-        window = ''.join(file_lines[start_idx:end_idx])
+        window = "".join(file_lines[start_idx:end_idx])
         if normalize_snippet(window) == normalized_before:
             offset = sum(len(file_lines[i]) for i in range(start_idx))
             matched_length = sum(len(file_lines[i]) for i in range(start_idx, end_idx))
@@ -282,13 +315,3 @@ def _run_baseline_validation(
         if rc != 0:
             return False
     return True
-
-
-def _append_log(log_file: Path, message: str) -> None:
-    compact = re.sub(r'\s+', ' ', message).strip()
-    try:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        with log_file.open('a', encoding='utf-8') as handle:
-            handle.write(compact + '\n')
-    except Exception:
-        _logger.debug("Failed to append to replay log")

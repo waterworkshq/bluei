@@ -17,6 +17,7 @@ _logger = logging.getLogger(__name__)
 
 from bluei.engine.models import Finding
 from bluei.engine.pattern_store import FixPattern, FixPatternStore, normalize_snippet
+from bluei.engine.state import append_log
 from bluei.engine.utils import run_capture
 
 
@@ -63,20 +64,20 @@ def extract(
             timeout=30,
         )
         if rc != 0:
-            _append_log(
+            append_log(
                 log_file,
                 f"pattern-extract-skip: rule={finding.rule} reason=git_diff_failed rc={rc}",
             )
             return None
         if not diff_patch.strip():
-            _append_log(
+            append_log(
                 log_file, f"pattern-extract-skip: rule={finding.rule} reason=empty_diff"
             )
             return None
 
         changed_files = _changed_files(diff_patch)
         if len(changed_files) == 0:
-            _append_log(
+            append_log(
                 log_file,
                 f"pattern-extract-skip: rule={finding.rule} reason=no_files_in_diff",
             )
@@ -99,7 +100,7 @@ def extract(
         before_snippet = normalize_snippet(before)
         after_snippet = normalize_snippet(after)
         if not before_snippet or not after_snippet or before_snippet == after_snippet:
-            _append_log(
+            append_log(
                 log_file,
                 f"pattern-extract-skip: rule={finding.rule} reason=no_snippet_change",
             )
@@ -119,14 +120,14 @@ def extract(
             file_pattern=_compute_file_pattern(finding.path),
         )
         pattern_id = store.append(pattern)
-        _append_log(
+        append_log(
             log_file,
             f"pattern-extract: rule={finding.rule} pattern_id={pattern_id} source={source}",
         )
         return pattern_id
     except Exception as exc:
         try:
-            _append_log(
+            append_log(
                 log_file,
                 f"pattern-extract-skip: rule={finding.rule} reason=exception error={type(exc).__name__}",
             )
@@ -215,13 +216,6 @@ def _snippets_from_unified_diff(diff_patch: str) -> Tuple[str, str]:
 
     flush_hunk()
     return "\n".join(before_hunks), "\n".join(after_hunks)
-
-
-def _append_log(log_file: Path, message: str) -> None:
-    compact = re.sub(r"\s+", " ", message).strip()
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    with log_file.open("a", encoding="utf-8") as handle:
-        handle.write(compact + "\n")
 
 
 def _detect_framework(
@@ -368,7 +362,7 @@ def _extract_composite(
         store_path = Path(worktree_path) / "state" / "composite_patterns.jsonl"
         comp_store = CompositePatternStore(store_path)
         pattern_id = comp_store.append(pattern)
-        _append_log(
+        append_log(
             log_file,
             f"composite-extract: rule={finding.rule} pattern_id={pattern_id} "
             f"steps={len(steps)} files={len(changed_files)}",
@@ -376,7 +370,7 @@ def _extract_composite(
         return pattern_id
     except Exception as exc:
         try:
-            _append_log(
+            append_log(
                 log_file,
                 f"composite-extract-skip: rule={finding.rule} "
                 f"reason=exception error={type(exc).__name__}",

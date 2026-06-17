@@ -10,13 +10,13 @@ import pytest
 
 from bluei.engine.rebase_sweep import (
     CONFLICT_MARKER_HEADER,
-    _append_text,
     _compute_fork_point,
     _fetch_sibling_prs,
     _force_push_rebased,
     _has_conflict_marker,
     _rebase_sibling,
     _update_pr_body_with_conflict,
+    append_log,
     sweep_rebase,
 )
 
@@ -43,33 +43,39 @@ class TestHasConflictMarker:
         assert _has_conflict_marker(body) is True
 
 
-class TestAppendText:
+class TestAppendLog:
     def test_creates_file_and_appends(self, tmp_path: Path) -> None:
         log = tmp_path / "run.log"
-        _append_text(log, "hello world")
+        append_log(log, "hello world")
         content = log.read_text()
         assert "hello world" in content
         assert content.endswith("\n")
 
     def test_appends_multiple_lines(self, tmp_path: Path) -> None:
         log = tmp_path / "run.log"
-        _append_text(log, "line1")
-        _append_text(log, "line2")
+        append_log(log, "line1")
+        append_log(log, "line2")
         lines = log.read_text().strip().splitlines()
         assert len(lines) == 2
         assert "line1" in lines[0]
         assert "line2" in lines[1]
 
     def test_includes_iso_timestamp(self, tmp_path: Path) -> None:
+        # Canonical format is ``[ISO] message`` — bracketed timestamp prefix.
         log = tmp_path / "run.log"
-        _append_text(log, "ts-test")
+        append_log(log, "ts-test")
         line = log.read_text().strip()
-        parts = line.split(" ", 1)
-        assert len(parts) == 2
-        assert "T" in parts[0]
+        assert line.startswith("[")
+        assert "]" in line
+        # ISO marker ``T`` between date and time should be present.
+        assert "T" in line
 
-    def test_handles_bad_path_gracefully(self) -> None:
-        _append_text(Path("/nonexistent/dir/file.log"), "should not crash")
+    def test_propagates_on_uncreatable_path(self) -> None:
+        # After migrating to canonical bluei.engine.state.append_log, write
+        # failures are no longer swallowed. /nonexistent cannot be created by
+        # a non-root user, so this must raise.
+        with pytest.raises((OSError, PermissionError)):
+            append_log(Path("/nonexistent/dir/file.log"), "should raise")
 
 
 class TestFetchSiblingPrs:

@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from bluei.engine.rebase_stats import log_rebase_stats
+from bluei.engine.state import append_log
 from bluei.engine.utils import run_capture
-from bluei.engine.models import now_iso
 
 _logger = logging.getLogger(__name__)
 
@@ -305,7 +305,7 @@ def _force_push_rebased(
         timeout=60,
     )
     if rc != 0:
-        _append_text(
+        append_log(
             log_file,
             f"rebase-push-fail: {local_branch}->{remote_branch} error={(out or 'unknown')[:200]}",
         )
@@ -315,20 +315,11 @@ def _force_push_rebased(
     run_capture(["git", "branch", "-D", local_branch], cwd=repo_path, timeout=10)
 
     note = "pre-existing-dirty" if pre_existing_dirty else "clean"
-    _append_text(
+    append_log(
         log_file,
         f"rebase-pushed: {remote_branch} sha={new_head_sha[:12]} note={note}",
     )
     return True
-
-
-def _append_text(log_file: Path, text: str) -> None:
-    """Append a line to the log file."""
-    try:
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write(f"{now_iso()} {text}\n")
-    except OSError:
-        _logger.debug("Failed to append to log file")
 
 
 def sweep_rebase(
@@ -361,7 +352,7 @@ def sweep_rebase(
             skipped: List[Dict] — PRs already conflict-marked or errored
     """
     _start_ts = time.monotonic()
-    _append_text(
+    append_log(
         log_file,
         f"rebase-sweep-start: merged_pr=#{merged_pr_number} base={base_branch}",
     )
@@ -381,7 +372,7 @@ def sweep_rebase(
         gh_repo_slug, base_branch, merged_pr_number, cwd=repo_path
     )
     if not siblings:
-        _append_text(log_file, "rebase-sweep: no siblings found")
+        append_log(log_file, "rebase-sweep: no siblings found")
         _duration = time.monotonic() - _start_ts
         if rebase_stats_file is not None:
             log_rebase_stats(
@@ -402,7 +393,7 @@ def sweep_rebase(
 
     # Sort oldest first and cap
     siblings = siblings[:max_prs]
-    _append_text(log_file, f"rebase-sweep: found {len(siblings)} sibling(s)")
+    append_log(log_file, f"rebase-sweep: found {len(siblings)} sibling(s)")
 
     for pr in siblings:
         pr_number = int(pr.get("number", 0))
@@ -419,7 +410,7 @@ def sweep_rebase(
         # Skip PRs already marked with a conflict marker
         if _has_conflict_marker(pr_body):
             _rebases_skipped += 1
-            _append_text(
+            append_log(
                 log_file, f"rebase-skip: pr=#{pr_number} already conflict-marked"
             )
             result["skipped"].append(
@@ -433,7 +424,7 @@ def sweep_rebase(
 
         local_branch = f"rebase-sweep-{pr_number}"
 
-        _append_text(log_file, f"rebase-attempt: pr=#{pr_number} branch={head_branch}")
+        append_log(log_file, f"rebase-attempt: pr=#{pr_number} branch={head_branch}")
         _rebases_attempted += 1
 
         success, detail, conflict_files = _rebase_sibling(
@@ -447,7 +438,7 @@ def sweep_rebase(
             # Guard: skip if new_head_sha is empty (rev-parse failed after clean rebase)
             if not detail:
                 _rebases_skipped += 1
-                _append_text(
+                append_log(
                     log_file, f"rebase-skip: pr=#{pr_number} empty-HEAD-after-rebase"
                 )
                 result["skipped"].append(
@@ -500,7 +491,7 @@ def sweep_rebase(
                         "error": detail[:200],
                     }
                 )
-                _append_text(
+                append_log(
                     log_file,
                     f"rebase-conflict: pr=#{pr_number} files={conflict_files}",
                 )
@@ -512,7 +503,7 @@ def sweep_rebase(
                         "reason": detail[:200],
                     }
                 )
-                _append_text(
+                append_log(
                     log_file,
                     f"rebase-fail: pr=#{pr_number} error={detail[:200]}",
                 )
@@ -522,7 +513,7 @@ def sweep_rebase(
 
     _duration = time.monotonic() - _start_ts
 
-    _append_text(
+    append_log(
         log_file,
         f"rebase-sweep-end: "
         f"rebased={len(result['rebased'])} "
