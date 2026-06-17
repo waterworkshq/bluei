@@ -20,6 +20,7 @@ from .state import StateManager
 from .health import HealthEngine
 from .config import ConfigManager
 from bluei.review.cycle import ReviewCycleEngine
+from bluei.engine.jsonl import append_jsonl
 
 _logger = logging.getLogger(__name__)
 
@@ -386,8 +387,7 @@ class RunEngine:
                 "findings_published": result.findings_published,
                 "findings_failed": result.findings_failed,
             }
-            with open(review_stats_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, default=str) + "\n")
+            append_jsonl(review_stats_file, record, default=str)
         except OSError:
             _logger.debug("Failed to append review stats")
 
@@ -467,8 +467,7 @@ class RunEngine:
                 if "finding_cooldown_seconds" in _tune_state
                 else None,
             }
-            with open(_trend_file, "a", encoding="utf-8") as _f:
-                _f.write(json.dumps(_trend_record, default=str) + "\n")
+            append_jsonl(_trend_file, _trend_record, default=str)
         except OSError:
             _logger.debug("Failed to append trend record")
 
@@ -615,8 +614,7 @@ class RunEngine:
                     if "finding_cooldown_seconds" in _tune_state
                     else None,
                 }
-                with open(_trend_file, "a", encoding="utf-8") as _f:
-                    _f.write(json.dumps(_trend_record, default=str) + "\n")
+                append_jsonl(_trend_file, _trend_record, default=str)
             except OSError:
                 _logger.debug("Failed to append trend record")
 

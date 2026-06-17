@@ -18,7 +18,7 @@ from bluei.engine.state_io import (
     EVENT_LOG_MAX_BYTES,
     EVENT_LOG_MAX_LINES,
 )
-from bluei.engine.jsonl import read_jsonl
+from bluei.engine.jsonl import append_jsonl, read_jsonl
 from .models import Run, now_iso, ReviewRun, FeedbackEvent
 
 # ——— Backward-compat aliases ———
@@ -261,10 +261,8 @@ class StateManager:
 
     def append_review_event(self, repo_name: str, event: Dict[str, Any]) -> None:
         path = self.get_review_events_file(repo_name)
-        path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"timestamp": now_iso(), **(event or {})}
-        with open(path, "a") as f:
-            f.write(json.dumps(payload) + "\n")
+        append_jsonl(path, payload)
         _rotate_jsonl_if_needed(path)
 
     def get_review_locks_dir(self, repo_name: str) -> Path:
@@ -385,12 +383,11 @@ class StateManager:
                         existing_ids.add(json.loads(line).get("finding_id"))
 
         written = 0
-        with open(findings_file, "a") as f:
-            for finding in findings:
-                fid = finding.get("finding_id")
-                if fid and fid not in existing_ids:
-                    f.write(json.dumps(finding) + "\n")
-                    written += 1
+        for finding in findings:
+            fid = finding.get("finding_id")
+            if fid and fid not in existing_ids:
+                append_jsonl(findings_file, finding)
+                written += 1
         return written
 
     def load_review_findings(self, repo_name: str) -> List[Dict[str, Any]]:
@@ -437,14 +434,12 @@ class StateManager:
     def append_feedback_event(self, repo_name: str, event: Dict[str, Any]) -> None:
         """Append a feedback event to the JSONL log."""
         path = self.get_feedback_events_file(repo_name)
-        path.parent.mkdir(parents=True, exist_ok=True)
         payload = dict(DEFAULT_FEEDBACK_EVENT)
         payload.update(event or {})
         if not payload.get("timestamp"):
             payload["timestamp"] = now_iso()
         payload["version"] = 1
-        with open(path, "a") as f:
-            f.write(json.dumps(payload) + "\n")
+        append_jsonl(path, payload)
         _rotate_jsonl_if_needed(path)
 
     def load_feedback_events(self, repo_name: str) -> List[Dict[str, Any]]:

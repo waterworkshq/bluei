@@ -12,6 +12,7 @@ from bluei.engine.constants import (
     DEFAULT_FINDING_COOLDOWN_SECONDS,
     MAX_RECONCILIATION_EVENTS,
 )
+from bluei.engine.jsonl import append_jsonl
 from bluei.engine.reforge import RefactorPhase, RefactorWork
 from bluei.engine.models import Finding, age_seconds, now_iso
 from bluei.engine.utils import run_capture
@@ -130,16 +131,14 @@ def load_findings_seen(path: Path) -> set[str]:
 def append_findings(path: Path, findings: List[Finding]) -> int:
     seen = load_findings_seen(path)
     written = 0
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        for finding in findings:
-            if finding.finding_id in seen:
-                continue
-            if finding.discovered_at is None:
-                finding.discovered_at = now_iso()
-            payload = finding.to_dict()
-            f.write(json.dumps(payload, sort_keys=True) + "\n")
-            written += 1
+    for finding in findings:
+        if finding.finding_id in seen:
+            continue
+        if finding.discovered_at is None:
+            finding.discovered_at = now_iso()
+        payload = finding.to_dict()
+        append_jsonl(path, payload)
+        written += 1
     return written
 
 
@@ -392,12 +391,13 @@ def update_finding_record(
         return False
 
     findings_file.parent.mkdir(parents=True, exist_ok=True)
-    with findings_file.open("w", encoding="utf-8") as f:
-        for item in records:
-            if isinstance(item, str):
+    findings_file.write_text("", encoding="utf-8")
+    for item in records:
+        if isinstance(item, str):
+            with findings_file.open("a", encoding="utf-8") as f:
                 f.write(item + "\n")
-            else:
-                f.write(json.dumps(item, sort_keys=True) + "\n")
+        else:
+            append_jsonl(findings_file, item)
     return True
 
 
@@ -527,9 +527,7 @@ def save_batch_record(path: Path, record: Dict[str, Any]) -> None:
 
     Creates parent directories if they don't exist.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, sort_keys=True) + "\n")
+    append_jsonl(path, record)
 
 
 def update_batch_record(path: Path, batch_id: str, updates: Dict[str, Any]) -> bool:
@@ -562,9 +560,9 @@ def update_batch_record(path: Path, batch_id: str, updates: Dict[str, Any]) -> b
         return False
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        for record in records:
-            f.write(json.dumps(record, sort_keys=True) + "\n")
+    path.write_text("", encoding="utf-8")
+    for record in records:
+        append_jsonl(path, record)
     return True
 
 

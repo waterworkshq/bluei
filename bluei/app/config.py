@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 import yaml
 
+from bluei.engine.jsonl import append_jsonl
+
 _logger = logging.getLogger(__name__)
 
 
@@ -124,7 +126,6 @@ class ConfigManager:
     def _log_config_error(self, repo_name: str, detail: str) -> None:
         """Write a config validation failure to the escalation log."""
         from datetime import datetime, timezone
-        import json
 
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -134,9 +135,7 @@ class ConfigManager:
         }
         escalation_file = self.workspace / "state" / "escalation_log.jsonl"
         try:
-            escalation_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(escalation_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record) + "\n")
+            append_jsonl(escalation_file, record)
         except OSError:
             _logger.debug("Failed to append escalation record")  # Best-effort logging
 

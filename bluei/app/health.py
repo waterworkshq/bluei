@@ -4,11 +4,10 @@
 from dataclasses import dataclass, field, InitVar
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-import json
 import math
 from pathlib import Path
 
-from bluei.engine.jsonl import read_jsonl
+from bluei.engine.jsonl import append_jsonl, read_jsonl
 from bluei.engine.models import Finding
 from .models import HealthScore, Baseline, generate_id, now_iso
 
@@ -501,9 +500,7 @@ class HealthEngine:
             "findings_count": findings_count,
         }
 
-        history_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(history_file, "a") as f:
-            f.write(json.dumps(snapshot) + "\n")
+        append_jsonl(history_file, snapshot)
 
     def get_health_history(
         self, repo_name: str, state_dir: Path, days: int = 30

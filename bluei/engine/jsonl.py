@@ -69,7 +69,13 @@ def read_jsonl(
     return records
 
 
-def append_jsonl(path: Path, record: Any, *, sort_keys: bool = True) -> None:
+def append_jsonl(
+    path: Path,
+    record: Any,
+    *,
+    sort_keys: bool = True,
+    default: Any = None,
+) -> None:
     """Append a single record as a JSON line to a JSONL file.
 
     Creates parent directories if needed. Atomic at the line level (single
@@ -80,7 +86,13 @@ def append_jsonl(path: Path, record: Any, *, sort_keys: bool = True) -> None:
         path: JSONL file path.
         record: JSON-serializable record.
         sort_keys: If True (default), sort dict keys for deterministic output.
+        default: Passed through to json.dumps as the `default` callable for
+            non-JSON-serializable values (e.g., `default=str` to stringify
+            datetime/path objects). None matches json.dumps default.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    dump_kwargs: Dict[str, Any] = {"sort_keys": sort_keys}
+    if default is not None:
+        dump_kwargs["default"] = default
     with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, sort_keys=sort_keys) + "\n")
+        f.write(json.dumps(record, **dump_kwargs) + "\n")

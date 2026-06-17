@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
 
-from bluei.engine.jsonl import read_jsonl
+from bluei.engine.jsonl import append_jsonl, read_jsonl
 
 logger = logging.getLogger(__name__)
 
@@ -135,8 +135,7 @@ class CostTracker:
             "cycle_total_so_far": round(self._cycle_cost, 6),
         }
         try:
-            with self._log_path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, sort_keys=True) + "\n")
+            append_jsonl(self._log_path, entry)
         except OSError as exc:
             logger.warning("cost_tracker: failed to write %s — %s", self._log_path, exc)
 
@@ -186,8 +185,7 @@ class CostTracker:
             "rule": rule,
         }
         try:
-            with self._log_path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, sort_keys=True) + "\n")
+            append_jsonl(self._log_path, entry)
         except OSError as exc:
             logger.warning(
                 "cost_tracker: failed to write savings %s — %s", self._log_path, exc

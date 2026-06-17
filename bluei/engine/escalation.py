@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 
 _logger = logging.getLogger(__name__)
 
-from bluei.engine.jsonl import read_jsonl
+from bluei.engine.jsonl import append_jsonl, read_jsonl
 from bluei.engine.models import IssueStatus
 from bluei.engine.state import _append_text
 
@@ -66,9 +66,7 @@ DEFAULT_ESCALATION_CONFIG = EscalationConfig(
 def _append_escalation(escalation_file: Path, record: Dict[str, Any]) -> None:
     """Append one escalation record to the log."""
     try:
-        escalation_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(escalation_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, default=str) + "\n")
+        append_jsonl(escalation_file, record, default=str)
     except OSError:
         _logger.debug("Failed to append escalation record")
 
@@ -168,9 +166,7 @@ def log_escalation_event(
         "count": 1,
     }
     try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, default=str) + "\n")
+        append_jsonl(log_path, record, default=str)
     except OSError:
         _logger.debug("Failed to append escalation stats")
 
@@ -588,10 +584,7 @@ def write_escalation(
         abs_path = (
             file_path.resolve() if file_path else Path.cwd() / DEFAULT_ESCALATION_FILE
         )
-        if not abs_path.parent.exists():
-            abs_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(abs_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, default=str) + "\n")
+        append_jsonl(abs_path, record, default=str)
     except OSError:
         _logger.debug("Failed to write escalation record")
 
