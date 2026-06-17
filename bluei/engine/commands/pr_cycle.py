@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from bluei.engine.models import Finding, FixEngine, now_iso
+from bluei.engine.models import Finding, FixEngine, IssueStatus, now_iso
 from bluei.engine.state import (
     NON_ACTIONABLE_ISSUE_STATUSES,
     _append_text,
@@ -127,10 +127,10 @@ def _select_candidates(
             if refactor_item.get("refactor_work") is not None:
                 refactor_meta["phase"] = refactor_item["refactor_work"].phase.value
             refactor_meta["review_reason"] = refactor_item.get("reason", "planning")
-            if issue.get("status") != "needs-human-refactor-review":
+            if issue.get("status") != IssueStatus.NEEDS_HUMAN_REFACTOR_REVIEW.value:
                 set_issue_status(
                     issue,
-                    "needs-human-refactor-review",
+                    IssueStatus.NEEDS_HUMAN_REFACTOR_REVIEW.value,
                     refactor_item.get("reason", "planning"),
                 )
             _append_text(
@@ -146,10 +146,10 @@ def _select_candidates(
             elif classify_finding(finding) == RefactorClass.CONTEXTUAL_FIX:
                 pass
             else:
-                if issue.get("status") != "needs-human-not-fixable":
+                if issue.get("status") != IssueStatus.NEEDS_HUMAN_NOT_FIXABLE.value:
                     set_issue_status(
                         issue,
-                        "needs-human-not-fixable",
+                        IssueStatus.NEEDS_HUMAN_NOT_FIXABLE.value,
                         f"rule {finding.rule} is not autofixable and not LLM-fixable",
                     )
                     _append_text(
@@ -169,11 +169,14 @@ def _select_candidates(
             log_file=log_file,
         )
         if _consec_escalated:
-            if issue.get("status") != "needs-human-max-retries-exceeded":
+            if (
+                issue.get("status")
+                != IssueStatus.NEEDS_HUMAN_MAX_RETRIES_EXCEEDED.value
+            ):
                 _failed = count_failed_fix_attempts(issue)
                 set_issue_status(
                     issue,
-                    "needs-human-max-retries-exceeded",
+                    IssueStatus.NEEDS_HUMAN_MAX_RETRIES_EXCEEDED.value,
                     f"escalated: {_failed} consecutive fix failures (threshold: {args.max_fix_attempts_per_issue})",
                 )
                 escalated += 1
@@ -181,10 +184,13 @@ def _select_candidates(
 
         failed_attempts = count_failed_fix_attempts(issue)
         if failed_attempts >= args.max_fix_attempts_per_issue:
-            if issue.get("status") != "needs-human-max-retries-exceeded":
+            if (
+                issue.get("status")
+                != IssueStatus.NEEDS_HUMAN_MAX_RETRIES_EXCEEDED.value
+            ):
                 set_issue_status(
                     issue,
-                    "needs-human-max-retries-exceeded",
+                    IssueStatus.NEEDS_HUMAN_MAX_RETRIES_EXCEEDED.value,
                     f"exceeded max fix attempts ({failed_attempts}/{args.max_fix_attempts_per_issue})",
                 )
                 escalated += 1
@@ -192,7 +198,7 @@ def _select_candidates(
                     log_file,
                     f"escalation: issue={issue.get('issue_id')} finding_id={finding.finding_id} "
                     f"exceeded max_fix_attempts_per_issue ({failed_attempts}/{args.max_fix_attempts_per_issue}) "
-                    f"-> marking as needs-human-max-retries-exceeded",
+                    f"-> marking as {IssueStatus.NEEDS_HUMAN_MAX_RETRIES_EXCEEDED.value}",
                 )
             continue
 
@@ -305,7 +311,7 @@ def _finalize_pr_for_issue(
                 fixes_verified_delta=1,
             )
         if commit_result != "committed":
-            run_status = "needs-human-commit-failed"
+            run_status = IssueStatus.NEEDS_HUMAN_COMMIT_FAILED.value
             set_issue_status(issue, "fix_failed_verification", run_status)
             return FinalizeResult(
                 success=False,
@@ -323,7 +329,7 @@ def _finalize_pr_for_issue(
             safety_config=safety_config,
         )
         if not pushed:
-            run_status = "needs-human-push-failed"
+            run_status = IssueStatus.NEEDS_HUMAN_PUSH_FAILED.value
             set_issue_status(issue, "fix_failed_verification", run_status)
             return FinalizeResult(
                 success=False,
@@ -933,7 +939,7 @@ def _process_one_issue(
                 )
 
         if files_changed > args.max_files_changed or loc_diff > args.max_loc_diff:
-            run_status = "needs-human-scope-limit-exceeded"
+            run_status = IssueStatus.NEEDS_HUMAN_SCOPE_LIMIT_EXCEEDED.value
             blocked_reasons.append(run_status)
             set_issue_status(issue, "fix_failed_verification", run_status)
             fixes_failed_verification += 1
@@ -985,7 +991,9 @@ def _process_one_issue(
         checks_ok = validation_result.get("passed", False)
         validation_reason = validation_result.get("message", "")
         if not checks_ok:
-            run_status = f"needs-human-validation-failed:{validation_reason}"
+            run_status = (
+                f"{IssueStatus.NEEDS_HUMAN_VALIDATION_FAILED.value}:{validation_reason}"
+            )
             blocked_reasons.append(run_status)
             set_issue_status(issue, "fix_failed_verification", run_status)
             fixes_failed_verification += 1

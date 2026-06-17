@@ -40,6 +40,7 @@ def run_issue_creation_phase(*args, **kwargs) -> IssueCreationResult:
         find_issue_for_finding,
         set_issue_status,
     )
+    from bluei.engine.models import IssueStatus
     from bluei.engine.state import (
         count_actionable_issues,
         guard_open_issues,
@@ -77,7 +78,7 @@ def run_issue_creation_phase(*args, **kwargs) -> IssueCreationResult:
         refactor_meta["review_reason"] = routed_item.get("reason", "planning")
         set_issue_status(
             issue,
-            "needs-human-refactor-review",
+            IssueStatus.NEEDS_HUMAN_REFACTOR_REVIEW.value,
             routed_item.get("reason", "planning"),
         )
 

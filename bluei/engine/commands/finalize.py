@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from bluei.engine.constants import AGENT_ROOT
-from bluei.engine.models import now_iso
+from bluei.engine.models import is_needs_human_status, now_iso
 from bluei.engine.state import _append_text, save_issues, save_state
 from bluei.engine.utils import append_lesson
 from bluei.engine.commands.helpers import update_status_artifact
@@ -285,7 +285,7 @@ def run_finalize_phase(*args, **kwargs) -> int:
             last_event = hist[-1]
             is_failure = str(last_event.get("event", "")).lower() in (
                 "fix_failed_verification",
-            ) or str(last_event.get("event", "")).lower().startswith("needs-human")
+            ) or is_needs_human_status(str(last_event.get("event", "")))
             is_success = str(last_event.get("event", "")).lower() in (
                 "resolved_verified",
                 "resolved_merged",

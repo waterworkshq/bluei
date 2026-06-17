@@ -7,9 +7,22 @@ from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[2] / "bluei" / "engine"
 EXPECTED_MODULES = {
-    "constants.py", "models.py", "utils.py", "state.py", "gh.py",
-    "linters.py", "git_utils.py", "prompts.py", "orchestrator.py",
-    "lifecycle.py", "cli.py", "reforge.py", "refactor_queue.py", "__init__.py",
+    "constants.py",
+    "models.py",
+    "utils.py",
+    "state.py",
+    "state_io.py",
+    "gh.py",
+    "linters.py",
+    "git_utils.py",
+    "prompts.py",
+    "orchestrator.py",
+    "lifecycle.py",
+    "issue_lifecycle.py",
+    "cli.py",
+    "reforge.py",
+    "refactor_queue.py",
+    "__init__.py",
 }
 LEGAL_IMPORTS = {
     # module: set of modules it may legally import from
@@ -18,17 +31,69 @@ LEGAL_IMPORTS = {
     "models.py": {"constants"},
     "utils.py": {"constants"},
     "reforge.py": {"constants"},  # only imports constants (MAX_LINES_REFACTOR_*)
-    "state.py": {"constants", "models", "utils", "gh", "reforge"},  # imports fetch_github_live_counts, get_origin_url, RefactorWork persistence helpers
+    "state.py": {
+        "constants",
+        "models",
+        "utils",
+        "gh",
+        "reforge",
+        "state_io",
+        "issue_lifecycle",
+    },  # state_io: atomic JSON I/O (rec-08); issue_lifecycle: re-exported helpers
+    "state_io.py": set(),  # pure file-I/O primitives, no engine deps (rec-08 extraction)
+    "issue_lifecycle.py": {
+        "constants",
+        "models",
+        "utils",
+        "state",
+        "state_io",
+    },  # state_io: atomic JSON I/O (rec-08)
     "gh.py": {"constants", "models", "utils", "state"},  # imports _append_text (lazy)
     "linters.py": {"constants", "models", "utils", "state"},  # imports _append_text
-    "git_utils.py": {"constants", "models", "utils", "linters", "state"},  # imports _append_text
+    "git_utils.py": {
+        "constants",
+        "models",
+        "utils",
+        "linters",
+        "state",
+    },  # imports _append_text
     "prompts.py": {"constants", "models", "utils"},
-    "orchestrator.py": {"constants", "models", "utils", "state", "linters", "git_utils", "gh", "prompts", "reforge", "refactor_queue"},
+    "orchestrator.py": {
+        "constants",
+        "models",
+        "utils",
+        "state",
+        "linters",
+        "git_utils",
+        "gh",
+        "prompts",
+        "reforge",
+        "refactor_queue",
+    },
     "lifecycle.py": {
-        "constants", "models", "utils", "state", "linters", "git_utils",
-        "prompts", "orchestrator", "gh", "reforge", "refactor_queue",
+        "constants",
+        "models",
+        "utils",
+        "state",
+        "linters",
+        "git_utils",
+        "prompts",
+        "orchestrator",
+        "gh",
+        "reforge",
+        "refactor_queue",
     },  # reforge: classify_finding, safety gates; refactor_queue: enqueue/route functions
-    "cli.py": {"constants", "models", "utils", "state", "gh", "orchestrator", "lifecycle", "prompts", "git_utils"},
+    "cli.py": {
+        "constants",
+        "models",
+        "utils",
+        "state",
+        "gh",
+        "orchestrator",
+        "lifecycle",
+        "prompts",
+        "git_utils",
+    },
 }
 
 
@@ -48,6 +113,40 @@ def check_module(path: Path) -> list[str]:
     legal = LEGAL_IMPORTS.get(name, set())
     illegal = imports - legal
     return [f"{name} illegally imports {i}" for i in illegal]
+
+
+def check_engine_imports_app(path: Path) -> list[str]:
+    """Flag any `from bluei.app...` import inside bluei/engine/.
+
+    Catches rec-08 layering violations: engine must never depend on app.
+    Deferred (function-local) imports are also flagged — they are still
+    hard dependencies at runtime and invert the intended layering.
+
+    The only sanctioned escape hatch is bluei/engine/state_io.py, which
+    is intentionally app-free (it was extracted specifically so engine
+    could have atomic JSON I/O without reaching into app).
+    """
+    if path.name == "state_io.py":
+        return []
+    violations: list[str] = []
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.module and str(node.module).startswith("bluei.app"):
+                violations.append(
+                    f"{path.name}: engine→app import "
+                    f"from bluei.app.{node.module[len('bluei.app') :].lstrip('.')} "
+                    f"(rec-08 layering violation; use bluei/engine/state_io.py "
+                    f"for atomic JSON I/O)"
+                )
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if str(alias.name).startswith("bluei.app"):
+                    violations.append(
+                        f"{path.name}: engine→app import of {alias.name} "
+                        f"(rec-08 layering violation)"
+                    )
+    return violations
 
 
 def main():
@@ -72,6 +171,8 @@ def main():
         ):
             continue
         violations.extend(check_module(py_file))
+        # rec-08: engine must never import from app
+        violations.extend(check_engine_imports_app(py_file))
 
     # Also check __init__.py has no wildcard re-exports
     init = PACKAGE / "__init__.py"

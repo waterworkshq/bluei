@@ -11,7 +11,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from bluei.engine.models import Finding, now_iso
+from bluei.engine.models import (
+    Finding,
+    IssueStatus,
+    NEEDS_HUMAN_STATUSES,
+    is_needs_human_status,
+    now_iso,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -33,28 +39,15 @@ def load_issues(path: Path) -> Dict[str, Any]:
 
 
 def save_issues(path: Path, data: Dict[str, Any]) -> None:
-    from bluei.app.state import _atomic_json_write
+    from bluei.engine.state_io import atomic_json_write
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_json_write(path, data)
+    atomic_json_write(path, data)
 
 
 # Statuses that indicate an issue is NOT actionable (blocked/escalated/resolved)
-NON_ACTIONABLE_ISSUE_STATUSES = frozenset(
-    {
-        "needs-human-max-retries-exceeded",
-        "needs-human-validation-failed",
-        "needs-human-scope-limit-exceeded",
-        "needs-human-commit-failed",
-        "needs-human-push-failed",
-        "blocked_untracked_path",
-        "resolved_merged",
-        "resolved_verified",
-        "needs-human-not-fixable",
-        "needs-human-refactor-review",
-        "needs-human-max-duplicates-exceeded",
-    }
-)
+# Derived from IssueStatus enum so the canonical contract stays in one place.
+NON_ACTIONABLE_ISSUE_STATUSES = frozenset(member.value for member in IssueStatus)
 
 
 def count_actionable_issues(issues_data: Dict[str, Any]) -> int:
@@ -101,11 +94,11 @@ def count_failed_fix_attempts(issue: Dict[str, Any]) -> int:
     history = issue.get("history", [])
     failed_events = {
         "fix_failed_verification",
-        "needs-human-validation-failed",
-        "needs-human-scope-limit-exceeded",
-        "needs-human-commit-failed",
-        "needs-human-push-failed",
-        "needs-human-max-retries-exceeded",
+        IssueStatus.NEEDS_HUMAN_VALIDATION_FAILED.value,
+        IssueStatus.NEEDS_HUMAN_SCOPE_LIMIT_EXCEEDED.value,
+        IssueStatus.NEEDS_HUMAN_COMMIT_FAILED.value,
+        IssueStatus.NEEDS_HUMAN_PUSH_FAILED.value,
+        IssueStatus.NEEDS_HUMAN_MAX_RETRIES_EXCEEDED.value,
     }
     last_open_index = 0
     for idx, entry in enumerate(history):
@@ -114,7 +107,7 @@ def count_failed_fix_attempts(issue: Dict[str, Any]) -> int:
 
     for entry in history[last_open_index + 1 :]:
         event = str(entry.get("event", "")).lower()
-        if event in failed_events or event.startswith("needs-human"):
+        if event in failed_events or is_needs_human_status(event):
             count += 1
     return count
 
@@ -336,7 +329,7 @@ def check_consecutive_fix_failures(
         if event == "open":
             break
 
-        if event == "fix_failed_verification" or event.startswith("needs-human"):
+        if event == "fix_failed_verification" or is_needs_human_status(event):
             consecutive_failures += 1
             if consecutive_failures >= consecutive_threshold:
                 return True

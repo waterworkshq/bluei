@@ -137,6 +137,50 @@ class BatchStatus(str, enum.Enum):
     SKIPPED = "skipped"
 
 
+class IssueStatus(str, enum.Enum):
+    """Issue lifecycle statuses.
+
+    Locks the hardcoded ``needs-human-*`` and ``resolved-*`` / ``blocked_*``
+    strings into a typed contract. Compare with ``.value`` for JSON dict
+    compatibility (per MEMORY.md M7 refactoring pattern).
+    """
+
+    # Actionable (open) statuses are intentionally not enumerated — they vary.
+
+    # Needs-human (blocked, requires human intervention)
+    NEEDS_HUMAN_REFACTOR_REVIEW = "needs-human-refactor-review"
+    NEEDS_HUMAN_NOT_FIXABLE = "needs-human-not-fixable"
+    NEEDS_HUMAN_MAX_RETRIES_EXCEEDED = "needs-human-max-retries-exceeded"
+    # Prefix only — value may have a dynamic suffix appended at runtime.
+    NEEDS_HUMAN_VALIDATION_FAILED = "needs-human-validation-failed"
+    NEEDS_HUMAN_SCOPE_LIMIT_EXCEEDED = "needs-human-scope-limit-exceeded"
+    NEEDS_HUMAN_COMMIT_FAILED = "needs-human-commit-failed"
+    NEEDS_HUMAN_PUSH_FAILED = "needs-human-push-failed"
+    NEEDS_HUMAN_MAX_DUPLICATES_EXCEEDED = "needs-human-max-duplicates-exceeded"
+
+    # Resolved
+    RESOLVED_MERGED = "resolved_merged"
+    RESOLVED_VERIFIED = "resolved_verified"
+
+    # Blocked
+    BLOCKED_UNTRACKED_PATH = "blocked_untracked_path"
+
+
+def is_needs_human_status(status: str) -> bool:
+    """Return True if ``status`` indicates human intervention is required.
+
+    Matches the ``needs-human`` prefix (case-insensitive). Handles the
+    dynamic-suffix form ``needs-human-validation-failed:<reason>`` as well.
+    """
+    return isinstance(status, str) and status.lower().startswith("needs-human")
+
+
+# All ``needs-human-*`` status values, derived from IssueStatus.
+NEEDS_HUMAN_STATUSES = frozenset(
+    member.value for member in IssueStatus if member.value.startswith("needs-human")
+)
+
+
 @dataclass
 class FixResult:
     """Result of fixing a single finding within a batch."""

@@ -85,9 +85,9 @@ def load_state(path: Path) -> Dict[str, Any]:
 
 
 def save_state(path: Path, state: Dict[str, Any]) -> None:
-    from bluei.app.state import _atomic_json_write
+    from bluei.engine.state_io import atomic_json_write
 
-    _atomic_json_write(path, state)
+    atomic_json_write(path, state)
 
 
 def append_log(path: Path, msg: str) -> None:

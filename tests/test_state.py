@@ -625,7 +625,7 @@ def test_jsonl_rotation_by_size(state_manager, tmp_path):
 
     assert jsonl_path.exists()
 
-    with patch("bluei.app.state._EVENT_LOG_MAX_BYTES", 1):
+    with patch("bluei.engine.state_io.EVENT_LOG_MAX_BYTES", 1):
         state_manager.append_review_event("test-repo", {"event": "trigger"})
 
     bak_path = jsonl_path.with_suffix(".jsonl.bak")
@@ -654,7 +654,7 @@ def test_jsonl_rotation_no_name_error(state_manager):
         for _ in range(10):
             f.write(big_line)
 
-    with patch("bluei.app.state._EVENT_LOG_MAX_BYTES", 1):
+    with patch("bluei.engine.state_io.EVENT_LOG_MAX_BYTES", 1):
         _rotate_jsonl_if_needed(jsonl_path)
 
     bak_path = jsonl_path.with_suffix(".jsonl.bak")

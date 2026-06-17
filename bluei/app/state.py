@@ -3,68 +3,31 @@
 
 import logging
 import copy
-import fcntl
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 _logger = logging.getLogger(__name__)
 
 from bluei.engine.models import Finding
+from bluei.engine.state_io import (
+    atomic_json_write,
+    rotate_jsonl_if_needed,
+    EVENT_LOG_MAX_BYTES,
+    EVENT_LOG_MAX_LINES,
+)
 from .models import Run, now_iso, ReviewRun, FeedbackEvent
 
-
-def _atomic_json_write(path: Path, data: Any) -> None:
-    """Write JSON data atomically: temp file + rename, same filesystem.
-
-    This avoids leaving a partial/corrupted file if the process is
-    interrupted mid-write. The rename is atomic on POSIX systems.
-
-    Uses fcntl.flock(LOCK_EX) to prevent concurrent cycle collisions
-    (both cycles writing .tmp + os.replace simultaneously).
-    """
-    path = Path(path)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    lock_path = path.with_suffix(path.suffix + ".lock")
-    with open(lock_path, "w") as lock_f:
-        fcntl.flock(lock_f, fcntl.LOCK_EX)
-        try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                f.write(json.dumps(data, indent=2))
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, path)
-        finally:
-            fcntl.flock(lock_f, fcntl.LOCK_UN)
-
-
-# ——— JSONL rotation ———
-# review_events.jsonl and feedback_events.jsonl accumulate indefinitely.
-# Rotate by archiving the current file when it exceeds the threshold.
-_EVENT_LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
-_EVENT_LOG_MAX_LINES = 10_000  # whichever comes first
-
-
-def _rotate_jsonl_if_needed(path: Path) -> None:
-    """Rotate a JSONL file if it exceeds size or line thresholds."""
-    if not path.exists():
-        return
-    if path.stat().st_size < _EVENT_LOG_MAX_BYTES:
-        # Check line count only if size threshold not reached
-        try:
-            with open(path) as f:
-                line_count = sum(1 for _ in f)
-            if line_count < _EVENT_LOG_MAX_LINES:
-                return
-        except Exception:
-            return
-    # Rotate: rename current file to .bak, start fresh
-    bak_path = path.with_suffix(path.suffix + ".bak")
-    try:
-        os.replace(str(path), str(bak_path))
-    except Exception:
-        _logger.debug("Failed to rotate state file")
+# ——— Backward-compat aliases ———
+# The canonical implementations now live in bluei/engine/state_io.py
+# (extracted to fix engine→app layering violations, rec-08). These aliases
+# preserve the old private names so existing callers — including
+# bluei/campaigns/state.py, bluei/app/emergent_rules.py, tests, and any
+# external consumers — keep working without code churn.
+_atomic_json_write = atomic_json_write
+_rotate_jsonl_if_needed = rotate_jsonl_if_needed
+_EVENT_LOG_MAX_BYTES = EVENT_LOG_MAX_BYTES
+_EVENT_LOG_MAX_LINES = EVENT_LOG_MAX_LINES
 
 
 DEFAULT_ACTIVE_PRS_STATE = {
