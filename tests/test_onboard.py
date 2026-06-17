@@ -768,3 +768,279 @@ def test_build_review_items_observe_mode_is_info_safety(onboard_env):
     assert observe_item is not None, items
     assert observe_item.severity == "info"
     assert observe_item.category == "safety"
+
+
+# ── Rule pack wiring (Option B: auto-apply with confirmation) ──
+
+
+def test_onboard_options_accepts_rule_pack_override():
+    """OnboardOptions.rule_pack accepts --rule-pack <name> override."""
+    opts = OnboardOptions(rule_pack="python-api-safe")
+    assert opts.rule_pack == "python-api-safe"
+
+
+def test_onboard_options_rule_pack_defaults_none():
+    """OnboardOptions.rule_pack defaults to None (auto-detect path)."""
+    opts = OnboardOptions()
+    assert opts.rule_pack is None
+
+
+def test_onboard_explicit_rule_pack_skips_prompt(onboard_env, monkeypatch):
+    """When options.rule_pack is set, no prompt is shown and value is used."""
+    from unittest.mock import patch
+
+    repo = onboard_env["repo_path"]
+    (repo / "main.py").write_text("print('hi')\n")
+
+    # Force TTY True to prove the prompt path is NOT taken when override is set
+    with (
+        patch("bluei.app.onboarding.engine.sys.stdin.isatty", return_value=True),
+        patch(
+            "builtins.input",
+            side_effect=AssertionError("input() should not be called"),
+        ),
+    ):
+        result = onboard_env["engine"].onboard(
+            repo,
+            OnboardOptions(
+                name="explicit-pack",
+                language="python",
+                rule_pack="python-api-safe",
+                capture_baseline=False,
+                skip_preflight=True,
+            ),
+        )
+
+    assert result.rule_pack == "python-api-safe"
+    # RepoConfig should carry the value too
+    loaded = onboard_env["registry"].read("explicit-pack")
+    assert loaded.config.rule_pack == "python-api-safe"
+
+
+def test_onboard_non_tty_uses_suggestion_silently(onboard_env, monkeypatch):
+    """When options.rule_pack is None and stdin is not a TTY, suggested pack
+    is used silently (no prompt)."""
+    from unittest.mock import patch
+
+    repo = onboard_env["repo_path"]
+    # python-api template → python-api-safe rule pack
+    (repo / "app.py").write_text("print('hi')\n")
+    (repo / "requirements.txt").write_text("flask\n")
+
+    monkeypatch.setattr("bluei.app.onboarding.engine.sys.stdin.isatty", lambda: False)
+    with patch(
+        "builtins.input",
+        side_effect=AssertionError("input() must not be called in non-TTY mode"),
+    ):
+        result = onboard_env["engine"].onboard(
+            repo,
+            OnboardOptions(
+                name="non-tty-pack",
+                language="python",
+                capture_baseline=False,
+                skip_preflight=True,
+            ),
+        )
+
+    # Template and rule pack should be auto-detected
+    assert result.template == "python-api"
+    assert result.rule_pack == "python-api-safe"
+
+    loaded = onboard_env["registry"].read("non-tty-pack")
+    assert loaded.config.rule_pack == "python-api-safe"
+
+
+def test_onboard_tty_prompts_and_accepts_default(onboard_env, monkeypatch, capsys):
+    """When options.rule_pack is None and stdin is a TTY, the prompt is shown.
+    Default (Y/Enter) accepts the suggestion."""
+    from unittest.mock import patch
+
+    repo = onboard_env["repo_path"]
+    (repo / "app.py").write_text("print('hi')\n")
+    (repo / "requirements.txt").write_text("flask\n")
+
+    monkeypatch.setattr("bluei.app.onboarding.engine.sys.stdin.isatty", lambda: True)
+
+    # User presses Enter → default = accept suggestion
+    with patch("builtins.input", return_value=""):
+        result = onboard_env["engine"].onboard(
+            repo,
+            OnboardOptions(
+                name="tty-default",
+                language="python",
+                capture_baseline=False,
+                skip_preflight=True,
+            ),
+        )
+
+    captured = capsys.readouterr()
+    assert "Suggested rule pack: 'python-api-safe'" in captured.out
+    assert "Use this rule pack? [Y/n]" in captured.out
+    assert result.rule_pack == "python-api-safe"
+
+
+def test_onboard_tty_decline_then_pick_from_list(onboard_env, monkeypatch, capsys):
+    """When user declines the suggestion, a numbered picker is shown."""
+    from unittest.mock import patch
+
+    repo = onboard_env["repo_path"]
+    (repo / "app.py").write_text("print('hi')\n")
+    (repo / "requirements.txt").write_text("flask\n")
+
+    monkeypatch.setattr("bluei.app.onboarding.engine.sys.stdin.isatty", lambda: True)
+
+    # Supply some fake rule packs via the ConfigManager instance
+    fake_packs = {
+        "alpha-safe": None,
+        "beta-safe": None,
+        "gamma-safe": None,
+    }
+    monkeypatch.setattr(onboard_env["config"], "list_rule_packs", lambda: fake_packs)
+
+    # First input: 'n' declines. Second input: pick "2" (second sorted pack).
+    inputs = iter(["n", "2"])
+
+    def fake_input(_prompt=""):
+        return next(inputs)
+
+    with patch("builtins.input", side_effect=fake_input):
+        result = onboard_env["engine"].onboard(
+            repo,
+            OnboardOptions(
+                name="tty-pick",
+                language="python",
+                capture_baseline=False,
+                skip_preflight=True,
+            ),
+        )
+
+    captured = capsys.readouterr()
+    assert "Available rule packs:" in captured.out
+    assert "1) alpha-safe" in captured.out
+    assert "2) beta-safe" in captured.out
+    # Sorted: ['alpha-safe', 'beta-safe', 'gamma-safe'] → index 2 = 'beta-safe'
+    assert result.rule_pack == "beta-safe"
+
+
+def test_onboard_rule_pack_saved_to_repo_config(onboard_env):
+    """The chosen rule_pack is saved to RepoConfig (config.yaml on disk)."""
+    repo = onboard_env["repo_path"]
+    (repo / "main.py").write_text("print('hi')\n")
+
+    result = onboard_env["engine"].onboard(
+        repo,
+        OnboardOptions(
+            name="saved-pack",
+            language="python",
+            rule_pack="python-library-safe",
+            capture_baseline=False,
+            skip_preflight=True,
+        ),
+    )
+    assert result.rule_pack == "python-library-safe"
+
+    # Read the YAML back from disk
+    config_path = onboard_env["config"].get_repo_config_path("saved-pack")
+    import yaml
+
+    with open(config_path) as f:
+        persisted = yaml.safe_load(f)
+    assert persisted["rule_pack"] == "python-library-safe"
+
+
+def test_onboard_rule_pack_in_meta_when_set(onboard_env):
+    """Meta should also carry the rule_pack for traceability."""
+    repo = onboard_env["repo_path"]
+    (repo / "main.py").write_text("print('hi')\n")
+
+    onboard_env["engine"].onboard(
+        repo,
+        OnboardOptions(
+            name="meta-pack",
+            language="python",
+            rule_pack="python-api-safe",
+            capture_baseline=False,
+            skip_preflight=True,
+        ),
+    )
+
+    loaded = onboard_env["registry"].read("meta-pack")
+    assert loaded.config.meta.get("rule_pack") == "python-api-safe"
+
+
+def test_onboard_no_template_yields_none_rule_pack_non_tty(onboard_env, monkeypatch):
+    """When no template is detected, suggested_pack is None → rule_pack stays None
+    in non-TTY mode (no crash)."""
+    repo = onboard_env["repo_path"]
+    # Bare repo, no template-triggering files; use test language
+    (repo / "test.txt").write_text("test")
+
+    monkeypatch.setattr("bluei.app.onboarding.engine.sys.stdin.isatty", lambda: False)
+
+    result = onboard_env["engine"].onboard(
+        repo,
+        OnboardOptions(
+            name="no-template",
+            language="test",
+            capture_baseline=False,
+            skip_preflight=True,
+        ),
+    )
+    assert result.template is None
+    assert result.rule_pack is None
+
+
+def test_prompt_rule_pack_confirmation_helper_accepts(capsys):
+    """Helper returns suggested on Y/empty."""
+    from unittest.mock import patch
+    from bluei.app.onboarding.engine import _prompt_rule_pack_confirmation
+
+    class FakeCM:
+        def list_rule_packs(self):
+            return {}
+
+    with patch("builtins.input", return_value=""):
+        result = _prompt_rule_pack_confirmation("python-api-safe", FakeCM())
+    assert result == "python-api-safe"
+
+    captured = capsys.readouterr()
+    assert "Suggested rule pack" in captured.out
+
+
+def test_prompt_rule_pack_confirmation_helper_decline_picks(capsys):
+    """Helper shows picker on 'n' and returns the chosen pack."""
+    from unittest.mock import patch
+    from bluei.app.onboarding.engine import _prompt_rule_pack_confirmation
+
+    class FakeCM:
+        def list_rule_packs(self):
+            return {"alpha-safe": None, "beta-safe": None}
+
+    # 'n' to decline, '2' to pick the second sorted pack
+    inputs = iter(["n", "2"])
+    with patch("builtins.input", side_effect=lambda _p="": next(inputs)):
+        result = _prompt_rule_pack_confirmation("alpha-safe", FakeCM())
+
+    # Sorted: ['alpha-safe', 'beta-safe'] → index 2 = 'beta-safe'
+    assert result == "beta-safe"
+    captured = capsys.readouterr()
+    assert "Available rule packs" in captured.out
+    assert "1) alpha-safe" in captured.out
+    assert "2) beta-safe" in captured.out
+
+
+def test_prompt_rule_pack_confirmation_no_packs_returns_none(capsys):
+    """Helper returns None when no packs are available and no suggestion."""
+    from unittest.mock import patch
+    from bluei.app.onboarding.engine import _prompt_rule_pack_confirmation
+
+    class FakeCM:
+        def list_rule_packs(self):
+            return {}
+
+    # No suggestion, no packs → should not loop on input
+    with patch(
+        "builtins.input", side_effect=AssertionError("input should not be called")
+    ):
+        result = _prompt_rule_pack_confirmation(None, FakeCM())
+    assert result is None

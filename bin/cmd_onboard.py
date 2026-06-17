@@ -261,6 +261,7 @@ def _cmd_onboard(rest: list[str]):
         framework=_parse_option(rest, "--framework"),
         plugin_id=_parse_option(rest, "--plugin"),
         template=_parse_option(rest, "--template"),
+        rule_pack=_parse_option(rest, "--rule-pack"),
         mode=_parse_option(rest, "--mode") or "observe",
         profile=_parse_option(rest, "--profile") or "conservative",
         allow_dirty_worktree=_has_flag(rest, "--allow-dirty-worktree"),
@@ -280,6 +281,8 @@ def _cmd_onboard(rest: list[str]):
 
     print(f"Onboarded {result.repo.config.name}")
     print(f"Language: {result.language.name}")
+    print(f"Template: {result.template or '(none)'}")
+    print(f"Rule pack: {result.rule_pack or '(none)'}")
     print(f"Findings: {result.findings_count}")
     if result.review_items:
         print("\nReview items:")

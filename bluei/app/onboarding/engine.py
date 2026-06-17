@@ -2,6 +2,7 @@
 
 import logging
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -33,6 +34,51 @@ from .detection import detect_frameworks
 _logger = logging.getLogger(__name__)
 
 
+def _prompt_rule_pack_confirmation(
+    suggested: Optional[str],
+    config_manager: Any,
+) -> Optional[str]:
+    """Interactive prompt for rule pack selection (Option B).
+
+    Flow:
+    - If ``suggested`` is non-empty: ask "Use this rule pack? [Y/n]".
+      Y/Enter → return ``suggested``; n → fall through to numbered picker.
+    - If ``suggested`` is empty or user declines: show a numbered list of
+      all available rule packs (via ``config_manager.list_rule_packs()``)
+      and ask the user to pick by number.
+
+    Returns the chosen pack name, or ``None`` if no rule packs are
+    available. Reads stdin via ``input()`` — caller must ensure stdin is
+    a TTY before invoking. Prompts are emitted via ``print()`` (rather
+    than ``input()``'s prompt arg) so they remain observable under test.
+    """
+    if suggested:
+        print(f"  Suggested rule pack: '{suggested}'.")
+        print("  Use this rule pack? [Y/n]: ", end="", flush=True)
+        response = input().strip().lower()
+        if response in ("", "y", "yes"):
+            return suggested
+
+    packs = sorted((config_manager.list_rule_packs() or {}).keys())
+    if not packs:
+        print("  No rule packs available; skipping rule pack selection.")
+        return None
+
+    print("  Available rule packs:")
+    for idx, name in enumerate(packs, 1):
+        print(f"    {idx}) {name}")
+    while True:
+        print(f"  Pick a rule pack [1-{len(packs)}]: ", end="", flush=True)
+        choice = input().strip()
+        try:
+            pick = int(choice)
+            if 1 <= pick <= len(packs):
+                return packs[pick - 1]
+        except ValueError:
+            pass
+        print(f"  Invalid choice; enter a number between 1 and {len(packs)}.")
+
+
 @dataclass
 class OnboardOptions:
     """Options for onboarding."""
@@ -42,6 +88,9 @@ class OnboardOptions:
     framework: Optional[str] = None
     plugin_id: Optional[str] = None
     template: Optional[str] = None
+    rule_pack: Optional[str] = (
+        None  # None → auto-detect + prompt (TTY) / silent (non-TTY)
+    )
     capture_baseline: bool = True
     mode: str = SafetyMode.OBSERVE.value
     profile: str = SafetyProfile.CONSERVATIVE.value
@@ -85,6 +134,7 @@ class OnboardResult:
     plugin_id: str
     findings_count: int
     template: Optional[str] = None
+    rule_pack: Optional[str] = None
     suggested_checks: List[List[str]] = field(default_factory=list)
     review_items: List[ReviewItem] = field(default_factory=list)
 
@@ -357,6 +407,7 @@ class OnboardEngine:
         plugin_id: str,
         template_name: Optional[str] = None,
         fix_engine_override: Optional[str] = None,
+        rule_pack: Optional[str] = None,
     ) -> RepoConfig:
         """Generate repository configuration."""
         baseline_checks = self.infer_baseline_checks(repo_path, language)
@@ -383,6 +434,7 @@ class OnboardEngine:
             fallback_engines=fix_strategy["fallback_engines"],
             claude_template=fix_strategy["claude_template"],
             opencode_template=fix_strategy["opencode_template"],
+            rule_pack=rule_pack,
             github={
                 "live_actions": False,
                 "auto_merge": False,
@@ -390,6 +442,7 @@ class OnboardEngine:
             meta={
                 "onboarding_version": ONBOARDING_VERSION,
                 "template": template_name,
+                "rule_pack": rule_pack,
                 "inferred_by": "template" if template_name else "heuristic",
                 "secondary_languages": language.secondary_languages,
                 "detected_frameworks": detect_frameworks(repo_path, language.name),
@@ -462,6 +515,29 @@ class OnboardEngine:
             repo_path, language, framework
         )
 
+        # ── Rule pack resolution (Option B: auto-apply with confirmation) ──
+        # Precedence:
+        #   1. options.rule_pack (explicit --rule-pack override) — non-interactive
+        #   2. suggested_pack from select_rule_pack(template)
+        #      - TTY: prompt "Use this? [Y/n]" → accept / fall through to picker
+        #      - non-TTY: use suggestion silently with a stderr notice
+        #   3. None if no suggestion and no override
+        selected_rule_pack = options.rule_pack
+        if selected_rule_pack is None:
+            suggested_pack = self.select_rule_pack(selected_template)
+            if suggested_pack:
+                if sys.stdin.isatty():
+                    print(f"  Detected template: {selected_template or '(none)'}")
+                    selected_rule_pack = _prompt_rule_pack_confirmation(
+                        suggested_pack, self.registry.config
+                    )
+                else:
+                    print(
+                        f"  Rule pack (auto): {suggested_pack}",
+                        file=sys.stderr,
+                    )
+                    selected_rule_pack = suggested_pack
+
         config = self.generate_config(
             repo_path,
             name,
@@ -470,6 +546,7 @@ class OnboardEngine:
             plugin_id,
             template_name=selected_template,
             fix_engine_override=options.fix_engine,
+            rule_pack=selected_rule_pack,
         )
         config.safety = self.infer_safety_policy(repo_path, options)
         config = self.apply_safety_profile(config)
@@ -532,6 +609,7 @@ class OnboardEngine:
             plugin_id=plugin_id,
             findings_count=len(findings),
             template=selected_template,
+            rule_pack=selected_rule_pack,
             suggested_checks=config.baseline_checks,
             review_items=review_items,
         )
