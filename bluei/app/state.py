@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional
 
 _logger = logging.getLogger(__name__)
 
+from bluei.engine import issue_lifecycle
+from bluei.engine import state as engine_state
 from bluei.engine.models import Finding
 from bluei.engine.state_io import (
     atomic_json_write,
@@ -16,6 +18,7 @@ from bluei.engine.state_io import (
     EVENT_LOG_MAX_BYTES,
     EVENT_LOG_MAX_LINES,
 )
+from bluei.engine.jsonl import read_jsonl
 from .models import Run, now_iso, ReviewRun, FeedbackEvent
 
 # ——— Backward-compat aliases ———
@@ -151,43 +154,25 @@ class StateManager:
         return self._get_state_dir(repo_name) / "findings.jsonl"
 
     def load_findings(self, repo_name: str) -> List[Finding]:
-        """Load all findings for a repo."""
+        """Load all findings for a repo.
+
+        Uses bluei.engine.jsonl.read_jsonl for the read primitive; wraps each
+        record in Finding.from_dict(). Malformed lines are silently skipped
+        (skip_errors=True default).
+        """
         findings_file = self.get_findings_file(repo_name)
-        if not findings_file.exists():
-            return []
-
-        findings = []
-        with open(findings_file) as f:
-            for line in f:
-                if line.strip():
-                    data = json.loads(line)
-                    findings.append(Finding.from_dict(data))
-
-        return findings
+        records = read_jsonl(findings_file)
+        return [Finding.from_dict(r) for r in records]
 
     def append_findings(self, repo_name: str, findings: List[Finding]) -> int:
-        """Append findings to repo's findings file."""
-        findings_file = self.get_findings_file(repo_name)
-        findings_file.parent.mkdir(parents=True, exist_ok=True)
+        """Append findings to repo's findings file.
 
-        # Load existing IDs to avoid duplicates
-        existing_ids = set()
-        if findings_file.exists():
-            with open(findings_file) as f:
-                for line in f:
-                    if line.strip():
-                        data = json.loads(line)
-                        existing_ids.add(data.get("finding_id"))
-
-        # Append new findings
-        written = 0
-        with open(findings_file, "a") as f:
-            for finding in findings:
-                if finding.finding_id not in existing_ids:
-                    f.write(json.dumps(finding.to_dict()) + "\n")
-                    written += 1
-
-        return written
+        Delegates to engine.state.append_findings so discovered_at auto-set
+        and sort_keys=True deterministic output both happen consistently.
+        Returns the number of new findings actually written (dedup by
+        finding_id, like the engine version).
+        """
+        return engine_state.append_findings(self.get_findings_file(repo_name), findings)
 
     def clear_findings(self, repo_name: str) -> None:
         """Clear findings file."""
@@ -201,19 +186,21 @@ class StateManager:
         return self._get_state_dir(repo_name) / "issues.json"
 
     def load_issues(self, repo_name: str) -> Dict[str, Any]:
-        """Load issues for a repo."""
-        issues_file = self.get_issues_file(repo_name)
-        if not issues_file.exists():
-            return {"issues": []}
+        """Load issues for a repo.
 
-        with open(issues_file) as f:
-            return json.load(f)
+        Delegates to engine.issue_lifecycle.load_issues so shape validation
+        (dict with list 'issues' key) and malformed-data handling are owned
+        in one place.
+        """
+        return issue_lifecycle.load_issues(self.get_issues_file(repo_name))
 
     def save_issues(self, repo_name: str, issues: Dict[str, Any]) -> None:
-        """Save issues for a repo."""
-        issues_file = self.get_issues_file(repo_name)
-        issues_file.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_json_write(issues_file, issues)
+        """Save issues for a repo.
+
+        Delegates to engine.issue_lifecycle.save_issues so atomic write and
+        schema ownership both live in the engine layer.
+        """
+        issue_lifecycle.save_issues(self.get_issues_file(repo_name), issues)
 
     # === State ===
 
@@ -221,24 +208,25 @@ class StateManager:
         return self._get_state_dir(repo_name) / "state.json"
 
     def load_state(self, repo_name: str) -> Dict[str, Any]:
-        """Load runner state for a repo."""
-        state_file = self.get_state_file(repo_name)
-        if not state_file.exists():
-            return {
-                "open_issues": 0,
-                "open_prs": 0,
-                "created": [],
-                "finding_activity": {},
-            }
+        """Load runner state for a repo.
 
-        with open(state_file) as f:
-            return json.load(f)
+        Delegates to engine.state.load_state so the schema (5 keys including
+        reconciliation_events) is owned in one place. Path is resolved via
+        self.get_state_file(); the engine function handles file I/O and
+        setdefault for missing keys.
+        """
+        return engine_state.load_state(self.get_state_file(repo_name))
 
     def save_state(self, repo_name: str, state: Dict[str, Any]) -> None:
-        """Save runner state for a repo."""
+        """Save runner state for a repo.
+
+        Delegates to engine.state.save_state so atomic write semantics and
+        schema ownership both live in the engine layer. Parent directory
+        creation stays on StateManager (path-resolution concern).
+        """
         state_file = self.get_state_file(repo_name)
         state_file.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_json_write(state_file, state)
+        engine_state.save_state(state_file, state)
 
     # === Review care ===
 
