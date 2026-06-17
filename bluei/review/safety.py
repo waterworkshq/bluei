@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 _logger = logging.getLogger(__name__)
 
-from bluei.app.models import LiveRolloutMode
+from bluei.common.models import LiveRolloutMode
 from bluei.review.models import (
     MonitoredSafetyState,
     normalize_finding_header,

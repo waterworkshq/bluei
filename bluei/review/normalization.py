@@ -12,7 +12,7 @@ from bluei.review.models import (
     make_finding_fingerprint,
     make_review_finding_id,
 )
-from bluei.app.models import (
+from bluei.common.models import (
     now_iso,
 )
 from bluei.review.types import CandidateValidationError

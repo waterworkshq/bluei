@@ -1,11 +1,33 @@
 #!/usr/bin/env python3
-"""State management for QA Agent."""
+"""State management for QA Agent — app layer.
+
+Shared findings/issues/state/runs/baselines state surfaces stay here.
+Review-specific state surfaces (active PRs, review runs, review findings,
+feedback events, learned rules, publish state, monitored safety, etc.)
+were extracted to bluei/review/state.py:ReviewStateManager during the
+H5 review→app decoupling (2026-06-18).
+
+For backward compatibility, this module:
+  1. Lazily re-exports the review-state DEFAULT_* constants (so external
+     callers reading these symbols keep working).
+  2. Forwards review-specific StateManager methods to a lazily-constructed
+     ReviewStateManager instance. New code should use ReviewStateManager
+     directly.
+
+Note: We cannot import bluei.review.state at module load because
+bluei/review/__init__.py eagerly imports review modules that depend on
+bluei.app.state (cycle). The DEFAULT_* constants and ReviewStateManager
+are therefore resolved lazily via module __getattr__ and the
+self.review_state property respectively.
+"""
 
 import logging
-import copy
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from bluei.review.state import ReviewStateManager  # noqa: F401
 
 _logger = logging.getLogger(__name__)
 
@@ -19,7 +41,7 @@ from bluei.engine.state_io import (
     EVENT_LOG_MAX_LINES,
 )
 from bluei.engine.jsonl import append_jsonl, read_jsonl
-from .models import Run, now_iso, ReviewRun, FeedbackEvent
+from .models import Run, now_iso
 
 # ——— Backward-compat aliases ———
 # The canonical implementations now live in bluei/engine/state_io.py
@@ -33,85 +55,62 @@ _EVENT_LOG_MAX_BYTES = EVENT_LOG_MAX_BYTES
 _EVENT_LOG_MAX_LINES = EVENT_LOG_MAX_LINES
 
 
-DEFAULT_ACTIVE_PRS_STATE = {
-    "version": 1,
-    "updated_at": None,
-    "prs": {},
+# Lazily-resolved review-state names. We cannot import these at module
+# load time because bluei.review.__init__ eagerly loads modules that
+# depend on bluei.app.state. Use module-level __getattr__ (PEP 562).
+_LAZY_REVIEW_NAMES = {
+    "ReviewStateManager",
+    "DEFAULT_ACTIVE_PRS_STATE",
+    "DEFAULT_REVIEW_STATE",
+    "DEFAULT_REVIEW_RUN",
+    "DEFAULT_REVIEW_FINDINGS_MANIFEST",
+    "DEFAULT_LEARNED_RULES",
+    "DEFAULT_REVIEW_PUBLISH_STATE",
+    "DEFAULT_MONITORED_SAFETY_STATE",
+    "DEFAULT_FEEDBACK_EVENT",
 }
 
-DEFAULT_REVIEW_STATE = {
-    "version": 1,
-    "updated_at": None,
-    "prs": {},
-}
 
-# --- Phase B2: Autonomous-review state surface defaults ---
+def __getattr__(name: str):
+    """Lazy module-level attribute access for review-state re-exports.
 
-DEFAULT_REVIEW_RUN = {
-    "version": 1,
-    "run_id": "",
-    "repo": "",
-    "pr_number": None,
-    "started_at": None,
-    "ended_at": None,
-    "status": "pending",  # pending | running | completed | failed
-    "findings_count": 0,
-    "publish_status": "none",  # none | published | failed | skipped
-    "error": None,
-}
+    Resolves names listed in _LAZY_REVIEW_NAMES by importing them from
+    bluei.review.state on first access. This breaks the circular import
+    that would otherwise occur if we imported them at module load time.
+    """
+    if name in _LAZY_REVIEW_NAMES:
+        from bluei.review import state as _review_state_module
 
-DEFAULT_REVIEW_FINDINGS_MANIFEST = {
-    "version": 1,
-    "updated_at": None,
-    "total_findings": 0,
-}
-
-DEFAULT_LEARNED_RULES = {
-    "version": 1,
-    "updated_at": None,
-    "rules": [],  # list of learned rule objects
-    "active_count": 0,
-    "tentative_count": 0,
-}
-
-DEFAULT_REVIEW_PUBLISH_STATE = {
-    "version": 1,
-    "updated_at": None,
-    "findings": {},  # { finding_id: publish_entry }
-    "runs": {},  # { run_id: run_publish_entry }
-}
-
-# Phase G7: Monitored-rollout safety state default
-DEFAULT_MONITORED_SAFETY_STATE = {
-    "version": 1,
-    "updated_at": None,
-    "circuit_open": False,
-    "failure_count": 0,
-    "cooldown_until": None,
-    "last_failure_at": None,
-    "last_failure_reason": "",
-    "auto_rollback_active": False,
-    "auto_rollback_reason": "",
-    "auto_rollback_triggered_at": None,
-}
-
-DEFAULT_FEEDBACK_EVENT = {
-    "version": 1,
-    "timestamp": None,
-    "source": None,  # e.g. 'github_review_comment', 'github_review_thread'
-    "pr_number": None,
-    "finding_id": None,
-    "signal": None,  # 'positive' | 'negative' | 'conflict' | 'request_change' | 'approve' | 'comment'
-    "normalized": False,
-    "payload": {},
-}
+        return getattr(_review_state_module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class StateManager:
-    """Manages persistent state for the agent."""
+    """Manages persistent state for the agent.
+
+    App-specific surfaces (findings, issues, runner state, runs, baselines,
+    fix_patterns, campaigns, emergent_rules file path) are implemented
+    directly here.
+
+    Review-specific surfaces are forwarded to a lazily-constructed
+    ReviewStateManager (see bluei/review/state.py). New code should
+    construct ReviewStateManager directly when working with review state.
+    """
 
     def __init__(self, repos_dir: Path):
         self.repos_dir = Path(repos_dir)
+        # Lazily-built review delegate; shares the same repos_dir.
+        self._review_state: Optional["ReviewStateManager"] = None
+
+    @property
+    def review_state(self) -> "ReviewStateManager":
+        """Lazily construct the review-state delegate."""
+        if self._review_state is None:
+            # Imported lazily to avoid circular import at module load.
+            from bluei.review.state import ReviewStateManager
+
+            self._review_state = ReviewStateManager(self.repos_dir)
+        return self._review_state
 
     def _get_repo_dir(self, repo_name: str) -> Path:
         return self.repos_dir / repo_name
@@ -120,6 +119,9 @@ class StateManager:
         return self._get_repo_dir(repo_name) / "state"
 
     # === Generic versioned JSON load/save ===
+    # Used by both app-level state surfaces and (historically) review surfaces.
+    # Kept here for app-side consumers (e.g., campaigns state) and tests that
+    # exercise the versioned-load contract directly.
 
     def _load_versioned_json(
         self,
@@ -128,10 +130,14 @@ class StateManager:
     ) -> Dict[str, Any]:
         """Load a JSON file with versioned defaults merging."""
         if not path.exists():
+            import copy
+
             return copy.deepcopy(defaults)
         with open(path) as f:
             data = json.load(f)
         for k, v in defaults.items():
+            import copy
+
             data.setdefault(k, copy.deepcopy(v))
         return data
 
@@ -228,303 +234,131 @@ class StateManager:
         state_file.parent.mkdir(parents=True, exist_ok=True)
         engine_state.save_state(state_file, state)
 
-    # === Review care ===
+    # === Review care (delegated to ReviewStateManager) ===
+    # These forward to self.review_state for backward compatibility with
+    # tests and any external callers. New code should construct
+    # bluei.review.state.ReviewStateManager directly.
 
     def get_active_prs_file(self, repo_name: str) -> Path:
-        return self._get_state_dir(repo_name) / "active_prs.json"
+        return self.review_state.get_active_prs_file(repo_name)
 
     def load_active_prs(self, repo_name: str) -> Dict[str, Any]:
-        return self._load_versioned_json(
-            self.get_active_prs_file(repo_name), DEFAULT_ACTIVE_PRS_STATE
-        )
+        return self.review_state.load_active_prs(repo_name)
 
     def save_active_prs(self, repo_name: str, data: Dict[str, Any]) -> None:
-        self._save_versioned_json(
-            self.get_active_prs_file(repo_name), data, DEFAULT_ACTIVE_PRS_STATE
-        )
+        self.review_state.save_active_prs(repo_name, data)
 
     def get_review_state_file(self, repo_name: str) -> Path:
-        return self._get_state_dir(repo_name) / "review_state.json"
+        return self.review_state.get_review_state_file(repo_name)
 
     def load_review_state(self, repo_name: str) -> Dict[str, Any]:
-        return self._load_versioned_json(
-            self.get_review_state_file(repo_name), DEFAULT_REVIEW_STATE
-        )
+        return self.review_state.load_review_state(repo_name)
 
     def save_review_state(self, repo_name: str, data: Dict[str, Any]) -> None:
-        self._save_versioned_json(
-            self.get_review_state_file(repo_name), data, DEFAULT_REVIEW_STATE
-        )
+        self.review_state.save_review_state(repo_name, data)
 
     def get_review_events_file(self, repo_name: str) -> Path:
-        return self._get_state_dir(repo_name) / "review_events.jsonl"
+        return self.review_state.get_review_events_file(repo_name)
 
     def append_review_event(self, repo_name: str, event: Dict[str, Any]) -> None:
-        path = self.get_review_events_file(repo_name)
-        payload = {"timestamp": now_iso(), **(event or {})}
-        append_jsonl(path, payload)
-        _rotate_jsonl_if_needed(path)
+        self.review_state.append_review_event(repo_name, event)
 
     def get_review_locks_dir(self, repo_name: str) -> Path:
-        path = self._get_state_dir(repo_name) / "review_locks"
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+        return self.review_state.get_review_locks_dir(repo_name)
 
     def get_review_prompts_dir(self, repo_name: str) -> Path:
-        path = self._get_state_dir(repo_name) / "review_prompts"
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+        return self.review_state.get_review_prompts_dir(repo_name)
 
-    # === Phase B2: Autonomous-review state surfaces ===
-
-    # --- review_runs/ (per-run JSON files) ---
+    # === Phase B2: Autonomous-review state surfaces (delegated) ===
 
     def get_review_runs_dir(self, repo_name: str) -> Path:
-        path = self._get_state_dir(repo_name) / "review_runs"
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+        return self.review_state.get_review_runs_dir(repo_name)
 
     def save_review_run(self, repo_name: str, run_data: Dict[str, Any]) -> Path:
-        """Save an autonomous-review run record."""
-        run_id = run_data.get("run_id") or run_data.get("id")
-        if not run_id:
-            raise ValueError("review run data must contain 'run_id' or 'id'")
-        path = self.get_review_runs_dir(repo_name) / f"{run_id}.json"
-        payload = dict(DEFAULT_REVIEW_RUN)
-        payload.update(run_data or {})
-        if not payload.get("run_id"):
-            payload["run_id"] = run_id
-        payload["updated_at"] = now_iso()
-        _atomic_json_write(path, payload)
-        return path
+        return self.review_state.save_review_run(repo_name, run_data)
 
     def load_review_run(self, repo_name: str, run_id: str) -> Optional[Dict[str, Any]]:
-        """Load a specific autonomous-review run."""
-        path = self.get_review_runs_dir(repo_name) / f"{run_id}.json"
-        if not path.exists():
-            return None
-        with open(path) as f:
-            data = json.load(f)
-        # ensure versioned defaults
-        for k, v in DEFAULT_REVIEW_RUN.items():
-            data.setdefault(k, v)
-        return data
+        return self.review_state.load_review_run(repo_name, run_id)
 
     def list_review_runs(self, repo_name: str, limit: int = 20) -> List[Dict[str, Any]]:
-        """List recent autonomous-review runs, newest first.
+        return self.review_state.list_review_runs(repo_name, limit)
 
-        Sorts by ``started_at`` descending (most recent first), with file
-        modification time as a tiebreaker for runs with identical timestamps.
-        This ensures deterministic ordering regardless of UUID ordering in
-        run_id filenames.
-        """
-        runs_dir = self.get_review_runs_dir(repo_name)
-        if not runs_dir.exists():
-            return []
-        # Load all run data first, then sort by started_at desc, then mtime desc
-        run_files: List[tuple] = []
-        for p in runs_dir.glob("*.json"):
-            with open(p) as f:
-                data = json.load(f)
-            for k, v in DEFAULT_REVIEW_RUN.items():
-                data.setdefault(k, v)
-            mtime = p.stat().st_mtime
-            # Use started_at as primary key (iso string sorts correctly chronologically)
-            # Tiebreak on mtime (run2's file has strictly later mtime than run1's)
-            run_files.append((data.get("started_at") or "", -mtime, data))
-        # Sort: primary key desc (newest first), secondary key desc (later mtime first)
-        run_files.sort(key=lambda x: (x[0], x[1]), reverse=True)
-        return [item[2] for item in run_files[:limit]]
+    def save_typed_review_run(self, repo_name: str, run: Any) -> Path:
+        return self.review_state.save_typed_review_run(repo_name, run)
 
-    def save_typed_review_run(self, repo_name: str, run: ReviewRun) -> Path:
-        """Save a ReviewRun dataclass as a review run record."""
-        return self.save_review_run(repo_name, run.to_dict())
+    def load_typed_review_run(self, repo_name: str, run_id: str) -> Optional[Any]:
+        return self.review_state.load_typed_review_run(repo_name, run_id)
 
-    def load_typed_review_run(self, repo_name: str, run_id: str) -> Optional[ReviewRun]:
-        """Load a review run as a ReviewRun dataclass."""
-        data = self.load_review_run(repo_name, run_id)
-        if data is None:
-            return None
-        return ReviewRun.from_dict(data)
-
-    def list_typed_review_runs(
-        self, repo_name: str, limit: int = 20
-    ) -> List[ReviewRun]:
-        """List recent review runs as ReviewRun dataclasses."""
-        return [ReviewRun.from_dict(d) for d in self.list_review_runs(repo_name, limit)]
-
-    # --- review_findings.jsonl + review_findings/<finding_id>.json ---
+    def list_typed_review_runs(self, repo_name: str, limit: int = 20) -> List[Any]:
+        return self.review_state.list_typed_review_runs(repo_name, limit)
 
     def get_review_findings_file(self, repo_name: str) -> Path:
-        """Path to the review findings JSONL manifest/index."""
-        return self._get_state_dir(repo_name) / "review_findings.jsonl"
+        return self.review_state.get_review_findings_file(repo_name)
 
     def get_review_finding_file(self, repo_name: str, finding_id: str) -> Path:
-        """Path to an individual review finding JSON file."""
-        d = self._get_state_dir(repo_name) / "review_findings"
-        d.mkdir(parents=True, exist_ok=True)
-        return d / f"{finding_id}.json"
+        return self.review_state.get_review_finding_file(repo_name, finding_id)
 
     def append_review_findings(
         self, repo_name: str, findings: List[Dict[str, Any]]
     ) -> int:
-        """Append review findings to the JSONL index; deduplicates by finding_id.
-
-        Returns the number of newly written records.
-        """
-        findings_file = self.get_review_findings_file(repo_name)
-        findings_file.parent.mkdir(parents=True, exist_ok=True)
-
-        existing_ids = set()
-        if findings_file.exists():
-            with open(findings_file) as f:
-                for line in f:
-                    if line.strip():
-                        existing_ids.add(json.loads(line).get("finding_id"))
-
-        written = 0
-        for finding in findings:
-            fid = finding.get("finding_id")
-            if fid and fid not in existing_ids:
-                append_jsonl(findings_file, finding)
-                written += 1
-        return written
+        return self.review_state.append_review_findings(repo_name, findings)
 
     def load_review_findings(self, repo_name: str) -> List[Dict[str, Any]]:
-        """Load all review findings from the JSONL index."""
-        findings_file = self.get_review_findings_file(repo_name)
-        if not findings_file.exists():
-            return []
-        findings = []
-        with open(findings_file) as f:
-            for line in f:
-                if line.strip():
-                    findings.append(json.loads(line))
-        return findings
+        return self.review_state.load_review_findings(repo_name)
 
     def save_review_finding(
         self, repo_name: str, finding_id: str, data: Dict[str, Any]
     ) -> Path:
-        """Save an individual review finding as a standalone JSON file."""
-        path = self.get_review_finding_file(repo_name, finding_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = dict(data)
-        payload.setdefault("finding_id", finding_id)
-        payload.setdefault("version", 1)
-        payload.setdefault("saved_at", now_iso())
-        _atomic_json_write(path, payload)
-        return path
+        return self.review_state.save_review_finding(repo_name, finding_id, data)
 
     def load_review_finding(
         self, repo_name: str, finding_id: str
     ) -> Optional[Dict[str, Any]]:
-        """Load a specific review finding by ID."""
-        path = self.get_review_finding_file(repo_name, finding_id)
-        if not path.exists():
-            return None
-        with open(path) as f:
-            return json.load(f)
-
-    # --- feedback_events.jsonl ---
+        return self.review_state.load_review_finding(repo_name, finding_id)
 
     def get_feedback_events_file(self, repo_name: str) -> Path:
-        """Path to the feedback events JSONL log."""
-        return self._get_state_dir(repo_name) / "feedback_events.jsonl"
+        return self.review_state.get_feedback_events_file(repo_name)
 
     def append_feedback_event(self, repo_name: str, event: Dict[str, Any]) -> None:
-        """Append a feedback event to the JSONL log."""
-        path = self.get_feedback_events_file(repo_name)
-        payload = dict(DEFAULT_FEEDBACK_EVENT)
-        payload.update(event or {})
-        if not payload.get("timestamp"):
-            payload["timestamp"] = now_iso()
-        payload["version"] = 1
-        append_jsonl(path, payload)
-        _rotate_jsonl_if_needed(path)
+        self.review_state.append_feedback_event(repo_name, event)
 
     def load_feedback_events(self, repo_name: str) -> List[Dict[str, Any]]:
-        """Load all feedback events from the JSONL log."""
-        path = self.get_feedback_events_file(repo_name)
-        if not path.exists():
-            return []
-        events = []
-        with open(path) as f:
-            for line in f:
-                if line.strip():
-                    events.append(json.loads(line))
-        return events
+        return self.review_state.load_feedback_events(repo_name)
 
-    def append_typed_feedback_event(self, repo_name: str, event: FeedbackEvent) -> None:
-        """Append a FeedbackEvent dataclass to the JSONL log."""
-        self.append_feedback_event(repo_name, event.to_dict())
+    def append_typed_feedback_event(self, repo_name: str, event: Any) -> None:
+        self.review_state.append_typed_feedback_event(repo_name, event)
 
-    def load_typed_feedback_events(self, repo_name: str) -> List[FeedbackEvent]:
-        """Load all feedback events as FeedbackEvent dataclasses."""
-        events = []
-        for data in self.load_feedback_events(repo_name):
-            try:
-                events.append(FeedbackEvent.from_dict(data))
-            except (ValueError, TypeError):
-                _logger.debug("Skipping malformed feedback event")
-        return events
-
-    # --- learned_rules.json ---
+    def load_typed_feedback_events(self, repo_name: str) -> List[Any]:
+        return self.review_state.load_typed_feedback_events(repo_name)
 
     def get_learned_rules_file(self, repo_name: str) -> Path:
-        return self._get_state_dir(repo_name) / "learned_rules.json"
+        return self.review_state.get_learned_rules_file(repo_name)
 
     def load_learned_rules(self, repo_name: str) -> Dict[str, Any]:
-        """Load learned rules; returns versioned default if file absent."""
-        return self._load_versioned_json(
-            self.get_learned_rules_file(repo_name), DEFAULT_LEARNED_RULES
-        )
+        return self.review_state.load_learned_rules(repo_name)
 
     def save_learned_rules(self, repo_name: str, data: Dict[str, Any]) -> None:
-        """Save learned rules atomically."""
-        self._save_versioned_json(
-            self.get_learned_rules_file(repo_name), data, DEFAULT_LEARNED_RULES
-        )
-
-    # --- review_publish_state.json ---
+        self.review_state.save_learned_rules(repo_name, data)
 
     def get_review_publish_state_file(self, repo_name: str) -> Path:
-        return self._get_state_dir(repo_name) / "review_publish_state.json"
+        return self.review_state.get_review_publish_state_file(repo_name)
 
     def load_review_publish_state(self, repo_name: str) -> Dict[str, Any]:
-        """Load publish state; returns versioned default if file absent."""
-        return self._load_versioned_json(
-            self.get_review_publish_state_file(repo_name), DEFAULT_REVIEW_PUBLISH_STATE
-        )
+        return self.review_state.load_review_publish_state(repo_name)
 
     def save_review_publish_state(self, repo_name: str, data: Dict[str, Any]) -> None:
-        """Save publish state atomically."""
-        self._save_versioned_json(
-            self.get_review_publish_state_file(repo_name),
-            data,
-            DEFAULT_REVIEW_PUBLISH_STATE,
-        )
-
-    # --- monitored_safety_state.json (Phase G7) ---
+        self.review_state.save_review_publish_state(repo_name, data)
 
     def get_monitored_safety_state_file(self, repo_name: str) -> Path:
-        return self._get_state_dir(repo_name) / "monitored_safety_state.json"
+        return self.review_state.get_monitored_safety_state_file(repo_name)
 
     def load_monitored_safety_state(self, repo_name: str) -> Dict[str, Any]:
-        """Load monitored safety state; returns versioned default if file absent."""
-        return self._load_versioned_json(
-            self.get_monitored_safety_state_file(repo_name),
-            DEFAULT_MONITORED_SAFETY_STATE,
-        )
+        return self.review_state.load_monitored_safety_state(repo_name)
 
     def save_monitored_safety_state(self, repo_name: str, data: Dict[str, Any]) -> None:
-        """Save monitored safety state atomically."""
-        self._save_versioned_json(
-            self.get_monitored_safety_state_file(repo_name),
-            data,
-            DEFAULT_MONITORED_SAFETY_STATE,
-        )
+        self.review_state.save_monitored_safety_state(repo_name, data)
 
-    # --- fix_patterns.jsonl ---
+    # --- fix_patterns.jsonl --- (app-owned; shared with review via this method)
 
     def get_fix_patterns_file(self, repo_name: str) -> Path:
         return self._get_state_dir(repo_name) / "fix_patterns.jsonl"

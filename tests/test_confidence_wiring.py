@@ -10,8 +10,14 @@ from bluei.engine.pattern_store import (
     FixPatternStore,
 )
 from bluei.app.models import FeedbackSentiment
+from bluei.app.pattern_confidence import adjust_from_feedback
 from bluei.review.feedback import record_feedback
 from bluei.app.state import StateManager
+
+# Phase D update: record_feedback no longer imports adjust_from_feedback
+# directly; callers must wire it via the confidence_adjuster callback.
+# These tests verify the wiring explicitly by passing the legacy adjuster.
+_ADJUSTER = adjust_from_feedback
 
 
 def _make_pattern(**overrides):
@@ -72,6 +78,7 @@ class TestConfidenceWiringPositiveSentiment:
             feedback_input={"comment": "Looks great!"},
             input_class="comment",
             finding_id=fid,
+            confidence_adjuster=_ADJUSTER,
         )
 
         pattern = _load_pattern_by_finding(pf, fid)
@@ -90,6 +97,7 @@ class TestConfidenceWiringNegativeSentiment:
             feedback_input={"comment": "This is wrong, please fix"},
             input_class="comment",
             finding_id=fid,
+            confidence_adjuster=_ADJUSTER,
         )
 
         pattern = _load_pattern_by_finding(pf, fid)
@@ -108,6 +116,7 @@ class TestConfidenceWiringConceptualSentiment:
             feedback_input={"comment": "I have a suggestion"},
             input_class="comment",
             finding_id=fid,
+            confidence_adjuster=_ADJUSTER,
         )
 
         pattern = _load_pattern_by_finding(pf, fid)
@@ -126,6 +135,7 @@ class TestConfidenceWiringContradictorySentiment:
             feedback_input={"comment": "This looks good but also wrong"},
             input_class="comment",
             finding_id=fid,
+            confidence_adjuster=_ADJUSTER,
         )
 
         pattern = _load_pattern_by_finding(pf, fid)
@@ -138,17 +148,20 @@ class TestConfidenceWiringExceptionSafety:
         fid = "finding-abc123"
         _seed_pattern(state_mgr, source_finding_ids=[fid], confidence=0.5)
 
-        with patch(
-            "bluei.review.feedback.adjust_from_feedback",
-            side_effect=RuntimeError("boom"),
-        ):
-            result = record_feedback(
-                state=state_mgr,
-                repo_name="test-repo",
-                feedback_input={"comment": "Looks great!"},
-                input_class="comment",
-                finding_id=fid,
-            )
+        # Phase D update: callback is now passed explicitly; the legacy
+        # patch target bluei.review.feedback.adjust_from_feedback no longer
+        # exists, so we pass a raising stub directly.
+        def _raising_adjuster(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        result = record_feedback(
+            state=state_mgr,
+            repo_name="test-repo",
+            feedback_input={"comment": "Looks great!"},
+            input_class="comment",
+            finding_id=fid,
+            confidence_adjuster=_raising_adjuster,
+        )
 
         events = state_mgr.load_feedback_events("test-repo")
         assert len(events) == 1
@@ -162,6 +175,7 @@ class TestConfidenceWiringExceptionSafety:
             feedback_input={"comment": "Looks great!"},
             input_class="comment",
             finding_id=fid,
+            confidence_adjuster=_ADJUSTER,
         )
 
         events = state_mgr.load_feedback_events("test-repo")
@@ -180,6 +194,7 @@ class TestConfidenceWiringIntegration:
             feedback_input={"comment": "LGTM, approved"},
             input_class="comment",
             finding_id=fid,
+            confidence_adjuster=_ADJUSTER,
         )
 
         pattern = _load_pattern_by_finding(pf, fid)
@@ -200,6 +215,7 @@ class TestConfidenceWiringIntegration:
             feedback_input={"comment": "Not correct, must fix"},
             input_class="comment",
             finding_id=fid,
+            confidence_adjuster=_ADJUSTER,
         )
 
         pattern = _load_pattern_by_finding(pf, fid)

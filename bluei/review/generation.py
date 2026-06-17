@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 _logger = logging.getLogger(__name__)
 
-from bluei.app.models import now_iso
+from bluei.common.models import now_iso
 from bluei.review.models import (
     FindingSource,
     FindingActionability,

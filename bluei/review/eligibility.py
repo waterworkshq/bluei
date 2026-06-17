@@ -13,7 +13,7 @@ from bluei.review.models import (
     normalize_finding_header,
     normalize_finding_path,
 )
-from bluei.app.models import (
+from bluei.common.models import (
     RepoConfig,
 )
 

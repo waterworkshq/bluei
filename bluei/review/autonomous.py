@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 _logger = logging.getLogger(__name__)
 
-from bluei.app.models import (
+from bluei.common.models import (
     LiveRolloutMode,
     ReviewMode,
     now_iso,
@@ -742,48 +742,23 @@ class AutonomousMixin:
         # Use the filtered findings for the rest of the pipeline
         deduped = deduped_after_rules
 
-        try:
-            from bluei.app.emergent_rules import EmergentRuleStore
-            from bluei.engine.models import Finding as _ERFinding
-
-            _er_path = (
-                self.state._get_state_dir(self.repo.config.name) / "emergent_rules.json"
-            )
-            _er_store = EmergentRuleStore(_er_path)
-            _er_store.retire_stale_rules()
-            _er_obs = [
-                _ERFinding(
-                    finding_id=d.get("finding_id", ""),
-                    repo=d.get("repo", ""),
-                    path=d.get("path", ""),
-                    line=int(d.get("line", 0)),
-                    rule=d.get("header", ""),
-                    snippet=d.get("snippet", ""),
-                    confidence=float(d.get("confidence", 0.5)),
-                    quick_win=False,
-                    safe_to_autofix=bool(d.get("safe_to_autofix", False)),
+        # Inverted dependency: invoke the emergent-rule observer callback
+        # (wired by app/runner.py) instead of importing EmergentRuleStore
+        # directly. When no callback is wired, this whole block is skipped.
+        # getattr() defensively tolerates ReviewCycleEngine instances built
+        # via __new__ that bypass __init__ (common in tests).
+        _observer = getattr(self, "emergent_rule_observer", None)
+        if _observer is not None:
+            try:
+                _er_path = (
+                    self.state._get_state_dir(self.repo.config.name)
+                    / "emergent_rules.json"
                 )
-                for d in deduped
-            ]
-            _er_store.observe_findings(_er_obs, run_id=_run_id_for_rules)
-            _er_store.validate_proposals()
-            _er_active = [r for r in _er_store.load() if r.status.value == "active"]
-            if _er_active:
-                _er_new = []
-                for _er in _er_active:
-                    _er_new.append(
-                        {
-                            "finding_id": f"er-{_er.rule_id}",
-                            "rule": _er.rule_id,
-                            "path": "",
-                            "header": _er.header or "",
-                            "severity": "low",
-                            "source": "emergent",
-                        }
-                    )
-                deduped.extend(_er_new)
-        except Exception:
-            pass
+                _er_new = _observer(_er_path, deduped, _run_id_for_rules)
+                if _er_new:
+                    deduped.extend(_er_new)
+            except Exception:
+                pass
 
         return deduped
 

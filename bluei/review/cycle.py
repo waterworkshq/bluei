@@ -18,16 +18,16 @@ import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _logger = logging.getLogger(__name__)
 
-from bluei.app.models import (
+from bluei.common.models import (
     Repo,
     ReviewMode,
     now_iso,
 )
-from bluei.app.state import StateManager
+from bluei.review.state import ReviewStateManager as StateManager
 from bluei.review.types import ReviewCycleResult
 from bluei.review.provider import GitHubReviewProvider
 
@@ -47,10 +47,52 @@ class ReviewCycleEngine(
 ):
     """Review cycle engine with observation + remediation planning groundwork."""
 
-    def __init__(self, repo: Repo, state: StateManager):
+    def __init__(
+        self,
+        repo: Repo,
+        state: StateManager,
+        *,
+        emergent_rule_observer: Optional[
+            Callable[[Path, List[Dict[str, Any]], str], List[Dict[str, Any]]]
+        ] = None,
+        baseline_inferrer: Optional[Callable[["Path", Any], List[List[str]]]] = None,
+        escalation_writer: Optional[Callable[..., None]] = None,
+        confidence_adjuster: Optional[Callable[..., Any]] = None,
+    ):
+        """Construct the review-cycle engine.
+
+        Args:
+            repo: Repo domain object.
+            state: ReviewStateManager (or compatible) for review state I/O.
+            emergent_rule_observer: Optional callback for observing deduped
+                findings with the EmergentRuleStore. Signature:
+                ``(emergent_rules_path, deduped_findings, run_id) -> list``
+                returning any additional emergent findings to extend.
+                When None, emergent-rule observation is skipped.
+            baseline_inferrer: Optional callback replacing the legacy
+                ``infer_baseline_checks`` lazy import. Signature:
+                ``(repo_path, LanguageInfo) -> List[List[str]]``.
+                When None, ``_guess_validation_commands`` returns an empty list.
+            escalation_writer: Optional callback replacing the legacy
+                ``write_escalation`` lazy import. Signature matches
+                ``write_escalation(*args, **kwargs)``.
+                When None, escalations are logged but not written.
+            confidence_adjuster: Optional callback replacing the legacy
+                ``adjust_from_feedback`` lazy import in review.feedback.
+                Signature: ``(finding_id, sentiment, store) -> Optional[float]``.
+                When None, feedback-induced confidence adjustment is disabled
+                (preserves no-op default for new code paths).
+        """
         self.repo = repo
         self.state = state
         self.provider = GitHubReviewProvider(repo, state)
+        # Inversion callbacks (Phase D of H5 review→app decoupling).
+        # All default to None = feature disabled; app/runner.py wires concrete
+        # implementations so review/ never reaches into app/.
+        self.emergent_rule_observer = emergent_rule_observer
+        self.baseline_inferrer = baseline_inferrer
+        self.escalation_writer = escalation_writer
+        self.confidence_adjuster = confidence_adjuster
 
     def _prompt_path(self, pr_number: int) -> Path:
         return (
@@ -459,14 +501,20 @@ class ReviewCycleEngine(
     def _guess_validation_commands(self) -> List[List[str]]:
         """Infer test/lint/build commands from the canonical onboarding inference.
 
-        Delegates to :func:`infer_baseline_checks` so that the review cycle
-        uses the same command inference as onboarding (single source of truth).
+        Uses the injected ``baseline_inferrer`` callback (if provided) so that
+        the review cycle uses the same command inference as onboarding without
+        taking a hard dependency on app/onboarding. When no callback is wired,
+        returns an empty list (caller treats as "no validation commands").
+
+        getattr() defensively tolerates engines built via __new__ (tests).
         """
-        from bluei.app.onboarding.inference import infer_baseline_checks
-        from bluei.app.models import LanguageInfo
+        _inferrer = getattr(self, "baseline_inferrer", None)
+        if _inferrer is None:
+            return []
+        from bluei.common.models import LanguageInfo
 
         language = LanguageInfo(name=self.repo.config.language or "unknown")
-        return infer_baseline_checks(self.provider.repo_path, language)
+        return _inferrer(self.provider.repo_path, language)
 
     def _get_review_mode(self) -> str:
         """Return the configured review mode, falling back to observation."""

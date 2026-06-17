@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from bluei.review.models import (
     PublishStatus,
 )
-from bluei.app.models import (
+from bluei.common.models import (
     now_iso,
 )
 from bluei.review.types import PublishFilterResult

@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 _logger = logging.getLogger(__name__)
 
-from bluei.app.models import now_iso, ReviewMode
+from bluei.common.models import now_iso, ReviewMode
 from bluei.review.types import ReviewCycleResult
 from bluei.engine.worktree import get_worktree_branch
 from bluei.engine.safety_gates import check_push_allowed

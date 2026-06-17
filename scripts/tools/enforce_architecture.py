@@ -1,11 +1,24 @@
 #!/usr/bin/env python3
-"""enforce_architecture.py — CI gate: verify acyc import order and completeness."""
+"""enforce_architecture.py — CI gate: verify acyc import order and completeness.
+
+Architecture invariants enforced:
+  1. bluei/engine/ modules only import from a fixed legal set (LEGAL_IMPORTS).
+  2. bluei/engine/ never imports from bluei/app/ (rec-08 layering violation).
+     The only sanctioned exemption is bluei/engine/state_io.py.
+  3. bluei/review/ never imports from bluei/app/ (H5 layering violation).
+     Review must import shared types from bluei/common/ and review-specific
+     helpers from bluei/review/state.py. App-layer services that review/
+     used to reach into (emergent_rules, onboarding.inference, escalation,
+     pattern_confidence) are now dependency-inverted via callbacks wired in
+     app/runner.py — see ReviewCycleEngine.__init__'s Phase D parameters.
+"""
 
 import ast
 import sys
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[2] / "bluei" / "engine"
+REVIEW_PACKAGE = Path(__file__).resolve().parents[2] / "bluei" / "review"
 EXPECTED_MODULES = {
     "constants.py",
     "models.py",
@@ -149,6 +162,41 @@ def check_engine_imports_app(path: Path) -> list[str]:
     return violations
 
 
+def check_review_imports_app(path: Path) -> list[str]:
+    """Flag any `from bluei.app...` import inside bluei/review/.
+
+    Catches H5 layering violations: review must never depend on app.
+    Shared types live in bluei/common/ (Repo, RepoConfig, ReviewMode,
+    FeedbackEvent, etc.); review-specific state lives in
+    bluei/review/state.py. App-layer services (emergent_rules,
+    onboarding.inference, escalation, pattern_confidence) are accessed
+    via dependency-inverted callbacks wired in app/runner.py — see
+    ReviewCycleEngine.__init__'s Phase D parameters.
+
+    Deferred (function-local) imports are also flagged — they are still
+    hard dependencies at runtime and invert the intended layering.
+    """
+    violations: list[str] = []
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.module and str(node.module).startswith("bluei.app"):
+                violations.append(
+                    f"{path.name}: review→app import "
+                    f"from bluei.app.{node.module[len('bluei.app') :].lstrip('.')} "
+                    f"(H5 layering violation; use bluei/common/models.py for "
+                    f"shared types or wire a Phase-D callback in app/runner.py)"
+                )
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if str(alias.name).startswith("bluei.app"):
+                    violations.append(
+                        f"{path.name}: review→app import of {alias.name} "
+                        f"(H5 layering violation)"
+                    )
+    return violations
+
+
 def main():
     violations = []
     for py_file in PACKAGE.glob("*.py"):
@@ -173,6 +221,15 @@ def main():
         violations.extend(check_module(py_file))
         # rec-08: engine must never import from app
         violations.extend(check_engine_imports_app(py_file))
+
+    # H5: review must never import from app. All shared types are in
+    # bluei/common/ and review-specific state is in bluei/review/state.py.
+    # App-layer services are accessed via Phase-D dependency-inversion
+    # callbacks (see ReviewCycleEngine.__init__ in bluei/review/cycle.py).
+    for py_file in REVIEW_PACKAGE.glob("*.py"):
+        if py_file.name.startswith("_"):
+            continue
+        violations.extend(check_review_imports_app(py_file))
 
     # Also check __init__.py has no wildcard re-exports
     init = PACKAGE / "__init__.py"

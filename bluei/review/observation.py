@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 _logger = logging.getLogger(__name__)
 
-from bluei.app.models import LiveRolloutMode, now_iso
+from bluei.common.models import LiveRolloutMode, now_iso
 from bluei.review.models import PublishStatus
 from bluei.review.types import ReviewCycleResult
 
@@ -78,16 +78,26 @@ class ObservationMixin:
                             pass
 
                     if recovery_attempts >= _MAX_UNREACHABLE_ATTEMPTS:
-                        from bluei.app.escalation import write_escalation
-
-                        write_escalation(
-                            message=(
-                                f"PR #{pr_key} unreachable after {recovery_attempts} recovery attempts — "
-                                "manual intervention needed"
-                            ),
-                            severity="error",
-                            repo=self.repo.config.name,
-                        )
+                        # Inverted dependency: invoke the escalation_writer
+                        # callback (wired by app/runner.py) instead of importing
+                        # write_escalation directly from app/. When no callback
+                        # is wired, escalation is logged only. getattr()
+                        # defensively tolerates engines built via __new__.
+                        _writer = getattr(self, "escalation_writer", None)
+                        if _writer is not None:
+                            try:
+                                _writer(
+                                    message=(
+                                        f"PR #{pr_key} unreachable after {recovery_attempts} recovery attempts — "
+                                        "manual intervention needed"
+                                    ),
+                                    severity="error",
+                                    repo=self.repo.config.name,
+                                )
+                            except Exception:
+                                _logger.debug(
+                                    "escalation_writer callback raised", exc_info=True
+                                )
                         _logger.warning(
                             "Unreachable PR #%s exceeded %d recovery attempts — escalated",
                             pr_key,

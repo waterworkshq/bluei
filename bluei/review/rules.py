@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
-    from bluei.app.state import StateManager
+    from bluei.review.state import ReviewStateManager as StateManager
 
 from bluei.review.models import (
     FindingActionability,
@@ -18,7 +18,7 @@ from bluei.review.models import (
     normalize_finding_header,
     normalize_finding_path,
 )
-from bluei.app.models import (
+from bluei.common.models import (
     generate_id,
     now_iso,
 )

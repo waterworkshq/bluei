@@ -6,17 +6,16 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from bluei.app.models import (
+from bluei.common.models import (
     FeedbackEvent,
     FeedbackSentiment,
     FeedbackSource,
     generate_id,
     now_iso,
 )
-from bluei.app.pattern_confidence import adjust_from_feedback
 
 if TYPE_CHECKING:
-    from bluei.app.state import StateManager
+    from bluei.review.state import ReviewStateManager as StateManager
     from bluei.review.cycle import ReviewCycleEngine
 
 _logger = logging.getLogger(__name__)
@@ -263,6 +262,7 @@ def record_feedback(
     pr_number: Optional[int] = None,
     source: FeedbackSource = FeedbackSource.HUMAN_REVIEWER,
     loop_count: int = 0,
+    confidence_adjuster: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Normalize and persist a provider-style feedback input as a FeedbackEvent.
@@ -283,6 +283,10 @@ def record_feedback(
         pr_number: Optional PR number for context.
         source: FeedbackSource enum value (default HUMAN_REVIEWER).
         loop_count: Current loop iteration (default 0).
+        confidence_adjuster: Optional callback overriding the legacy
+            ``adjust_from_feedback`` import. Signature:
+            ``(finding_id, sentiment, store) -> Optional[float]``.
+            When None, confidence adjustment is skipped (no-op default).
 
     Returns:
         The normalized event dict that was persisted.
@@ -320,25 +324,26 @@ def record_feedback(
         except ValueError:
             sentiment_enum = None
     if sentiment_enum in (FeedbackSentiment.POSITIVE, FeedbackSentiment.NEGATIVE):
-        try:
-            from bluei.engine.pattern_store import FixPatternStore
+        if confidence_adjuster is not None:
+            try:
+                from bluei.engine.pattern_store import FixPatternStore
 
-            patterns_file = state.get_fix_patterns_file(repo_name)
-            if patterns_file.exists():
-                _store = FixPatternStore(patterns_file)
-                new_conf = adjust_from_feedback(
-                    normalized["finding_id"],
-                    sentiment_enum,
-                    _store,
-                )
-                if new_conf is not None and new_conf < 0.3:
-                    _logger.warning(
-                        "pattern-deactivated: finding_id=%s confidence=%.3f",
+                patterns_file = state.get_fix_patterns_file(repo_name)
+                if patterns_file.exists():
+                    _store = FixPatternStore(patterns_file)
+                    new_conf = confidence_adjuster(
                         normalized["finding_id"],
-                        new_conf,
+                        sentiment_enum,
+                        _store,
                     )
-        except Exception:
-            _logger.debug("confidence adjustment skipped", exc_info=True)
+                    if new_conf is not None and new_conf < 0.3:
+                        _logger.warning(
+                            "pattern-deactivated: finding_id=%s confidence=%.3f",
+                            normalized["finding_id"],
+                            new_conf,
+                        )
+            except Exception:
+                _logger.debug("confidence adjustment skipped", exc_info=True)
 
     return normalized
 
@@ -402,6 +407,11 @@ def _flush_injected_feedback(
     if not feedback_inputs:
         return 0
 
+    # Propagate the engine's confidence_adjuster (if wired) so injected
+    # feedback also triggers confidence adjustment without taking a hard
+    # dependency on app/pattern_confidence from review/.
+    confidence_adjuster = getattr(engine, "confidence_adjuster", None)
+
     recorded = 0
     for raw in feedback_inputs:
         input_class = raw.get("input_class", "comment")
@@ -423,6 +433,7 @@ def _flush_injected_feedback(
             pr_number=pr_number,
             source=source,
             loop_count=loop_count,
+            confidence_adjuster=confidence_adjuster,
         )
         recorded += 1
 

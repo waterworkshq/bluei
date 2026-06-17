@@ -25,6 +25,99 @@ from bluei.engine.jsonl import append_jsonl
 _logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Phase D inversion callbacks
+#
+# These factories return callbacks that the ReviewCycleEngine uses to invoke
+# app-layer services (emergent rules, baseline inference, escalation, pattern
+# confidence) without review/ taking a hard dependency on app/. Each factory
+# performs a lazy import so app/ modules are only loaded when the corresponding
+# feature runs — preserving startup cost and breaking the import cycle.
+# ---------------------------------------------------------------------------
+
+
+def _make_emergent_rule_observer():
+    """Return a callback that observes findings with the EmergentRuleStore.
+
+    Signature: (emergent_rules_path, deduped_findings, run_id) -> list
+    Returns any newly-active emergent findings to extend the deduped list.
+    """
+
+    def _observe(emergent_rules_path, deduped_findings, run_id):
+        from bluei.app.emergent_rules import EmergentRuleStore
+        from bluei.engine.models import Finding as _ERFinding
+
+        _er_store = EmergentRuleStore(emergent_rules_path)
+        _er_store.retire_stale_rules()
+        _er_obs = [
+            _ERFinding(
+                finding_id=d.get("finding_id", ""),
+                repo=d.get("repo", ""),
+                path=d.get("path", ""),
+                line=int(d.get("line", 0)),
+                rule=d.get("header", ""),
+                snippet=d.get("snippet", ""),
+                confidence=float(d.get("confidence", 0.5)),
+                quick_win=False,
+                safe_to_autofix=bool(d.get("safe_to_autofix", False)),
+            )
+            for d in deduped_findings
+        ]
+        _er_store.observe_findings(_er_obs, run_id=run_id)
+        _er_store.validate_proposals()
+        _er_active = [r for r in _er_store.load() if r.status.value == "active"]
+        if not _er_active:
+            return []
+        _er_new = []
+        for _er in _er_active:
+            _er_new.append(
+                {
+                    "finding_id": f"er-{_er.rule_id}",
+                    "rule": _er.rule_id,
+                    "path": "",
+                    "header": _er.header or "",
+                    "severity": "low",
+                    "source": "emergent",
+                }
+            )
+        return _er_new
+
+    return _observe
+
+
+def _make_baseline_inferrer():
+    """Return a callback that infers baseline check commands for a repo."""
+
+    def _infer(repo_path, language_info):
+        from bluei.app.onboarding.inference import infer_baseline_checks
+
+        return infer_baseline_checks(repo_path, language_info)
+
+    return _infer
+
+
+def _make_escalation_writer():
+    """Return a callback that writes escalation events."""
+
+    def _write(*args, **kwargs):
+        from bluei.app.escalation import write_escalation
+
+        return write_escalation(*args, **kwargs)
+
+    return _write
+
+
+def _make_confidence_adjuster():
+    """Return a callback that adjusts fix-pattern confidence from feedback."""
+
+    def _adjust(*args, **kwargs):
+        from bluei.app.pattern_confidence import adjust_from_feedback
+
+        return adjust_from_feedback(*args, **kwargs)
+
+    return _adjust
+
+
 @dataclass
 class RunOptions:
     """Options for a run."""
@@ -356,7 +449,16 @@ class RunEngine:
         dry_run: bool,
         allow_review_push: bool = False,
     ) -> RunResult:
-        engine = ReviewCycleEngine(repo, self.state)
+        # Wire Phase-D inversion callbacks so review/ never reaches into app/.
+        # Each callback is constructed lazily on first use to keep startup cheap.
+        engine = ReviewCycleEngine(
+            repo,
+            self.state,
+            emergent_rule_observer=_make_emergent_rule_observer(),
+            baseline_inferrer=_make_baseline_inferrer(),
+            escalation_writer=_make_escalation_writer(),
+            confidence_adjuster=_make_confidence_adjuster(),
+        )
         result = engine.run(dry_run=dry_run, allow_review_push=allow_review_push)
         output = (
             f"review_cycle active_prs={result.active_prs} blocked_prs={result.blocked_prs} "

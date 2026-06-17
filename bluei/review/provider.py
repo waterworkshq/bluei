@@ -11,8 +11,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from bluei.app.models import Repo, now_iso
-from bluei.app.state import StateManager
+from bluei.common.models import Repo, now_iso
+from bluei.review.state import ReviewStateManager as StateManager
 
 _logger = logging.getLogger(__name__)
 
