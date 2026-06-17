@@ -99,8 +99,15 @@ fixing, PR management, batch operations, and pattern learning.
 | `cost_tracker.py` | Tracks model API invocation costs per cycle with soft/hard limits. |
 | `escalation.py` | Pattern detection and threshold-based escalation. |
 
-> Recently added primitives (2026-06-17): `state_io.py` (atomic file I/O shared
-> with app layer, extracted per rec-08) and `jsonl.py` (canonical JSONL read/append).
+> **Canonical primitives** (all JSONL/JSON file I/O routes through these):
+> - `state_io.py` — `atomic_json_write` + `rotate_jsonl_if_needed` (extracted per rec-08; closes engine→app layering for atomic writes)
+> - `jsonl.py` — `read_jsonl` + `append_jsonl` (consolidates 50+ inline reimplementations)
+> - `state.py:append_log` — `[ISO] message\n` structured logging primitive (`_append_text` is alias)
+> - `models.py:IssueStatus` enum — locks 11 `needs-human-*`/`resolved-*`/`blocked_*` strings into typed contract (M7 `.value` pattern)
+>
+> **Layering enforcement**: `scripts/tools/enforce_architecture.py` runs as a CI gate and reports ZERO engine→app violations across `bluei/engine/` (1 accepted: `mnemo_client.py` — external Mnemo CLI dependency).
+>
+> **StateManager delegation** (Rec 07): `StateManager.{load,save}_state` / `{load,save}_issues` / `load_findings` / `append_findings` delegate to canonical engine owners. Engine owns schema; StateManager keeps path resolution.
 
 ### 4. Plugins (`plugins/`)
 
