@@ -1,5 +1,15 @@
 """GitHub API interaction layer for the sandbox local runner.
 
+Historically a single 1222-line module (``bluei/engine/gh.py``); now a
+package being decomposed incrementally per ``docs/plans/god-module-decomp/
+gh.md``.  This ``__init__.py`` is the backward-compat facade: every public
+symbol remains importable from ``bluei.engine.gh``, and the test patch
+surface (``bluei.engine.gh.{gh_json, run_capture, time}``) is preserved.
+
+Step 1 extracts only ``gh_json`` and ``finding_dedupe_marker`` into
+:mod:`bluei.engine.gh._core`; the remaining functions stay here and are
+moved out into per-concern submodules in later steps.
+
 Every function wraps a ``gh`` CLI call via ``run_capture``.  Functions
 return ``None`` / empty on failure — no exceptions are raised.
 """
@@ -25,6 +35,12 @@ from bluei.engine.safety_gates import (
     resolve_base_branch,
 )
 from bluei.engine.utils import run_capture
+
+# Re-export the two primitives now living in _core so the public surface
+# ``bluei.engine.gh.{gh_json, finding_dedupe_marker}`` stays intact and the
+# test patch surface (patch("bluei.engine.gh.gh_json")) continues to reach
+# the call sites in this module (name resolution happens at call time).
+from bluei.engine.gh._core import finding_dedupe_marker, gh_json  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -62,52 +78,6 @@ def parse_github_repo(origin_url: str) -> tuple[str, str]:
     if len(parts) != 2:
         return "", ""
     return parts[0], parts[1]
-
-
-def finding_dedupe_marker(finding_id: str) -> str:
-    return f"[finding_id:{finding_id}]"
-
-
-def gh_json(cmd: list[str], cwd: Path) -> Optional[Any]:
-    """Run a ``gh`` CLI command and parse its JSON output.
-
-    Retries up to 3 times with exponential backoff (1s, 2s, 4s) on
-    non-zero exit codes.  JSON parse failures are never retried.
-
-    Args:
-        cmd: Full command list (e.g. ``['gh', 'issue', 'list', ...]``).
-        cwd: Working directory for the subprocess.
-
-    Returns:
-        Parsed JSON object, or ``None`` on exhaustion or parse failure.
-    """
-    MAX_RETRIES = 3
-    rc = -1
-    for attempt in range(MAX_RETRIES + 1):
-        rc, out = run_capture(cmd, cwd=cwd)
-        if rc == 0:
-            try:
-                return json.loads(out)
-            except Exception:
-                return None
-        if attempt < MAX_RETRIES:
-            delay = 2**attempt
-            logger.warning(
-                "gh_json: attempt %d/%d failed rc=%d — retrying in %ds  cmd=%s",
-                attempt + 1,
-                MAX_RETRIES + 1,
-                rc,
-                delay,
-                cmd[:4],
-            )
-            time.sleep(delay)
-    logger.error(
-        "gh_json: all %d attempts failed rc=%d  cmd=%s",
-        MAX_RETRIES + 1,
-        rc,
-        cmd[:4],
-    )
-    return None
 
 
 def parse_issue_number_from_url(url: Optional[str]) -> Optional[int]:
@@ -1220,3 +1190,33 @@ def evaluate_pr_regression(
         "has_diff": has_diff,
         "action": action,
     }
+
+
+__all__ = [
+    "gh_json",
+    "finding_dedupe_marker",
+    "run_capture",
+    "time",
+    "get_origin_url",
+    "parse_github_repo",
+    "parse_issue_number_from_url",
+    "parse_pr_number_from_url",
+    "repo_is_sandbox",
+    "create_or_update_github_issue",
+    "find_existing_github_issue",
+    "finding_from_issue_record",
+    "gh_issue_close",
+    "gh_issue_comment",
+    "create_or_update_github_pr",
+    "find_batch_pr_by_rule",
+    "find_existing_github_pr",
+    "gh_pr_comment",
+    "merge_failure_requires_pr_fix",
+    "merge_pr",
+    "evaluate_pr_check_health",
+    "evaluate_pr_mergeability",
+    "evaluate_pr_reviews",
+    "fetch_open_prs_for_merge",
+    "evaluate_pr_regression",
+    "fetch_github_live_counts",
+]

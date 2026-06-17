@@ -167,14 +167,14 @@ def test_all_public_symbols_importable():
 
 
 def test_package_modules_exist():
-    """All expected module files exist."""
+    """All expected module files (or packages) exist."""
     expected = [
         "__init__.py",
         "constants.py",
         "models.py",
         "utils.py",
         "state.py",
-        "gh.py",
+        "gh",  # package (decomposed from gh.py per docs/plans/god-module-decomp/gh.md)
         "linters.py",
         "git_utils.py",
         "prompts.py",
