@@ -13,12 +13,12 @@ from bluei.engine.notify import (
     _check_hourly_cap,
     _generate_digest,
     _read_json,
-    _read_jsonl,
     deliver_digest,
     deliver_escalations,
     load_notification_config,
     mask_sensitive,
 )
+from bluei.engine.jsonl import read_jsonl
 
 
 def _write_yaml(path: Path, data: dict):
@@ -54,32 +54,34 @@ class TestBuildTitle:
 
 class TestReadJsonl:
     def test_nonexistent_file(self, tmp_path):
-        result = _read_jsonl(tmp_path / "missing.jsonl")
+        result = read_jsonl(tmp_path / "missing.jsonl")
         assert result == []
 
     def test_reads_entries(self, tmp_path):
         p = tmp_path / "test.jsonl"
         _write_jsonl(p, [{"a": 1}, {"b": 2}])
-        result = _read_jsonl(p)
+        result = read_jsonl(p)
         assert len(result) == 2
 
     def test_respects_limit(self, tmp_path):
         p = tmp_path / "test.jsonl"
         for i in range(30):
             _write_jsonl(p, [{"i": i}])
-        result = _read_jsonl(p, limit=5)
+        result = read_jsonl(p, limit=5)
         assert len(result) == 5
 
     def test_corrupt_json_skipped(self, tmp_path):
         p = tmp_path / "test.jsonl"
         p.write_text('{"a":1}\nnot-json\n{"b":2}\n')
-        result = _read_jsonl(p)
-        assert result == []
+        # New canonical behavior: corrupt lines are skipped individually,
+        # not propagated as a whole-file failure.
+        result = read_jsonl(p)
+        assert result == [{"a": 1}, {"b": 2}]
 
     def test_empty_lines_skipped(self, tmp_path):
         p = tmp_path / "test.jsonl"
         p.write_text('{"a":1}\n\n\n{"b":2}\n')
-        result = _read_jsonl(p)
+        result = read_jsonl(p)
         assert len(result) == 2
 
 

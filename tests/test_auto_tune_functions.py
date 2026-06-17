@@ -50,7 +50,10 @@ class TestComputeTune:
     def test_below_threshold_no_override(self, tmp_path):
         stats = tmp_path / "stats.jsonl"
         tune = tmp_path / "tune.json"
-        records = [_make_stat(retry_failed=1) for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD - 1)]
+        records = [
+            _make_stat(retry_failed=1)
+            for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD - 1)
+        ]
         _write_jsonl(stats, records)
         result = compute_tune(stats, tune)
         assert result == {}
@@ -59,17 +62,25 @@ class TestComputeTune:
         stats = tmp_path / "stats.jsonl"
         tune = tmp_path / "tune.json"
         _write_tune_state(tune, {"tuned_fields": {"max_prs_per_run": 4}})
-        records = [_make_stat(retry_failed=1) for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)]
+        records = [
+            _make_stat(retry_failed=1)
+            for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)
+        ]
         _write_jsonl(stats, records)
         result = compute_tune(stats, tune)
         assert "max_prs_per_run" in result
-        assert result["max_prs_per_run"] == max(MIN_BATCH_SIZE, int(4 * BATCH_REDUCTION_FACTOR))
+        assert result["max_prs_per_run"] == max(
+            MIN_BATCH_SIZE, int(4 * BATCH_REDUCTION_FACTOR)
+        )
 
     def test_above_threshold_triggers_override(self, tmp_path):
         stats = tmp_path / "stats.jsonl"
         tune = tmp_path / "tune.json"
         _write_tune_state(tune, {"tuned_fields": {"max_prs_per_run": 8}})
-        records = [_make_stat(retry_failed=3) for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD + 3)]
+        records = [
+            _make_stat(retry_failed=3)
+            for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD + 3)
+        ]
         _write_jsonl(stats, records)
         result = compute_tune(stats, tune)
         assert "max_prs_per_run" in result
@@ -97,18 +108,26 @@ class TestComputeTune:
     def test_findings_failure_triggers_cooldown_boost(self, tmp_path):
         stats = tmp_path / "stats.jsonl"
         tune = tmp_path / "tune.json"
-        records = [_make_stat(findings_failed=1) for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)]
+        records = [
+            _make_stat(findings_failed=1)
+            for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)
+        ]
         _write_jsonl(stats, records)
         result = compute_tune(stats, tune)
         assert "finding_cooldown_seconds" in result
-        expected = min(int(14400 * COOLDOWN_BOOST_MULTIPLIER), MAX_COOLDOWN_HOURS * 3600)
+        expected = min(
+            int(14400 * COOLDOWN_BOOST_MULTIPLIER), MAX_COOLDOWN_HOURS * 3600
+        )
         assert result["finding_cooldown_seconds"] == expected
 
     def test_both_failures_trigger_both_overrides(self, tmp_path):
         stats = tmp_path / "stats.jsonl"
         tune = tmp_path / "tune.json"
         _write_tune_state(tune, {"tuned_fields": {"max_prs_per_run": 4}})
-        records = [_make_stat(retry_failed=1, findings_failed=1) for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)]
+        records = [
+            _make_stat(retry_failed=1, findings_failed=1)
+            for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)
+        ]
         _write_jsonl(stats, records)
         result = compute_tune(stats, tune)
         assert "max_prs_per_run" in result
@@ -118,8 +137,13 @@ class TestComputeTune:
         stats = tmp_path / "stats.jsonl"
         tune = tmp_path / "tune.json"
         max_seconds = MAX_COOLDOWN_HOURS * 3600
-        _write_tune_state(tune, {"tuned_fields": {"finding_cooldown_seconds": max_seconds}})
-        records = [_make_stat(findings_failed=1) for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)]
+        _write_tune_state(
+            tune, {"tuned_fields": {"finding_cooldown_seconds": max_seconds}}
+        )
+        records = [
+            _make_stat(findings_failed=1)
+            for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)
+        ]
         _write_jsonl(stats, records)
         result = compute_tune(stats, tune)
         if "finding_cooldown_seconds" in result:
@@ -129,7 +153,10 @@ class TestComputeTune:
         stats = tmp_path / "stats.jsonl"
         tune = tmp_path / "tune.json"
         _write_tune_state(tune, {"tuned_fields": {"max_prs_per_run": MIN_BATCH_SIZE}})
-        records = [_make_stat(retry_failed=1) for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)]
+        records = [
+            _make_stat(retry_failed=1)
+            for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)
+        ]
         _write_jsonl(stats, records)
         result = compute_tune(stats, tune)
         if "max_prs_per_run" in result:
@@ -138,7 +165,10 @@ class TestComputeTune:
     def test_state_persisted_to_disk(self, tmp_path):
         stats = tmp_path / "stats.jsonl"
         tune = tmp_path / "tune.json"
-        records = [_make_stat(findings_failed=1) for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)]
+        records = [
+            _make_stat(findings_failed=1)
+            for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)
+        ]
         _write_jsonl(stats, records)
         compute_tune(stats, tune)
         assert tune.exists()
@@ -149,7 +179,10 @@ class TestComputeTune:
     def test_corrupt_jsonl_line_handled_gracefully(self, tmp_path):
         stats = tmp_path / "stats.jsonl"
         tune = tmp_path / "tune.json"
-        records = [_make_stat(retry_failed=1) for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)]
+        records = [
+            _make_stat(retry_failed=1)
+            for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)
+        ]
         _write_jsonl(stats, records)
         original = stats.read_text()
         stats.write_text(original + "NOT JSON{{{\n")
@@ -179,10 +212,15 @@ class TestComputeTune:
         stats = tmp_path / "stats.jsonl"
         tune = tmp_path / "tune.json"
         _write_tune_state(tune, {"tuned_fields": {"max_prs_per_run": 4}})
-        records = [_make_stat(retry_failed=1) for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)]
+        records = [
+            _make_stat(retry_failed=1)
+            for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)
+        ]
         _write_jsonl(stats, records)
         result = compute_tune(stats, tune)
-        assert result["max_prs_per_run"] == max(MIN_BATCH_SIZE, int(4 * BATCH_REDUCTION_FACTOR))
+        assert result["max_prs_per_run"] == max(
+            MIN_BATCH_SIZE, int(4 * BATCH_REDUCTION_FACTOR)
+        )
 
     def test_only_whitespace_jsonl_returns_empty(self, tmp_path):
         stats = tmp_path / "stats.jsonl"
@@ -199,7 +237,9 @@ class TestReadTuneOverrides:
 
     def test_valid_state_returns_tuned_fields(self, tmp_path):
         tune = tmp_path / "tune.json"
-        _write_tune_state(tune, {"tuned_fields": {"max_prs_per_run": 2}, "last_tune_ts": "2025-01-01"})
+        _write_tune_state(
+            tune, {"tuned_fields": {"max_prs_per_run": 2}, "last_tune_ts": "2025-01-01"}
+        )
         result = read_tune_overrides(tune)
         assert result == {"max_prs_per_run": 2}
 
@@ -223,10 +263,16 @@ class TestReadTuneOverrides:
 
     def test_multiple_fields_returned(self, tmp_path):
         tune = tmp_path / "tune.json"
-        _write_tune_state(tune, {
-            "tuned_fields": {"max_prs_per_run": 1, "finding_cooldown_seconds": 28800},
-            "last_tune_ts": "2025-01-01",
-        })
+        _write_tune_state(
+            tune,
+            {
+                "tuned_fields": {
+                    "max_prs_per_run": 1,
+                    "finding_cooldown_seconds": 28800,
+                },
+                "last_tune_ts": "2025-01-01",
+            },
+        )
         result = read_tune_overrides(tune)
         assert result["max_prs_per_run"] == 1
         assert result["finding_cooldown_seconds"] == 28800
@@ -243,10 +289,13 @@ class TestResetTune:
 
     def test_overwrites_existing_state(self, tmp_path):
         tune = tmp_path / "tune.json"
-        _write_tune_state(tune, {
-            "tuned_fields": {"max_prs_per_run": 1},
-            "last_tune_ts": "2025-06-01T00:00:00Z",
-        })
+        _write_tune_state(
+            tune,
+            {
+                "tuned_fields": {"max_prs_per_run": 1},
+                "last_tune_ts": "2025-06-01T00:00:00Z",
+            },
+        )
         reset_tune(tune)
         state = json.loads(tune.read_text())
         assert state["tuned_fields"] == {}
@@ -282,30 +331,39 @@ class TestFlagTuneSuccess:
 
     def test_batch_incremented_toward_recovery(self, tmp_path):
         tune = tmp_path / "tune.json"
-        _write_tune_state(tune, {
-            "tuned_fields": {"max_prs_per_run": 1},
-            "last_tune_ts": "2025-01-01",
-        })
+        _write_tune_state(
+            tune,
+            {
+                "tuned_fields": {"max_prs_per_run": 1},
+                "last_tune_ts": "2025-01-01",
+            },
+        )
         flag_tune_success(tune)
         result = read_tune_overrides(tune)
         assert result.get("max_prs_per_run", 2) >= 1
 
     def test_batch_removed_when_reaches_threshold(self, tmp_path):
         tune = tmp_path / "tune.json"
-        _write_tune_state(tune, {
-            "tuned_fields": {"max_prs_per_run": 1},
-            "last_tune_ts": "2025-01-01",
-        })
+        _write_tune_state(
+            tune,
+            {
+                "tuned_fields": {"max_prs_per_run": 1},
+                "last_tune_ts": "2025-01-01",
+            },
+        )
         flag_tune_success(tune)
         result = read_tune_overrides(tune)
         assert "max_prs_per_run" not in result
 
     def test_cooldown_halved_on_success(self, tmp_path):
         tune = tmp_path / "tune.json"
-        _write_tune_state(tune, {
-            "tuned_fields": {"finding_cooldown_seconds": 28800},
-            "last_tune_ts": "2025-01-01",
-        })
+        _write_tune_state(
+            tune,
+            {
+                "tuned_fields": {"finding_cooldown_seconds": 28800},
+                "last_tune_ts": "2025-01-01",
+            },
+        )
         flag_tune_success(tune)
         result = read_tune_overrides(tune)
         if "finding_cooldown_seconds" in result:
@@ -313,20 +371,29 @@ class TestFlagTuneSuccess:
 
     def test_cooldown_removed_when_below_default(self, tmp_path):
         tune = tmp_path / "tune.json"
-        _write_tune_state(tune, {
-            "tuned_fields": {"finding_cooldown_seconds": 20000},
-            "last_tune_ts": "2025-01-01",
-        })
+        _write_tune_state(
+            tune,
+            {
+                "tuned_fields": {"finding_cooldown_seconds": 20000},
+                "last_tune_ts": "2025-01-01",
+            },
+        )
         flag_tune_success(tune)
         result = read_tune_overrides(tune)
         assert "finding_cooldown_seconds" not in result
 
     def test_both_fields_adjusted_together(self, tmp_path):
         tune = tmp_path / "tune.json"
-        _write_tune_state(tune, {
-            "tuned_fields": {"max_prs_per_run": 1, "finding_cooldown_seconds": 28800},
-            "last_tune_ts": "2025-01-01",
-        })
+        _write_tune_state(
+            tune,
+            {
+                "tuned_fields": {
+                    "max_prs_per_run": 1,
+                    "finding_cooldown_seconds": 28800,
+                },
+                "last_tune_ts": "2025-01-01",
+            },
+        )
         flag_tune_success(tune)
         result = read_tune_overrides(tune)
         assert "max_prs_per_run" not in result
@@ -334,10 +401,13 @@ class TestFlagTuneSuccess:
 
     def test_last_tune_ts_cleared_after_success(self, tmp_path):
         tune = tmp_path / "tune.json"
-        _write_tune_state(tune, {
-            "tuned_fields": {"max_prs_per_run": 1},
-            "last_tune_ts": "2025-01-01",
-        })
+        _write_tune_state(
+            tune,
+            {
+                "tuned_fields": {"max_prs_per_run": 1},
+                "last_tune_ts": "2025-01-01",
+            },
+        )
         flag_tune_success(tune)
         state = json.loads(tune.read_text())
         assert state["last_tune_ts"] is None
@@ -355,10 +425,13 @@ class TestFlagTuneSuccess:
 
     def test_gradual_recovery_multiple_successes(self, tmp_path):
         tune = tmp_path / "tune.json"
-        _write_tune_state(tune, {
-            "tuned_fields": {"finding_cooldown_seconds": 43200},
-            "last_tune_ts": "2025-01-01",
-        })
+        _write_tune_state(
+            tune,
+            {
+                "tuned_fields": {"finding_cooldown_seconds": 43200},
+                "last_tune_ts": "2025-01-01",
+            },
+        )
         flag_tune_success(tune)
         state = json.loads(tune.read_text())
         assert state["tuned_fields"].get("finding_cooldown_seconds") == 21600
@@ -369,10 +442,13 @@ class TestFlagTuneSuccess:
 
     def test_recovery_step_tracked(self, tmp_path):
         tune = tmp_path / "tune.json"
-        _write_tune_state(tune, {
-            "tuned_fields": {"max_prs_per_run": 1},
-            "last_tune_ts": "2025-01-01",
-        })
+        _write_tune_state(
+            tune,
+            {
+                "tuned_fields": {"max_prs_per_run": 1},
+                "last_tune_ts": "2025-01-01",
+            },
+        )
         flag_tune_success(tune)
         state = json.loads(tune.read_text())
         tuned = state.get("tuned_fields", {})
@@ -383,10 +459,13 @@ class TestFlagTuneSuccess:
 
     def test_reset_at_set_when_fully_recovered(self, tmp_path):
         tune = tmp_path / "tune.json"
-        _write_tune_state(tune, {
-            "tuned_fields": {"max_prs_per_run": 1},
-            "last_tune_ts": "2025-06-01T00:00:00Z",
-        })
+        _write_tune_state(
+            tune,
+            {
+                "tuned_fields": {"max_prs_per_run": 1},
+                "last_tune_ts": "2025-06-01T00:00:00Z",
+            },
+        )
         flag_tune_success(tune)
         state = json.loads(tune.read_text())
         assert state.get("reset_at") == "2025-06-01T00:00:00Z"
@@ -398,7 +477,10 @@ class TestIntegration:
         tune = tmp_path / "tune.json"
         _write_tune_state(tune, {"tuned_fields": {"max_prs_per_run": 4}})
 
-        records = [_make_stat(retry_failed=1, findings_failed=1) for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)]
+        records = [
+            _make_stat(retry_failed=1, findings_failed=1)
+            for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)
+        ]
         _write_jsonl(stats, records)
 
         overrides = compute_tune(stats, tune)
@@ -417,7 +499,10 @@ class TestIntegration:
         stats = tmp_path / "stats.jsonl"
         tune = tmp_path / "tune.json"
 
-        records = [_make_stat(findings_failed=1) for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)]
+        records = [
+            _make_stat(findings_failed=1)
+            for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)
+        ]
         _write_jsonl(stats, records)
         compute_tune(stats, tune)
         assert read_tune_overrides(tune) != {}
@@ -438,24 +523,34 @@ class TestIntegration:
         stats = tmp_path / "stats.jsonl"
         tune = tmp_path / "tune.json"
 
-        records = [_make_stat(retry_failed=1) for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)]
+        records = [
+            _make_stat(retry_failed=1)
+            for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)
+        ]
         _write_jsonl(stats, records)
         _write_tune_state(tune, {"tuned_fields": {"max_prs_per_run": 8}})
 
         result = compute_tune(stats, tune)
-        assert result["max_prs_per_run"] == max(MIN_BATCH_SIZE, int(8 * BATCH_REDUCTION_FACTOR))
+        assert result["max_prs_per_run"] == max(
+            MIN_BATCH_SIZE, int(8 * BATCH_REDUCTION_FACTOR)
+        )
 
     def test_success_then_refailure_re_triggers(self, tmp_path):
         stats = tmp_path / "stats.jsonl"
         tune = tmp_path / "tune.json"
 
-        records = [_make_stat(retry_failed=1) for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)]
+        records = [
+            _make_stat(retry_failed=1)
+            for _ in range(CONSECUTIVE_RETRY_FAILURE_THRESHOLD)
+        ]
         _write_jsonl(stats, records)
         compute_tune(stats, tune)
 
         flag_tune_success(tune)
 
-        records2 = [_make_stat(retry_failed=0)] * 2 + [_make_stat(retry_failed=1)] * CONSECUTIVE_RETRY_FAILURE_THRESHOLD
+        records2 = [_make_stat(retry_failed=0)] * 2 + [
+            _make_stat(retry_failed=1)
+        ] * CONSECUTIVE_RETRY_FAILURE_THRESHOLD
         _write_jsonl(stats, records2)
         result = compute_tune(stats, tune)
         assert isinstance(result, dict)
@@ -467,7 +562,6 @@ from unittest.mock import patch as _patch
 
 from bluei.app.auto_tune import (
     _save_tune_state,
-    _load_jsonl,
     _check_retry_pattern,
     _check_finding_pattern,
     adjust_replay_thresholds,

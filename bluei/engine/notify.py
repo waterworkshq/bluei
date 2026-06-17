@@ -20,6 +20,7 @@ from bluei.engine.notifiers import (
     CHANNEL_REGISTRY,
 )
 from bluei.engine.notifiers.log import LogNotifier
+from bluei.engine.jsonl import read_jsonl
 
 
 SEVERITY_MAP = {
@@ -129,7 +130,10 @@ def _check_cooldown(
         except (ValueError, TypeError):
             continue
         if ts >= cooldown_cutoff:
-            if entry.get("escalation_type") == escalation_type and entry.get("detail_hash") == detail_hash:
+            if (
+                entry.get("escalation_type") == escalation_type
+                and entry.get("detail_hash") == detail_hash
+            ):
                 return False
 
     return True
@@ -195,7 +199,7 @@ def _instantiate_channels(
     channel_configs: Optional[List[Dict[str, Any]]] = None,
 ) -> List[BaseNotifier]:
     channels = []
-    for ch_config in (channel_configs or config.get("channels", [])):
+    for ch_config in channel_configs or config.get("channels", []):
         ch_type = ch_config.get("type", "")
         cls = CHANNEL_REGISTRY.get(ch_type)
         if cls:
@@ -260,30 +264,24 @@ def deliver_escalations(
             if not bypass_rate_limit and not _check_hourly_cap(config, ch_url, ws):
                 continue
             r = ch.send(payload)
-            all_delivery_results.append({
-                "channel_type": r.channel_type,
-                "success": r.success,
-                "status_code": r.status_code,
-                "latency_ms": round(r.latency_ms, 1),
-                "url": ch_url,
-            })
+            all_delivery_results.append(
+                {
+                    "channel_type": r.channel_type,
+                    "success": r.success,
+                    "status_code": r.status_code,
+                    "latency_ms": round(r.latency_ms, 1),
+                    "url": ch_url,
+                }
+            )
             results.append(r)
 
-        log_notifier = LogNotifier({"log_path": str(ws / "state" / "notification_log.jsonl")})
+        log_notifier = LogNotifier(
+            {"log_path": str(ws / "state" / "notification_log.jsonl")}
+        )
         payload.metadata["deliveries"] = all_delivery_results
         log_notifier.send(payload)
 
     return results
-
-
-def _read_jsonl(path: Path, limit: int = 20) -> List[Dict[str, Any]]:
-    if not path.exists():
-        return []
-    try:
-        lines = path.read_text().strip().splitlines()
-        return [json.loads(l) for l in lines[-limit:] if l.strip()]
-    except (json.JSONDecodeError, OSError):
-        return []
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -299,7 +297,7 @@ def _generate_digest(state_dir: Path) -> str:
     """Generate a compact health digest from repo state files."""
     blocks: List[str] = []
 
-    trend = _read_jsonl(state_dir / "health_trend.jsonl", limit=50)
+    trend = read_jsonl(state_dir / "health_trend.jsonl", limit=50)
     if trend:
         repos: Dict[str, List[Dict[str, Any]]] = {}
         for r in trend:
@@ -314,12 +312,16 @@ def _generate_digest(state_dir: Path) -> str:
         if lines:
             blocks.append("\n".join(lines))
 
-    review = _read_jsonl(state_dir / "review_stats.jsonl", limit=1)
+    review = read_jsonl(state_dir / "review_stats.jsonl", limit=1)
     if review:
         latest = review[-1]
         parts = []
-        for key, label in [("active_prs", "active"), ("blocked_prs", "blocked"),
-                           ("retry_failed", "retry-fail"), ("merge_ready", "merge-ready")]:
+        for key, label in [
+            ("active_prs", "active"),
+            ("blocked_prs", "blocked"),
+            ("retry_failed", "retry-fail"),
+            ("merge_ready", "merge-ready"),
+        ]:
             val = latest.get(key, 0)
             if val > 0:
                 parts.append(f"{label}={val}")
@@ -328,7 +330,7 @@ def _generate_digest(state_dir: Path) -> str:
         else:
             blocks.append("review cycle: idle")
 
-    escalation = _read_jsonl(state_dir / "escalation_log.jsonl", limit=20)
+    escalation = read_jsonl(state_dir / "escalation_log.jsonl", limit=20)
     active = []
     for rec in escalation:
         for finding in rec.get("findings", []):
@@ -384,7 +386,9 @@ def deliver_digest(
         r = ch.send(payload)
         results.append(r)
 
-    log_notifier = LogNotifier({"log_path": str(ws / "state" / "notification_log.jsonl")})
+    log_notifier = LogNotifier(
+        {"log_path": str(ws / "state" / "notification_log.jsonl")}
+    )
     payload.metadata["deliveries"] = [
         {"channel_type": r.channel_type, "success": r.success} for r in results
     ]

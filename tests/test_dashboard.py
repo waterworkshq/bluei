@@ -318,7 +318,6 @@ from bluei.app.dashboard import (
     _number,
     _percent,
     _read_json,
-    _read_jsonl,
     _read_yaml,
     _render_campaigns,
     _render_escalation_feed,
@@ -341,6 +340,7 @@ from bluei.app.dashboard import (
     _summarize_rebase_stats,
     _summarize_review_metrics,
 )
+from bluei.engine.jsonl import read_jsonl
 
 
 class TestDashboardHelpers:
@@ -385,28 +385,28 @@ class TestDashboardHelpers:
 
 
 class TestReaders:
-    """Tests for _read_jsonl, _read_json, _read_yaml."""
+    """Tests for read_jsonl (from bluei.engine.jsonl), _read_json, _read_yaml."""
 
     def test_read_jsonl_missing_file(self, tmp_path):
-        assert _read_jsonl(tmp_path / "missing.jsonl") == []
+        assert read_jsonl(tmp_path / "missing.jsonl", dicts_only=True) == []
 
     def test_read_jsonl_valid(self, tmp_path):
         p = tmp_path / "test.jsonl"
         p.write_text('{"a":1}\n{"b":2}\n')
-        result = _read_jsonl(p)
+        result = read_jsonl(p, dicts_only=True)
         assert len(result) == 2
         assert result[0] == {"a": 1}
 
     def test_read_jsonl_skips_blank_and_invalid(self, tmp_path):
         p = tmp_path / "test.jsonl"
         p.write_text('{"a":1}\n\nnot-json\n{"b":2}\n')
-        result = _read_jsonl(p)
+        result = read_jsonl(p, dicts_only=True)
         assert len(result) == 2
 
     def test_read_jsonl_skips_non_dict(self, tmp_path):
         p = tmp_path / "test.jsonl"
         p.write_text('[1,2,3]\n{"ok": true}\n')
-        result = _read_jsonl(p)
+        result = read_jsonl(p, dicts_only=True)
         assert len(result) == 1
 
     def test_read_json_missing_file(self, tmp_path):

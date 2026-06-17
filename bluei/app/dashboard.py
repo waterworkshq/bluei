@@ -17,23 +17,24 @@ from typing import Any, Dict, Iterable, List
 import yaml
 
 from .models import now_iso
+from bluei.engine.jsonl import read_jsonl
 
 
 _SECRET_PATTERNS = [
-    re.compile(r'ghp_[A-Za-z0-9]{36}'),
-    re.compile(r'gho_[A-Za-z0-9]{36}'),
-    re.compile(r'ghs_[A-Za-z0-9]{36}'),
-    re.compile(r'ghu_[A-Za-z0-9]{36}'),
-    re.compile(r'sk_[A-Za-z0-9]{48}'),
-    re.compile(r'AKIA[A-Z0-9]{16}'),
-    re.compile(r'xox[bpas]-[A-Za-z0-9-]+'),
+    re.compile(r"ghp_[A-Za-z0-9]{36}"),
+    re.compile(r"gho_[A-Za-z0-9]{36}"),
+    re.compile(r"ghs_[A-Za-z0-9]{36}"),
+    re.compile(r"ghu_[A-Za-z0-9]{36}"),
+    re.compile(r"sk_[A-Za-z0-9]{48}"),
+    re.compile(r"AKIA[A-Z0-9]{16}"),
+    re.compile(r"xox[bpas]-[A-Za-z0-9-]+"),
 ]
 
 
 def _scan_for_secrets(html_text: str) -> str:
     """Redact known secret patterns (GitHub tokens, AWS keys, Slack tokens) from HTML output."""
     for pattern in _SECRET_PATTERNS:
-        html_text = pattern.sub('[REDACTED]', html_text)
+        html_text = pattern.sub("[REDACTED]", html_text)
     return html_text
 
 
@@ -95,7 +96,9 @@ def write_dashboard(
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     if output_format == "json":
-        output.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        output.write_text(
+            json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         return output
     if output_format != "html":
         raise ValueError(f"unsupported dashboard format: {output_format}")
@@ -214,13 +217,13 @@ def render_dashboard_html(data: Dict[str, Any]) -> str:
     <div class="section-panel active" id="section-campaigns">
     <section>
       <h2 class="collapsible">Campaign Tracker</h2>
-      <div class="grid">{''.join(_render_campaigns(repo) for repo in repos)}</div>
+      <div class="grid">{"".join(_render_campaigns(repo) for repo in repos)}</div>
     </section>
     </div>
     <div class="section-panel active" id="section-review">
     <section>
       <h2 class="collapsible">Review Cycle Health</h2>
-      <div class="grid">{''.join(_render_review_card(repo) for repo in repos)}</div>
+      <div class="grid">{"".join(_render_review_card(repo) for repo in repos)}</div>
     </section>
     </div>
     <div class="section-panel active" id="section-escalations">
@@ -238,7 +241,7 @@ def render_dashboard_html(data: Dict[str, Any]) -> str:
     <div class="section-panel active" id="section-raw">
     <section>
       <h2 class="collapsible">Raw State Explorer</h2>
-      <div class="grid">{''.join(_render_raw_state_card(repo) for repo in repos)}</div>
+      <div class="grid">{"".join(_render_raw_state_card(repo) for repo in repos)}</div>
     </section>
     </div>
    </main>
@@ -298,30 +301,43 @@ def _build_repo_summary(repo_dir: Path, *, history_limit: int) -> Dict[str, Any]
     """
     state_dir = repo_dir / "state"
     config = _read_yaml(repo_dir / "config.yaml")
-    health_history = _read_jsonl(state_dir / "health_trend.jsonl")[-history_limit:]
+    health_history = read_jsonl(state_dir / "health_trend.jsonl", dicts_only=True)[
+        -history_limit:
+    ]
     latest_health = health_history[-1] if health_history else {}
     first_health = health_history[0] if health_history else {}
-    current = _number(latest_health.get("health") or latest_health.get("score"), default=0)
-    trend = current - _number(first_health.get("health") or first_health.get("score"), default=current)
-    findings = _read_jsonl(state_dir / "findings.jsonl")
+    current = _number(
+        latest_health.get("health") or latest_health.get("score"), default=0
+    )
+    trend = current - _number(
+        first_health.get("health") or first_health.get("score"), default=current
+    )
+    findings = read_jsonl(state_dir / "findings.jsonl", dicts_only=True)
     return {
         "name": repo_dir.name,
         "language": config.get("language", "unknown"),
         "current_vitality": current,
         "trend": trend,
-        "last_run_at": latest_health.get("timestamp") or latest_health.get("generated_at"),
+        "last_run_at": latest_health.get("timestamp")
+        or latest_health.get("generated_at"),
         "open_findings": len(findings),
         "component_scores": latest_health.get("components", {}),
         "health_history": health_history,
         "fix_patterns": _summarize_fix_patterns(state_dir / "fix_patterns.jsonl"),
         "emergent_rules": _summarize_emergent_rules(state_dir / "emergent_rules.json"),
         "campaigns": _summarize_campaigns(state_dir / "campaigns"),
-        "escalations": {"recent": _read_jsonl(state_dir / "escalation_log.jsonl")[-100:]},
+        "escalations": {
+            "recent": read_jsonl(state_dir / "escalation_log.jsonl", dicts_only=True)[
+                -100:
+            ]
+        },
         "review_metrics": _summarize_review_metrics(state_dir / "review_stats.jsonl"),
         "auto_tune": _summarize_auto_tune(state_dir / "auto_tune.json"),
         "cycle_signals": _summarize_cycle_signals(state_dir / "cycle_signals.json"),
         "rebase_stats": _summarize_rebase_stats(state_dir / "rebase_stats.jsonl"),
-        "notifications": _summarize_notifications(repo_dir.parent.parent / "state" / "notification_log.jsonl"),
+        "notifications": _summarize_notifications(
+            repo_dir.parent.parent / "state" / "notification_log.jsonl"
+        ),
         "raw_state": _summarize_raw_state(state_dir),
     }
 
@@ -335,11 +351,16 @@ def _summarize_fix_patterns(path: Path) -> Dict[str, Any]:
     Returns:
         Dict with ``active_count`` and ``top`` list of pattern summaries.
     """
-    patterns = _read_jsonl(path)
-    active = [item for item in patterns if _number(item.get("confidence"), default=0) >= 0.3]
+    patterns = read_jsonl(path, dicts_only=True)
+    active = [
+        item for item in patterns if _number(item.get("confidence"), default=0) >= 0.3
+    ]
     top = sorted(
         active,
-        key=lambda item: (_number(item.get("success_count"), default=0), _number(item.get("confidence"), default=0)),
+        key=lambda item: (
+            _number(item.get("success_count"), default=0),
+            _number(item.get("confidence"), default=0),
+        ),
         reverse=True,
     )[:10]
     return {
@@ -390,7 +411,10 @@ def _summarize_campaigns(campaigns_dir: Path) -> Dict[str, Any]:
             data = _read_json(campaign_file)
             if not data:
                 continue
-            total = _number(data.get("total_findings") or len(data.get("target_findings", [])), default=0)
+            total = _number(
+                data.get("total_findings") or len(data.get("target_findings", [])),
+                default=0,
+            )
             fixed = _number(data.get("findings_fixed"), default=0)
             items.append(
                 {
@@ -416,7 +440,7 @@ def _summarize_review_metrics(path: Path) -> Dict[str, Any]:
         Dict with ``runs``, ``findings_detected``, ``findings_published``,
         ``retry_failures``, and ``publication_rate``.
     """
-    rows = _read_jsonl(path)
+    rows = read_jsonl(path, dicts_only=True)
     detected = sum(_number(row.get("findings_detected"), default=0) for row in rows)
     published = sum(_number(row.get("findings_published"), default=0) for row in rows)
     retry_failures = sum(_number(row.get("retry_failures"), default=0) for row in rows)
@@ -465,7 +489,10 @@ def _summarize_cycle_signals(path: Path) -> Dict[str, Any]:
     if isinstance(suppressed, dict):
         rules = sorted(str(rule) for rule in suppressed.keys())
     elif isinstance(suppressed, list):
-        rules = sorted(str(item.get("rule") if isinstance(item, dict) else item) for item in suppressed)
+        rules = sorted(
+            str(item.get("rule") if isinstance(item, dict) else item)
+            for item in suppressed
+        )
     else:
         rules = []
     return {
@@ -483,7 +510,7 @@ def _summarize_rebase_stats(path: Path) -> Dict[str, Any]:
     Returns:
         Dict with ``attempted``, ``succeeded``, ``failed``, and ``success_rate``.
     """
-    rows = _read_jsonl(path)
+    rows = read_jsonl(path, dicts_only=True)
     attempted = sum(_number(row.get("rebases_attempted"), default=0) for row in rows)
     succeeded = sum(_number(row.get("rebases_succeeded"), default=0) for row in rows)
     failed = sum(_number(row.get("rebases_failed"), default=0) for row in rows)
@@ -505,10 +532,16 @@ def _summarize_notifications(path: Path) -> Dict[str, Any]:
         Dict with ``total``, ``delivered``, ``failed``, ``channels``,
         ``last_delivery_at``, and ``recent`` entries.
     """
-    rows = _read_jsonl(path)
+    rows = read_jsonl(path, dicts_only=True)
     if not rows:
-        return {"total": 0, "delivered": 0, "failed": 0, "channels": [],
-                "last_delivery_at": None, "recent": []}
+        return {
+            "total": 0,
+            "delivered": 0,
+            "failed": 0,
+            "channels": [],
+            "last_delivery_at": None,
+            "recent": [],
+        }
     total = 0
     delivered = 0
     failed = 0
@@ -518,7 +551,9 @@ def _summarize_notifications(path: Path) -> Dict[str, Any]:
         if not deliveries:
             continue
         total += 1
-        has_success = any(d.get("success") for d in deliveries if d.get("channel_type") != "log")
+        has_success = any(
+            d.get("success") for d in deliveries if d.get("channel_type") != "log"
+        )
         if has_success:
             delivered += 1
         else:
@@ -555,7 +590,7 @@ def _summarize_raw_state(state_dir: Path) -> Dict[str, Any]:
             continue
         relative = path.name
         if path.suffix == ".jsonl":
-            entries = len(_read_jsonl(path))
+            entries = len(read_jsonl(path, dicts_only=True))
         else:
             entries = 1 if _read_json(path) else 0
         files[relative] = {
@@ -596,8 +631,8 @@ def _render_repo_row(repo: Dict[str, Any]) -> str:
         "<tr>"
         f"<td><strong>{html.escape(str(repo.get('name', '')))}</strong></td>"
         f"<td>{html.escape(str(repo.get('language', 'unknown')))}</td>"
-        f"<td class=\"score {band_class}\">{_fmt(vitality)}</td>"
-        f"<td class=\"{trend_class}\">{_fmt(trend, signed=True)}</td>"
+        f'<td class="score {band_class}">{_fmt(vitality)}</td>'
+        f'<td class="{trend_class}">{_fmt(trend, signed=True)}</td>'
         f"<td>{int(_number(repo.get('open_findings'), default=0))}</td>"
         f"<td>{html.escape(str(repo.get('last_run_at') or 'never'))}</td>"
         "</tr>"
@@ -711,7 +746,7 @@ def _render_notification_feed(data: Dict[str, Any]) -> str:
         f"<td>{_severity_badge(e.get('severity', ''))}</td>"
         f"<td>{html.escape(str(e.get('escalation_type', '')))}</td>"
         f"<td>{html.escape(str(e.get('timestamp', ''))[:19])}</td>"
-        f"<td>{html.escape(', '.join(d.get('channel_type','?') + (':' + ('ok' if d.get('success') else 'fail')) for d in e.get('deliveries', []) if d.get('channel_type') != 'log') or '—')}</td>"
+        f"<td>{html.escape(', '.join(d.get('channel_type', '?') + (':' + ('ok' if d.get('success') else 'fail')) for d in e.get('deliveries', []) if d.get('channel_type') != 'log') or '—')}</td>"
         "</tr>"
         for e in all_entries
     )
@@ -741,7 +776,9 @@ def _render_raw_state_card(repo: Dict[str, Any]) -> str:
 
 def _render_sparkline(history: List[Dict[str, Any]]) -> str:
     """Render an SVG sparkline of health scores over time."""
-    values = [_number(item.get("health") or item.get("score"), default=0) for item in history]
+    values = [
+        _number(item.get("health") or item.get("score"), default=0) for item in history
+    ]
     if len(values) < 2:
         return '<svg class="sparkline" role="img" aria-label="No health trend"></svg>'
     width = 240
@@ -768,8 +805,16 @@ def _render_vitality_table(history: List[Dict[str, Any]]) -> str:
     for entry in reversed(recent):
         score = _number(entry.get("health") or entry.get("score"), default=0)
         ts = html.escape(str(entry.get("timestamp", ""))[:19])
-        color = "var(--bad)" if score < 50 else "var(--warn)" if score < 75 else "var(--accent)"
-        rows.append(f'<tr><td style="color:{color}">{_fmt(score)}</td><td>{ts}</td></tr>')
+        color = (
+            "var(--bad)"
+            if score < 50
+            else "var(--warn)"
+            if score < 75
+            else "var(--accent)"
+        )
+        rows.append(
+            f'<tr><td style="color:{color}">{_fmt(score)}</td><td>{ts}</td></tr>'
+        )
     return f'<table class="vitality-table"><thead><tr><th>Score</th><th>Time</th></tr></thead><tbody>{"".join(rows)}</tbody></table>'
 
 
@@ -780,22 +825,6 @@ def _repo_dirs(repos_dir: Path, repo_name: str | None) -> List[Path]:
     if not repos_dir.exists():
         return []
     return [path for path in repos_dir.iterdir() if path.is_dir()]
-
-
-def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
-    if not path.exists():
-        return []
-    rows: List[Dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            rows.append(value)
-    return rows
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
