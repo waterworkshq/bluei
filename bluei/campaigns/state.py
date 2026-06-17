@@ -14,7 +14,7 @@ from typing import Any, Dict
 from .planner import Campaign
 from bluei.app.models import now_iso
 from bluei.app.state import _atomic_json_write
-from bluei.engine.jsonl import read_jsonl
+from bluei.engine.jsonl import append_jsonl, read_jsonl
 
 _logger = logging.getLogger(__name__)
 
@@ -106,8 +106,7 @@ class CampaignStateManager:
             "event": event,
             "payload": payload or {},
         }
-        with (campaign_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, sort_keys=True) + "\n")
+        append_jsonl(campaign_dir / "events.jsonl", record)
 
     def last_event(self, campaign_id: str) -> Dict[str, Any] | None:
         """Return the most recent event for a campaign, or None if no events exist.
