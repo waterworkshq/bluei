@@ -43,6 +43,7 @@ def extract(
     fix_source: str,
     store: FixPatternStore,
     log_file: Path,
+    detected_frameworks: Optional[List[str]] = None,
 ) -> Optional[str]:
     """Capture a single-file git diff and store it as a learned fix pattern.
 
@@ -52,6 +53,10 @@ def extract(
         fix_source: Origin label (``autofix``, ``claude``, ``contextual``).
         store: The ``FixPatternStore`` to persist the extracted pattern into.
         log_file: Path to append extraction events to.
+        detected_frameworks: Optional pre-detected framework list (e.g.
+            ``["django"]``). Framework detection itself is an app-layer
+            concern (``bluei.app.onboarding.detection``); callers thread
+            this through so the engine never imports from app (rec-08).
 
     Returns:
         The stored ``pattern_id``, or ``None`` if extraction was skipped.
@@ -116,7 +121,7 @@ def extract(
             diff_patch=diff_patch,
             source=source,
             source_finding_ids=[finding.finding_id] if finding.finding_id else [],
-            framework_constraint=_detect_framework(worktree_path),
+            framework_constraint=_detect_framework(worktree_path, detected_frameworks),
             file_pattern=_compute_file_pattern(finding.path),
         )
         pattern_id = store.append(pattern)
@@ -221,32 +226,24 @@ def _snippets_from_unified_diff(diff_patch: str) -> Tuple[str, str]:
 def _detect_framework(
     worktree_path: Path, detected_frameworks: Optional[List[str]] = None
 ) -> Optional[str]:
-    """Return the primary framework detected in the worktree, or ``None``.
+    """Return the primary framework from the pre-detected list, or ``None``.
+
+    Framework detection itself is an app-layer concern
+    (``bluei.app.onboarding.detection``). Callers pass ``detected_frameworks``;
+    no engine→app import is permitted (rec-08).
 
     Args:
-        worktree_path: Root of the working tree to scan.
-        detected_frameworks: Optional pre-detected framework list. If None,
-            falls back to the deferred app-layer detector (see debt note
-            below).
-    """
-    if detected_frameworks is not None:
-        return detected_frameworks[0] if detected_frameworks else None
-    try:
-        # NOTE: deferred engine→app import (rec-08 layering violation).
-        # The clean fix is parameterization — callers should pass
-        # ``detected_frameworks`` from the app/onboarding layer. That requires
-        # threading a new param through ``extract()`` and ``lifecycle.
-        # _extract_fix_pattern()`` (4 call sites in lifecycle.py) plus
-        # updating ``tests/test_pattern_extractor.py::TestDetectFramework``
-        # which currently exercises this fallback. Out of scope for this
-        # isolated fix; accepted as debt 2026-06-18. Tracked exemption lives
-        # in ``scripts/tools/enforce_architecture.py`` (check_engine_imports_app).
-        from bluei.app.onboarding import detect_frameworks
+        worktree_path: Root of the working tree (retained for signature
+            stability; not used since detection moved to the app layer).
+        detected_frameworks: Pre-detected framework list, e.g.
+            ``["django", "flask"]``. The first entry wins.
 
-        frameworks = detect_frameworks(worktree_path)
-        return frameworks[0] if frameworks else None
-    except Exception:
+    Returns:
+        The first detected framework, or ``None`` if the list is empty.
+    """
+    if not detected_frameworks:
         return None
+    return detected_frameworks[0]
 
 
 def _compute_file_pattern(file_path: str) -> str:

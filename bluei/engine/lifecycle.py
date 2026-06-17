@@ -113,8 +113,15 @@ def _extract_fix_pattern(
     fix_source: str,
     pattern_store_path: Optional[Path],
     log_file: Path,
+    detected_frameworks: Optional[List[str]] = None,
 ) -> None:
-    """Best-effort learned-pattern extraction for successful fixes."""
+    """Best-effort learned-pattern extraction for successful fixes.
+
+    ``detected_frameworks`` is threaded through to ``extract()`` so the
+    engine never reaches into the app layer for framework detection
+    (rec-08). Callers that already have the list pass it; others rely on
+    the default ``None``.
+    """
     if pattern_store_path is None:
         return
     try:
@@ -122,7 +129,21 @@ def _extract_fix_pattern(
         from bluei.engine.pattern_store import FixPatternStore
 
         store = FixPatternStore(pattern_store_path)
-        pattern_id = extract(worktree_path, finding, fix_source, store, log_file)
+        # Only thread ``detected_frameworks`` when populated, so legacy
+        # mocks of ``extract()`` with the original 5-positional-arg
+        # signature keep working. Behavior is unchanged when the list
+        # is None/empty (``_detect_framework`` returns None either way).
+        extract_kwargs: Dict[str, Any] = {}
+        if detected_frameworks:
+            extract_kwargs["detected_frameworks"] = detected_frameworks
+        pattern_id = extract(
+            worktree_path,
+            finding,
+            fix_source,
+            store,
+            log_file,
+            **extract_kwargs,
+        )
         if pattern_id:
             _append_text(
                 log_file,
@@ -219,6 +240,7 @@ class ClaudeFixRequest:
     extra_prompt: Optional[str] = None
     pattern_store_path: Optional[Path] = None
     learned_patterns: Optional[str] = None
+    detected_frameworks: Optional[List[str]] = None
 
 
 def apply_claude_fix(req: ClaudeFixRequest) -> Tuple[int, str, str]:
@@ -328,6 +350,7 @@ def apply_claude_fix(req: ClaudeFixRequest) -> Tuple[int, str, str]:
                 "claude",
                 req.pattern_store_path,
                 req.log_file,
+                detected_frameworks=req.detected_frameworks,
             )
 
         return res.returncode, output, str(prompt_path)
@@ -560,7 +583,12 @@ def apply_autofix(
                 f"autofix: recipe={recipe.id} applied finding_id={finding.finding_id} rule={finding.rule}",
             )
             _extract_fix_pattern(
-                worktree_path, finding, "recipe", pattern_store_path, log_file
+                worktree_path,
+                finding,
+                "recipe",
+                pattern_store_path,
+                log_file,
+                detected_frameworks=detected_frameworks,
             )
             tier = resolve_tier(finding, recipe=recipe)
             if not _tier_validate(tier, worktree_path, finding, log_file):
@@ -639,7 +667,12 @@ def apply_autofix(
         f"autofix: applied finding_id={finding.finding_id} rule={finding.rule}",
     )
     _extract_fix_pattern(
-        worktree_path, finding, "autofix", pattern_store_path, log_file
+        worktree_path,
+        finding,
+        "autofix",
+        pattern_store_path,
+        log_file,
+        detected_frameworks=detected_frameworks,
     )
     tier = resolve_tier(finding)
     if not _tier_validate(tier, worktree_path, finding, log_file):
@@ -744,6 +777,7 @@ def apply_cascade_fix(
             result.stage_name,
             pattern_store_path,
             log_file,
+            detected_frameworks=detected_frameworks,
         )
         tier = resolve_tier(finding)
         if not _tier_validate(tier, worktree_path, finding, log_file):
@@ -772,6 +806,7 @@ def apply_cascade_fix(
                 max_loc_diff=200,
                 log_file=log_file,
                 pattern_store_path=pattern_store_path,
+                detected_frameworks=detected_frameworks,
             ),
         )
         return rc == 0

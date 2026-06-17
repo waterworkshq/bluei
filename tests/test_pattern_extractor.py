@@ -324,20 +324,39 @@ class TestComputeFilePattern:
 
 
 class TestDetectFramework:
-    def test_import_error_returns_none(self, tmp_path):
-        with patch.dict("sys.modules", {"bluei.app.onboarding": None}):
-            result = _detect_framework(tmp_path)
-        assert result is None
+    def test_returns_first_detected_framework(self, tmp_path):
+        assert _detect_framework(tmp_path, detected_frameworks=["django"]) == "django"
 
-    def test_detect_frameworks_returns_empty(self, tmp_path):
-        with patch("bluei.app.onboarding.detect_frameworks", return_value=[]):
-            result = _detect_framework(tmp_path)
-        assert result is None
+    def test_returns_first_of_multiple(self, tmp_path):
+        assert (
+            _detect_framework(tmp_path, detected_frameworks=["django", "flask"])
+            == "django"
+        )
 
-    def test_detect_frameworks_returns_value(self, tmp_path):
-        with patch("bluei.app.onboarding.detect_frameworks", return_value=["django"]):
-            result = _detect_framework(tmp_path)
-        assert result == "django"
+    def test_returns_none_for_empty_list(self, tmp_path):
+        assert _detect_framework(tmp_path, detected_frameworks=[]) is None
+
+    def test_returns_none_when_omitted(self, tmp_path):
+        # Backward-compat: omitting the parameter returns None.
+        assert _detect_framework(tmp_path) is None
+        assert _detect_framework(tmp_path, detected_frameworks=None) is None
+
+    def test_detect_framework_does_not_import_from_app(self):
+        """Verify pattern_extractor no longer reaches into app layer.
+
+        Regression for rec-08: the lazy ``from bluei.app.onboarding``
+        import inside ``_detect_framework`` was paid down via
+        parameterization. If this assertion fires, someone reintroduced
+        the engine→app dependency.
+        """
+        import inspect
+
+        import bluei.engine.pattern_extractor as mod
+
+        src = inspect.getsource(mod)
+        assert "from bluei.app.onboarding" not in src, (
+            "pattern_extractor should not import from bluei.app.onboarding (rec-08)"
+        )
 
 
 class TestExtractGitDiffFail:

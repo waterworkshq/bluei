@@ -125,16 +125,8 @@ def check_engine_imports_app(path: Path) -> list[str]:
     The only sanctioned escape hatch is bluei/engine/state_io.py, which
     is intentionally app-free (it was extracted specifically so engine
     could have atomic JSON I/O without reaching into app).
-
-    pattern_extractor.py carries an accepted deferred engine→app import
-    inside ``_detect_framework`` (debt accepted 2026-06-18). The clean fix
-    is parameterization — thread ``detected_frameworks`` through ``extract()``
-    and ``lifecycle._extract_fix_pattern()`` — but that requires touching
-    call sites in lifecycle.py and the ``TestDetectFramework`` test class
-    which exercises this fallback. Tracked here so the gate does not
-    re-flag it; remove this exemption when the debt is paid down.
     """
-    if path.name in ("state_io.py", "pattern_extractor.py"):
+    if path.name == "state_io.py":
         return []
     violations: list[str] = []
     tree = ast.parse(path.read_text())
