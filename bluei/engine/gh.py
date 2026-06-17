@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import yaml
+
 from bluei.engine.constants import DETECTOR_CATALOG
 from bluei.engine.models import Finding
 from bluei.engine.safety_gates import (
@@ -352,6 +354,31 @@ def finding_from_issue_record(issue: Dict[str, Any]) -> Optional[Finding]:
     )
 
 
+def _load_self_merge_repos_from_global_config() -> List[str]:
+    """Read ``github.self_merge_repos`` from the workspace ``config.yaml``
+    without going through the app layer.
+
+    Mirrors the path resolution of ``bluei.app.config.load_global_config``
+    (``QA_AGENT_WORKSPACE`` env var or repo root) but reads only the specific
+    key we need. Avoids an engine->app import (rec-08).
+    """
+    workspace = Path(
+        os.environ.get("QA_AGENT_WORKSPACE", Path(__file__).resolve().parents[2])
+    ).expanduser()
+    config_path = workspace / "config.yaml"
+    if not config_path.exists():
+        return []
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        if not isinstance(data, dict):
+            return []
+        value = data.get("github", {}).get("self_merge_repos", [])
+        return list(value) if value else []
+    except Exception:
+        return []
+
+
 def repo_is_sandbox(
     repo_slug: str, self_merge_repos: Optional[List[str]] = None
 ) -> bool:
@@ -370,14 +397,7 @@ def repo_is_sandbox(
     if repo_slug.endswith("/qa-sandbox-repo"):
         return True
     if self_merge_repos is None:
-        try:
-            from bluei.app.config import load_global_config
-
-            self_merge_repos = (
-                load_global_config().get("github", {}).get("self_merge_repos", [])
-            )
-        except Exception:
-            self_merge_repos = []
+        self_merge_repos = _load_self_merge_repos_from_global_config()
         if not self_merge_repos:
             env_val = os.environ.get("BLUEI_SELF_MERGE_REPOS", "")
             self_merge_repos = (
