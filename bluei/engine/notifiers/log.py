@@ -1,11 +1,16 @@
 """Always-on JSONL log notifier."""
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 
-from bluei.engine.notifiers import BaseNotifier, DeliveryResult, NotificationPayload, register_notifier
+from bluei.engine.jsonl import append_jsonl
+from bluei.engine.notifiers import (
+    BaseNotifier,
+    DeliveryResult,
+    NotificationPayload,
+    register_notifier,
+)
 
 
 @register_notifier
@@ -24,9 +29,9 @@ class LogNotifier(BaseNotifier):
             "deliveries": deliveries,
         }
         try:
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, default=str) + "\n")
+            append_jsonl(log_path, record, default=str)
             return DeliveryResult(channel_type=self.channel_type, success=True)
         except OSError as e:
-            return DeliveryResult(channel_type=self.channel_type, success=False, error=str(e)[:200])
+            return DeliveryResult(
+                channel_type=self.channel_type, success=False, error=str(e)[:200]
+            )

@@ -1,11 +1,11 @@
 """Startup self-healing — stale lock cleanup, orphan worktree pruning."""
 
-import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from bluei.engine.jsonl import append_jsonl
 from bluei.engine.state import _append_text, load_batches, repair_state
 from bluei.engine.utils import run_capture, run_no_capture
 
@@ -249,9 +249,9 @@ def run_startup_self_healing(
 
             if stale_batch_count > 0:
                 if not dry_run:
-                    with open(DEFAULT_BATCH_STATE, "w", encoding="utf-8") as f:
-                        for batch in active_batches:
-                            f.write(json.dumps(batch, sort_keys=True) + "\n")
+                    DEFAULT_BATCH_STATE.write_text("", encoding="utf-8")
+                    for batch in active_batches:
+                        append_jsonl(DEFAULT_BATCH_STATE, batch)
                 if log_file:
                     _append_text(
                         log_file,

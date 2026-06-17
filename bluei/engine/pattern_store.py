@@ -29,7 +29,7 @@ PATTERN_STORE_MAX_BYTES = 5 * 1024 * 1024
 PATTERN_STORE_MAX_LINES = 10_000
 
 
-from bluei.engine.jsonl import read_jsonl
+from bluei.engine.jsonl import append_jsonl, read_jsonl
 from bluei.engine.models import now_iso  # noqa: E402
 
 
@@ -308,8 +308,7 @@ class FixPatternStore:
                 raise ValueError("active fix pattern cap reached")
 
             new_pattern = self._prepare_new_pattern(pattern, normalized_before)
-            with self.store_path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(new_pattern.to_dict(), sort_keys=True) + "\n")
+            append_jsonl(self.store_path, new_pattern.to_dict())
             self._rotate_if_needed_unlocked()
             self._rebuild_from_disk_unlocked()
             self._write_index_unlocked()
@@ -515,9 +514,9 @@ class FixPatternStore:
     def _write_records_unlocked(self, records: List[Dict[str, Any]]) -> None:
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.store_path.with_suffix(self.store_path.suffix + ".tmp")
-        with tmp.open("w", encoding="utf-8") as f:
-            for record in records:
-                f.write(json.dumps(record, sort_keys=True) + "\n")
+        tmp.write_text("", encoding="utf-8")
+        for record in records:
+            append_jsonl(tmp, record)
         os.replace(tmp, self.store_path)
 
     def _rotate_if_needed_unlocked(self) -> None:

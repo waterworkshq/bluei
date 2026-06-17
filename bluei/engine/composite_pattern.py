@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 _logger = logging.getLogger(__name__)
 
-from bluei.engine.jsonl import read_jsonl
+from bluei.engine.jsonl import append_jsonl, read_jsonl
 from bluei.engine.utils import run_capture
 
 
@@ -291,8 +291,7 @@ class CompositePatternStore:
             if not pattern.pattern_id:
                 pattern.pattern_id = _generate_composite_id()
             record = pattern.to_dict()
-            with self.store_path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(record, sort_keys=True) + "\n")
+            append_jsonl(self.store_path, record)
             self._composites[pattern.pattern_id] = pattern
             self._by_rule.setdefault(pattern.rule, []).append(pattern.pattern_id)
             return pattern.pattern_id

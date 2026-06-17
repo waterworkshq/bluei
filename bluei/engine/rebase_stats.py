@@ -6,11 +6,10 @@ function for health/observability surfaces.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from bluei.engine.jsonl import read_jsonl
+from bluei.engine.jsonl import append_jsonl, read_jsonl
 from bluei.engine.models import now_iso
 
 
@@ -36,9 +35,7 @@ def log_rebase_stats(
         "timestamp": now_iso(),
         **stats,
     }
-    stats_path.parent.mkdir(parents=True, exist_ok=True)
-    with stats_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, default=str) + "\n")
+    append_jsonl(stats_path, entry, default=str)
 
 
 def load_rebase_stats(
