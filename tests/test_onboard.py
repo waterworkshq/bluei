@@ -1044,3 +1044,140 @@ def test_prompt_rule_pack_confirmation_no_packs_returns_none(capsys):
     ):
         result = _prompt_rule_pack_confirmation(None, FakeCM())
     assert result is None
+
+
+# ── F1: rule_pack wiring into `bluei init` ──
+
+
+def test_init_detects_and_saves_rule_pack_non_tty(tmp_path, monkeypatch):
+    """`_cmd_init --path ...` detects the rule pack and saves it to config.yaml.
+
+    Reproduces the Option B non-TTY path that OnboardEngine.onboard() already
+    implements, but for the init flow which previously bypassed detection.
+    """
+    from bin.cmd_onboard import _cmd_init
+
+    # Build a temp workspace mirroring the onboard_env layout
+    workspace = tmp_path / "ws"
+    (workspace / "repos").mkdir(parents=True)
+    (workspace / "plugins").mkdir(parents=True)
+    source_templates = Path(__file__).resolve().parents[1] / "templates" / "repos"
+    target_templates = workspace / "templates" / "repos"
+    target_templates.mkdir(parents=True, exist_ok=True)
+    if source_templates.exists():
+        for template_file in source_templates.glob("*.yaml"):
+            (target_templates / template_file.name).write_text(
+                template_file.read_text()
+            )
+
+    # Python repo that triggers python-api template → python-api-safe rule pack
+    repo_path = tmp_path / "init-repo"
+    repo_path.mkdir()
+    (repo_path / "app.py").write_text("print('hi')\n")
+    (repo_path / "requirements.txt").write_text("flask\n")
+
+    # init must not prompt
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setenv("QA_AGENT_WORKSPACE", str(workspace))
+    monkeypatch.setenv("BLUEI_MODE", "observe")
+    monkeypatch.setenv("BLUEI_YES", "1")
+
+    import bluei.app.config as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "WORKSPACE", workspace)
+
+    ret = _cmd_init(["--path", str(repo_path), "--name", "init-pack", "--yes"])
+    assert ret == 0
+
+    # RepoConfig must carry the auto-detected rule pack
+    from bluei.app.config import ConfigManager
+    from bluei.app.registry import RepoRegistry
+
+    registry = RepoRegistry(ConfigManager(workspace))
+    loaded = registry.read("init-pack")
+    assert loaded.config.rule_pack == "python-api-safe"
+    assert loaded.config.meta.get("rule_pack") == "python-api-safe"
+    assert loaded.config.meta.get("template") == "python-api"
+
+
+def test_init_no_template_leaves_rule_pack_none_non_tty(tmp_path, monkeypatch):
+    """`_cmd_init` with a bare repo leaves rule_pack unset (no crash)."""
+    from bin.cmd_onboard import _cmd_init
+
+    workspace = tmp_path / "ws"
+    (workspace / "repos").mkdir(parents=True)
+    (workspace / "plugins").mkdir(parents=True)
+    target_templates = workspace / "templates" / "repos"
+    target_templates.mkdir(parents=True, exist_ok=True)
+
+    # Bare repo — no template-triggering files
+    repo_path = tmp_path / "bare-repo"
+    repo_path.mkdir()
+    (repo_path / "notes.txt").write_text("just notes")
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setenv("QA_AGENT_WORKSPACE", str(workspace))
+    monkeypatch.setenv("BLUEI_MODE", "observe")
+    monkeypatch.setenv("BLUEI_YES", "1")
+
+    import bluei.app.config as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "WORKSPACE", workspace)
+
+    ret = _cmd_init(["--path", str(repo_path), "--name", "init-none", "--yes"])
+    assert ret == 0
+
+    from bluei.app.config import ConfigManager
+    from bluei.app.registry import RepoRegistry
+
+    registry = RepoRegistry(ConfigManager(workspace))
+    loaded = registry.read("init-none")
+    assert loaded.config.rule_pack is None
+
+
+def test_init_tty_prompts_and_accepts_default(tmp_path, monkeypatch, capsys):
+    """`_cmd_init` in TTY mode prompts for rule pack confirmation."""
+    from unittest.mock import patch
+
+    from bin.cmd_onboard import _cmd_init
+
+    workspace = tmp_path / "ws"
+    (workspace / "repos").mkdir(parents=True)
+    (workspace / "plugins").mkdir(parents=True)
+    source_templates = Path(__file__).resolve().parents[1] / "templates" / "repos"
+    target_templates = workspace / "templates" / "repos"
+    target_templates.mkdir(parents=True, exist_ok=True)
+    if source_templates.exists():
+        for template_file in source_templates.glob("*.yaml"):
+            (target_templates / template_file.name).write_text(
+                template_file.read_text()
+            )
+
+    repo_path = tmp_path / "init-tty"
+    repo_path.mkdir()
+    (repo_path / "app.py").write_text("print('hi')\n")
+    (repo_path / "requirements.txt").write_text("flask\n")
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setenv("QA_AGENT_WORKSPACE", str(workspace))
+    monkeypatch.setenv("BLUEI_MODE", "observe")
+    monkeypatch.setenv("BLUEI_YES", "1")
+
+    import bluei.app.config as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "WORKSPACE", workspace)
+
+    # User presses Enter → accepts the suggested pack
+    with patch("builtins.input", return_value=""):
+        ret = _cmd_init(["--path", str(repo_path), "--name", "init-tty", "--yes"])
+    assert ret == 0
+
+    captured = capsys.readouterr()
+    assert "Suggested rule pack: 'python-api-safe'" in captured.out
+
+    from bluei.app.config import ConfigManager
+    from bluei.app.registry import RepoRegistry
+
+    registry = RepoRegistry(ConfigManager(workspace))
+    loaded = registry.read("init-tty")
+    assert loaded.config.rule_pack == "python-api-safe"

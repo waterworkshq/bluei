@@ -21,12 +21,6 @@ from bluei.review.types import ReviewCycleResult
 # reduce the chance of tripping GitHub's secondary rate limit on PR-heavy repos.
 _DEFAULT_INTER_PR_DELAY_SECONDS = 0.0
 
-# Maximum number of consecutive cycles a PR may stay in retry_pending_push
-# (with unchanged fingerprint) before escalating to retry_exhausted. Prevents
-# indefinite pinning when the retry path reuses execution_result without
-# re-running remediation, freezing attempts_used and bypassing escalation.
-_MAX_PENDING_PUSH_CYCLES = 5
-
 
 class ObservationMixin:
     def _run_observation_cycle(

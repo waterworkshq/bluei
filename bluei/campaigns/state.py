@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .planner import Campaign
-from bluei.app.models import now_iso
-from bluei.app.state import _atomic_json_write
+from bluei.common.models import now_iso
+from bluei.engine.state_io import atomic_json_write as _atomic_json_write
 from bluei.engine.jsonl import append_jsonl, read_jsonl
 
 _logger = logging.getLogger(__name__)

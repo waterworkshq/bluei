@@ -8,8 +8,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from bluei.review.observation import _MAX_PENDING_PUSH_CYCLES
 from bluei.review.types import ReviewCycleResult
+
+# Maximum number of consecutive cycles a PR may stay in retry_pending_push
+# (with unchanged fingerprint) before escalating to retry_exhausted. Prevents
+# indefinite pinning when the retry path reuses execution_result without
+# re-running remediation, freezing attempts_used and bypassing escalation.
+_MAX_PENDING_PUSH_CYCLES = 5
 
 
 class StatusClassificationMixin:

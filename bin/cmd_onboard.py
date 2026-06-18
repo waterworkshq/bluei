@@ -136,8 +136,22 @@ def _cmd_init(rest: Optional[List[str]] = None):
         print(f"   Language:     {lang}")
         print(f"   Care level:   {mode}")
 
-        # F3: Print safety summary
+        # F1: Detect template + rule pack (same Option B pattern as OnboardEngine).
+        # init bypasses OnboardEngine, so wire detection in here. Silent in
+        # non-TTY; prompt for confirmation in TTY.
         registered = registry.find_by_name(repo_name)
+        if registered:
+            selected_rule_pack, template_name = _detect_rule_pack(repo_path, config)
+            if selected_rule_pack:
+                registered.config.rule_pack = selected_rule_pack
+                meta = registered.config.meta or {}
+                meta["rule_pack"] = selected_rule_pack
+                if template_name:
+                    meta["template"] = template_name
+                registered.config.meta = meta
+                config.save_repo_config(registered.config)
+
+        # F3: Print safety summary
         if registered:
             _print_safety_summary(registered.config)
 
@@ -166,6 +180,46 @@ def _cmd_init(rest: Optional[List[str]] = None):
 
     # Re-enter the auto-registration flow with the collected values
     return _cmd_init(["--path", str(repo_path), "--name", repo_name])
+
+
+def _detect_rule_pack(repo_path: Path, config_manager) -> tuple:
+    """F1: Auto-detect template + rule_pack for an init-registered repo.
+
+    Mirrors the Option B pattern from OnboardEngine.onboard(): detect the
+    repo template, suggest a rule pack, and either accept silently (non-TTY)
+    or prompt for confirmation (TTY). Returns ``(rule_pack, template_name)``;
+    either element may be ``None`` when detection finds nothing.
+
+    Imports are local so a detection failure can never break init.
+    """
+    from bluei.app.onboarding.detection import (
+        detect_frameworks,
+        detect_language_info,
+    )
+    from bluei.app.onboarding.engine import _prompt_rule_pack_confirmation
+    from bluei.app.onboarding.templates import select_rule_pack, select_template
+
+    try:
+        language_info = detect_language_info(repo_path)
+        frameworks = detect_frameworks(repo_path, language_info.name)
+        framework = frameworks[0] if frameworks else None
+        template_name = select_template(repo_path, language_info, framework)
+        suggested_pack = select_rule_pack(template_name)
+    except Exception as exc:
+        print(f"  (rule pack detection skipped: {exc})", file=sys.stderr)
+        return None, None
+
+    if not suggested_pack:
+        return None, template_name
+
+    if sys.stdin.isatty():
+        print(f"  Detected template: {template_name or '(none)'}")
+        selected = _prompt_rule_pack_confirmation(suggested_pack, config_manager)
+    else:
+        print(f"  Rule pack (auto): {suggested_pack}", file=sys.stderr)
+        selected = suggested_pack
+
+    return selected, template_name
 
 
 def _confirm_high_risk_mode(mode: str, auto_yes: bool = False) -> bool:

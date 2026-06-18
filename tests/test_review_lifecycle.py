@@ -956,7 +956,7 @@ def test_pending_push_cycles_increment_and_escalate(tmp_path):
     M1 fix: PR stays in retry_pending_push for N-1 cycles (counter 1..4),
     then escalates to retry_exhausted on the 5th cycle.
     """
-    from bluei.review.observation import _MAX_PENDING_PUSH_CYCLES
+    from bluei.review.status_classification import _MAX_PENDING_PUSH_CYCLES
     from bluei.review.types import ReviewCycleResult
 
     assert _MAX_PENDING_PUSH_CYCLES == 5, "Test is calibrated to the default threshold"
