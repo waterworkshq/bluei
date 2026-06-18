@@ -54,6 +54,7 @@ from bluei.engine.constants import (
     CLAUDE_REQUIRED_RULES,
     DEFAULT_BATCH_STATE,
 )
+from bluei.engine.commands.context import RunContext
 from bluei.engine.commands.helpers import (
     _get_llm_fixable_rules,
     _load_batch_rules_for_args,
@@ -242,6 +243,25 @@ class FinalizeResult:
     blocked_reasons_additions: List[str] = field(default_factory=list)
 
 
+@dataclass
+class CounterDeltas:
+    """Snapshot of mutable counters returned by _process_one_issue.
+
+    Successor to the untyped Dict[str, int] previously returned. Field names
+    match RunContext counter fields for straightforward accumulation:
+    ctx.created_prs += deltas.created_prs, etc.
+    """
+
+    created_prs: int = 0
+    open_prs: int = 0
+    fix_attempts: int = 0
+    fixes_verified: int = 0
+    fixes_failed_verification: int = 0
+    claude_invocations: int = 0
+    deterministic_invocations: int = 0
+    blocked_reasons: List[str] = field(default_factory=list)
+
+
 def _finalize_pr_for_issue(
     *,
     issue: Dict[str, Any],
@@ -421,45 +441,46 @@ def _finalize_pr_for_issue(
 
 
 def _process_one_issue(
+    ctx: RunContext,
     idx: int,
     issue: Dict[str, Any],
     finding: Finding,
     baseline_results: Dict[str, Dict[str, Any]],
-    *,
-    repo_path: Path,
-    findings_file: Path,
-    log_file: Path,
-    worktree_root: Path,
-    gh_repo_slug: str,
-    docs_index_file: Path,
-    lessons_file: Path,
-    args: Any,
-    state: Dict[str, Any],
-    pattern_store: Any,
-    cost_tracker: Any,
-    PER_REPO_BASELINE_CHECKS: Any,
-    created_prs: int,
-    open_prs: int,
-    fix_attempts: int,
-    fixes_verified: int,
-    fixes_failed_verification: int,
-    claude_invocations: int,
-    deterministic_invocations: int,
-    blocked_reasons: List[str],
-    safety_config: Optional[Dict[str, Any]] = None,
-    repo_config: Optional[Dict[str, Any]] = None,
-) -> Dict[str, int]:
+) -> CounterDeltas:
     """Phase D+E: process a single (issue, finding) through worktree setup,
     fix dispatch, verification, and PR publication.
 
-    Counter semantics are preserved exactly: this function takes integers by
-    value, mutates them via local rebinding, and returns the new values. The
-    orchestrator's locals are then updated from the return value.
+    Counter semantics are preserved exactly: this function reads initial
+    counter values from ``ctx``, mutates them via local rebinding, and returns
+    the new values as a ``CounterDeltas`` snapshot. The orchestrator's locals
+    are then updated from the return value.
 
-    Returns a dict of all mutated counters. Raises ``_BreakLoop`` to signal
-    that the orchestrator should stop iterating (replaces the original
-    ``break`` statements).
+    Raises ``_BreakLoop`` to signal that the orchestrator should stop iterating
+    (replaces the original ``break`` statements).
     """
+    repo_path = ctx.repo_path
+    findings_file = ctx.findings_file
+    log_file = ctx.log_file
+    worktree_root = ctx.worktree_root
+    gh_repo_slug = ctx.gh_repo_slug
+    docs_index_file = ctx.docs_index_file
+    lessons_file = ctx.lessons_file
+    args = ctx.args
+    state = ctx.state
+    pattern_store = ctx.pattern_store
+    cost_tracker = ctx.cost_tracker
+    PER_REPO_BASELINE_CHECKS = ctx.PER_REPO_BASELINE_CHECKS
+    created_prs = ctx.created_prs
+    open_prs = ctx.open_prs
+    fix_attempts = ctx.fix_attempts
+    fixes_verified = ctx.fixes_verified
+    fixes_failed_verification = ctx.fixes_failed_verification
+    claude_invocations = ctx.claude_invocations
+    deterministic_invocations = ctx.deterministic_invocations
+    blocked_reasons = ctx.blocked_reasons
+    safety_config = getattr(ctx, "safety_config", None)
+    repo_config = getattr(ctx, "repo_config", None)
+
     issue_github = issue.setdefault("github", {})
     issue_number: Optional[int] = issue_github.get("issue_number")
     issue_url: str = str(issue_github.get("issue_url") or "")
@@ -1111,82 +1132,72 @@ def _counter_snapshot(
     claude_invocations: int,
     deterministic_invocations: int,
     blocked_reasons: List[str],
-) -> Dict[str, Any]:
+) -> CounterDeltas:
     """Bundle the eight mutable counters for return from ``_process_one_issue``."""
-    return {
-        "created_prs": created_prs,
-        "open_prs": open_prs,
-        "fix_attempts": fix_attempts,
-        "fixes_verified": fixes_verified,
-        "fixes_failed_verification": fixes_failed_verification,
-        "claude_invocations": claude_invocations,
-        "deterministic_invocations": deterministic_invocations,
-        "blocked_reasons": blocked_reasons,
-    }
+    return CounterDeltas(
+        created_prs=created_prs,
+        open_prs=open_prs,
+        fix_attempts=fix_attempts,
+        fixes_verified=fixes_verified,
+        fixes_failed_verification=fixes_failed_verification,
+        claude_invocations=claude_invocations,
+        deterministic_invocations=deterministic_invocations,
+        blocked_reasons=blocked_reasons,
+    )
 
 
 def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
     """Run the PR cycle: queue candidates, apply fixes, create PRs."""
     if args:
         ctx = args[0]
-        repo_path = ctx.repo_path
-        findings_file = ctx.findings_file
-        log_file = ctx.log_file
-        worktree_root = ctx.worktree_root
-        gh_repo_slug = ctx.gh_repo_slug
-        review_state_file = ctx.review_state_file
-        docs_index_file = ctx.docs_index_file
-        lessons_file = ctx.lessons_file
-        args = ctx.args
-        state = ctx.state
-        issues_data = ctx.issues_data
-        eligible_findings = ctx.eligible_findings
-        findings = ctx.findings
-        PER_REPO_BASELINE_CHECKS = ctx.PER_REPO_BASELINE_CHECKS
-        cost_tracker = ctx.cost_tracker
-        pattern_store = ctx.pattern_store
-        created_prs = ctx.created_prs
-        open_prs = ctx.open_prs
-        fix_attempts = ctx.fix_attempts
-        fixes_verified = ctx.fixes_verified
-        fixes_failed_verification = ctx.fixes_failed_verification
-        issues_escalated_max_retries = ctx.issues_escalated_max_retries
-        claude_invocations = ctx.claude_invocations
-        deterministic_invocations = ctx.deterministic_invocations
-        blocked_reasons = ctx.blocked_reasons
-        # F1: runtime safety gates (ctx path — defensive getattr keeps
-        # historical behaviour when ctx lacks these attributes).
-        safety_config = getattr(ctx, "safety_config", None)
-        repo_config = getattr(ctx, "repo_config", None)
     else:
-        repo_path = kwargs["repo_path"]
-        findings_file = kwargs["findings_file"]
-        log_file = kwargs["log_file"]
-        worktree_root = kwargs["worktree_root"]
-        gh_repo_slug = kwargs["gh_repo_slug"]
-        review_state_file = kwargs["review_state_file"]
-        docs_index_file = kwargs["docs_index_file"]
-        lessons_file = kwargs["lessons_file"]
-        args = kwargs["args"]
-        state = kwargs["state"]
-        issues_data = kwargs["issues_data"]
-        eligible_findings = kwargs["eligible_findings"]
-        findings = kwargs["findings"]
-        PER_REPO_BASELINE_CHECKS = kwargs["PER_REPO_BASELINE_CHECKS"]
-        cost_tracker = kwargs["cost_tracker"]
-        pattern_store = kwargs["pattern_store"]
-        created_prs = kwargs["created_prs"]
-        open_prs = kwargs["open_prs"]
-        fix_attempts = kwargs["fix_attempts"]
-        fixes_verified = kwargs["fixes_verified"]
-        fixes_failed_verification = kwargs["fixes_failed_verification"]
-        issues_escalated_max_retries = kwargs["issues_escalated_max_retries"]
-        claude_invocations = kwargs["claude_invocations"]
-        deterministic_invocations = kwargs["deterministic_invocations"]
-        blocked_reasons = kwargs["blocked_reasons"]
-        # F1: runtime safety gates (kwargs path).
-        safety_config = kwargs.get("safety_config")
-        repo_config = kwargs.get("repo_config")
+        ctx = RunContext(
+            args=kwargs["args"],
+            repo_path=kwargs["repo_path"],
+            findings_file=kwargs["findings_file"],
+            log_file=kwargs["log_file"],
+            worktree_root=kwargs["worktree_root"],
+            gh_repo_slug=kwargs["gh_repo_slug"],
+            review_state_file=kwargs["review_state_file"],
+            docs_index_file=kwargs["docs_index_file"],
+            lessons_file=kwargs["lessons_file"],
+            state=kwargs["state"],
+            issues_data=kwargs["issues_data"],
+            eligible_findings=kwargs["eligible_findings"],
+            findings=kwargs["findings"],
+            PER_REPO_BASELINE_CHECKS=kwargs["PER_REPO_BASELINE_CHECKS"],
+            cost_tracker=kwargs["cost_tracker"],
+            pattern_store=kwargs["pattern_store"],
+            created_prs=kwargs["created_prs"],
+            open_prs=kwargs["open_prs"],
+            fix_attempts=kwargs["fix_attempts"],
+            fixes_verified=kwargs["fixes_verified"],
+            fixes_failed_verification=kwargs["fixes_failed_verification"],
+            issues_escalated_max_retries=kwargs["issues_escalated_max_retries"],
+            claude_invocations=kwargs["claude_invocations"],
+            deterministic_invocations=kwargs["deterministic_invocations"],
+            blocked_reasons=kwargs["blocked_reasons"],
+        )
+    repo_path = ctx.repo_path
+    findings_file = ctx.findings_file
+    log_file = ctx.log_file
+    gh_repo_slug = ctx.gh_repo_slug
+    review_state_file = ctx.review_state_file
+    args = ctx.args
+    state = ctx.state
+    issues_data = ctx.issues_data
+    eligible_findings = ctx.eligible_findings
+    findings = ctx.findings
+    PER_REPO_BASELINE_CHECKS = ctx.PER_REPO_BASELINE_CHECKS
+    created_prs = ctx.created_prs
+    open_prs = ctx.open_prs
+    fix_attempts = ctx.fix_attempts
+    fixes_verified = ctx.fixes_verified
+    fixes_failed_verification = ctx.fixes_failed_verification
+    issues_escalated_max_retries = ctx.issues_escalated_max_retries
+    claude_invocations = ctx.claude_invocations
+    deterministic_invocations = ctx.deterministic_invocations
+    blocked_reasons = ctx.blocked_reasons
 
     queue_candidates, _escalated = _select_candidates(
         repo_path=repo_path,
@@ -1289,41 +1300,20 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
             break
         try:
             _delta = _process_one_issue(
+                ctx,
                 idx,
                 issue,
                 finding,
                 baseline_results,
-                repo_path=repo_path,
-                findings_file=findings_file,
-                log_file=log_file,
-                worktree_root=worktree_root,
-                gh_repo_slug=gh_repo_slug,
-                docs_index_file=docs_index_file,
-                lessons_file=lessons_file,
-                args=args,
-                state=state,
-                pattern_store=pattern_store,
-                cost_tracker=cost_tracker,
-                PER_REPO_BASELINE_CHECKS=PER_REPO_BASELINE_CHECKS,
-                created_prs=created_prs,
-                open_prs=open_prs,
-                fix_attempts=fix_attempts,
-                fixes_verified=fixes_verified,
-                fixes_failed_verification=fixes_failed_verification,
-                claude_invocations=claude_invocations,
-                deterministic_invocations=deterministic_invocations,
-                blocked_reasons=blocked_reasons,
-                safety_config=safety_config,
-                repo_config=repo_config,
             )
-            created_prs = _delta["created_prs"]
-            open_prs = _delta["open_prs"]
-            fix_attempts = _delta["fix_attempts"]
-            fixes_verified = _delta["fixes_verified"]
-            fixes_failed_verification = _delta["fixes_failed_verification"]
-            claude_invocations = _delta["claude_invocations"]
-            deterministic_invocations = _delta["deterministic_invocations"]
-            blocked_reasons = _delta["blocked_reasons"]
+            created_prs = _delta.created_prs
+            open_prs = _delta.open_prs
+            fix_attempts = _delta.fix_attempts
+            fixes_verified = _delta.fixes_verified
+            fixes_failed_verification = _delta.fixes_failed_verification
+            claude_invocations = _delta.claude_invocations
+            deterministic_invocations = _delta.deterministic_invocations
+            blocked_reasons = _delta.blocked_reasons
         except _BreakLoop:
             break
     # end for
