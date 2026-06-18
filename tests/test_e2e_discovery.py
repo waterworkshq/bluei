@@ -269,3 +269,103 @@ class TestFindingsHaveRequiredFields:
             assert f.path, "missing path"
             assert f.line > 0, f"invalid line: {f.line}"
             assert isinstance(f.snippet, str) and len(f.snippet) > 0, "missing snippet"
+
+
+class TestRuffLinterIntegration:
+    """Tests that ruff linter findings flow through the discovery pipeline."""
+
+    def test_ruff_finds_b904_in_python_file(self, tmp_path, git_commit_all):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "handler.py").write_text(
+            "try:\n    do_thing()\nexcept Exception:\n    raise ValueError('failed')\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "t@t.com"],
+            cwd=repo,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "T"],
+            cwd=repo,
+            capture_output=True,
+            check=True,
+        )
+        git_commit_all(repo, "init")
+        log = tmp_path / "run.log"
+        findings = discover_findings(repo, log_file=log)
+        ruff_findings = [f for f in findings if "ruff" in f.rule]
+        if not ruff_findings:
+            pytest.skip("ruff not installed in test environment")
+        assert any("b904" in f.rule.lower() for f in ruff_findings), (
+            f"expected B904 finding, got rules: {[f.rule for f in ruff_findings]}"
+        )
+
+
+class TestPluginTextScanShell:
+    """Tests that shell plugin text-scan detects issues."""
+
+    def test_shell_plugin_finds_unquoted_variable(self, tmp_path):
+        from bluei.app.plugins import PluginLoader
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "deploy.sh").write_text(
+            "#!/bin/bash\necho $HOME\nrm -rf $1\n",
+            encoding="utf-8",
+        )
+        loader = PluginLoader(Path(__file__).resolve().parents[1] / "plugins")
+        loader.load_all()
+        shell_plugin = loader.get_for_language("shell")
+        if shell_plugin is None:
+            pytest.skip("shell plugin not available")
+        findings = shell_plugin.discover(repo, config={})
+        assert len(findings) > 0, (
+            "shell plugin should find issues in unquoted variables"
+        )
+
+
+class TestFullPipelineMixedSources:
+    """Tests that discovery works with multiple source types simultaneously."""
+
+    def test_python_ast_and_shell_in_same_repo(self, tmp_path, git_commit_all):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "bug.py").write_text(
+            "try:\n    pass\nexcept Exception:\n    pass\n",
+            encoding="utf-8",
+        )
+        scripts = repo / "scripts"
+        scripts.mkdir()
+        (scripts / "build.sh").write_text(
+            "#!/bin/bash\nfor f in $@\ndo\n  cp $f /tmp/build/\ndone\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "t@t.com"],
+            cwd=repo,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "T"],
+            cwd=repo,
+            capture_output=True,
+            check=True,
+        )
+        git_commit_all(repo, "init")
+        log = tmp_path / "run.log"
+        findings = discover_findings(repo, log_file=log)
+        assert len(findings) >= 1
+        paths = {f.path for f in findings}
+        assert any("bug.py" in p for p in paths), (
+            f"expected Python finding, got paths: {paths}"
+        )
+        rules = {f.rule for f in findings}
+        assert any("broad" in r for r in rules), (
+            f"expected broad-except, got rules: {rules}"
+        )
