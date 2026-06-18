@@ -53,6 +53,12 @@ from bluei.engine.gh.repo import (  # noqa: F401
     parse_pr_number_from_url,
 )
 
+# Step 3: sandbox & self-merge policy moved to bluei.engine.gh.sandbox.
+# repo_is_sandbox is re-exported here to preserve the public surface; the
+# private _load_self_merge_repos_from_global_config is module-local and not
+# re-exported.  Note the parents[3] fix documented in sandbox.py.
+from bluei.engine.gh.sandbox import repo_is_sandbox  # noqa: F401
+
 logger = logging.getLogger(__name__)
 
 
@@ -284,61 +290,6 @@ def finding_from_issue_record(issue: Dict[str, Any]) -> Optional[Finding]:
         quick_win=bool(issue.get("quick_win", confidence >= 0.9)),
         safe_to_autofix=bool(issue.get("safe_to_autofix", inferred_autofix)),
     )
-
-
-def _load_self_merge_repos_from_global_config() -> List[str]:
-    """Read ``github.self_merge_repos`` from the workspace ``config.yaml``
-    without going through the app layer.
-
-    Mirrors the path resolution of ``bluei.app.config.load_global_config``
-    (``QA_AGENT_WORKSPACE`` env var or repo root) but reads only the specific
-    key we need. Avoids an engine->app import (rec-08).
-    """
-    workspace = Path(
-        os.environ.get("QA_AGENT_WORKSPACE", Path(__file__).resolve().parents[2])
-    ).expanduser()
-    config_path = workspace / "config.yaml"
-    if not config_path.exists():
-        return []
-    try:
-        with open(config_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-        if not isinstance(data, dict):
-            return []
-        value = data.get("github", {}).get("self_merge_repos", [])
-        return list(value) if value else []
-    except Exception:
-        return []
-
-
-def repo_is_sandbox(
-    repo_slug: str, self_merge_repos: Optional[List[str]] = None
-) -> bool:
-    """Check whether a repo slug is a sandbox or self-merge repo.
-
-    Args:
-        repo_slug: GitHub repo in ``owner/repo`` format.
-        self_merge_repos: Optional list of self-merge repo slugs. If None,
-            reads from global config (``github.self_merge_repos``) with
-            env var fallback (``BLUEI_SELF_MERGE_REPOS``).
-
-    Returns:
-        ``True`` if the repo ends with ``qa-sandbox-repo`` or is listed
-        in the self-merge list.
-    """
-    if repo_slug.endswith("/qa-sandbox-repo"):
-        return True
-    if self_merge_repos is None:
-        self_merge_repos = _load_self_merge_repos_from_global_config()
-        if not self_merge_repos:
-            env_val = os.environ.get("BLUEI_SELF_MERGE_REPOS", "")
-            self_merge_repos = (
-                [s.strip() for s in env_val.split(",") if s.strip()] if env_val else []
-            )
-    for slug in self_merge_repos:
-        if repo_slug == slug or repo_slug.endswith("/" + slug):
-            return True
-    return False
 
 
 def fetch_open_prs_for_merge(repo_slug: str, cwd: Path) -> List[Dict[str, Any]]:

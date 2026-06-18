@@ -183,3 +183,78 @@ def test_bluei_engine_gh_get_origin_url_is_repo_get_origin_url():
     assert gh.parse_github_repo is repo.parse_github_repo
     assert gh.parse_issue_number_from_url is repo.parse_issue_number_from_url
     assert gh.parse_pr_number_from_url is repo.parse_pr_number_from_url
+
+
+# --- Step 3: sandbox & self-merge policy extraction ---
+
+
+def test_load_self_merge_repos_missing_config_file(tmp_path: Path, monkeypatch):
+    """Step 3 characterization: missing config.yaml -> []."""
+    monkeypatch.setenv("QA_AGENT_WORKSPACE", str(tmp_path))
+    from bluei.engine.gh.sandbox import _load_self_merge_repos_from_global_config
+
+    # No config.yaml in tmp_path
+    assert _load_self_merge_repos_from_global_config() == []
+
+
+def test_load_self_merge_repos_malformed_yaml(tmp_path: Path, monkeypatch):
+    """Step 3 characterization: unparseable YAML -> []."""
+    monkeypatch.setenv("QA_AGENT_WORKSPACE", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("not: valid: yaml: [[[", encoding="utf-8")
+    from bluei.engine.gh.sandbox import _load_self_merge_repos_from_global_config
+
+    assert _load_self_merge_repos_from_global_config() == []
+
+
+def test_load_self_merge_repos_non_dict_payload(tmp_path: Path, monkeypatch):
+    """Step 3 characterization: YAML that parses to a non-dict (e.g. list) -> []."""
+    monkeypatch.setenv("QA_AGENT_WORKSPACE", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("- just\n- a\n- list\n", encoding="utf-8")
+    from bluei.engine.gh.sandbox import _load_self_merge_repos_from_global_config
+
+    assert _load_self_merge_repos_from_global_config() == []
+
+
+def test_sandbox_repo_is_sandbox_callable():
+    """Step 3 extraction: repo_is_sandbox lives on the sandbox module."""
+    from bluei.engine.gh import sandbox
+
+    assert callable(sandbox.repo_is_sandbox)
+    assert sandbox.repo_is_sandbox("owner/qa-sandbox-repo") is True
+
+
+def test_workspace_root_resolution_still_correct(tmp_path: Path, monkeypatch):
+    """Step 3 extraction: the parents[2] -> parents[3] fix works.
+
+    The workspace root resolved by _load_self_merge_repos_from_global_config
+    MUST point at the real repo root (where config.yaml lives).  After the
+    move into gh/sandbox.py the file is one level deeper, so parents[2]
+    would resolve to bluei/ (which has no config.yaml) and the loader
+    would silently return [].  We pin a config.yaml in a synthetic
+    workspace and assert the loader reads it.
+
+    Guards Risk #2 from the plan.
+    """
+    workspace = tmp_path
+    (workspace / "config.yaml").write_text(
+        "github:\n  self_merge_repos:\n    - acme/widget\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("QA_AGENT_WORKSPACE", str(workspace))
+
+    from bluei.engine.gh.sandbox import _load_self_merge_repos_from_global_config
+
+    # If parents[3] is wrong, this returns [] and the assertion fails.
+    result = _load_self_merge_repos_from_global_config()
+    assert result == ["acme/widget"], (
+        f"workspace root resolution broken -- got {result!r}; "
+        "check Path(__file__).resolve().parents[N] index in sandbox.py"
+    )
+
+    # And repo_is_sandbox must classify accordingly.
+    from bluei.engine.gh import sandbox
+
+    monkeypatch.delenv("BLUEI_SELF_MERGE_REPOS", raising=False)
+    assert sandbox.repo_is_sandbox("acme/widget") is True
+    assert sandbox.repo_is_sandbox("fork/acme/widget") is True
+    assert sandbox.repo_is_sandbox("acme/other") is False
