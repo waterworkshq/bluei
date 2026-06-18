@@ -35,6 +35,10 @@ from bluei.review.safety import SafetyMixin
 from bluei.review.worktree import WorktreeMixin
 from bluei.review.generation import GenerationMixin
 from bluei.review.observation import ObservationMixin
+from bluei.review.status_classification import StatusClassificationMixin
+from bluei.review.state_recording import StateRecordingMixin
+from bluei.review.pr_targeting import PrTargetingMixin
+from bluei.review.publication_pipeline import PublicationMixin
 from bluei.review.autonomous import AutonomousMixin
 
 
@@ -43,6 +47,10 @@ class ReviewCycleEngine(
     WorktreeMixin,
     GenerationMixin,
     ObservationMixin,
+    StatusClassificationMixin,
+    StateRecordingMixin,
+    PrTargetingMixin,
+    PublicationMixin,
     AutonomousMixin,
 ):
     """Review cycle engine with observation + remediation planning groundwork."""
