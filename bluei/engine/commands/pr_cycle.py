@@ -262,6 +262,50 @@ class CounterDeltas:
     blocked_reasons: List[str] = field(default_factory=list)
 
 
+@dataclass
+class _IssueCounters:
+    """Mutable counter state for _process_one_issue.
+
+    Initialized from RunContext, mutated in place by the function body,
+    converted to CounterDeltas via to_deltas() for the return value.
+    Replaces 8 individual local variables + the _counter_snapshot helper.
+    """
+
+    created_prs: int = 0
+    open_prs: int = 0
+    fix_attempts: int = 0
+    fixes_verified: int = 0
+    fixes_failed_verification: int = 0
+    claude_invocations: int = 0
+    deterministic_invocations: int = 0
+    blocked_reasons: List[str] = field(default_factory=list)
+
+    @classmethod
+    def from_ctx(cls, ctx: "RunContext") -> "_IssueCounters":
+        return cls(
+            created_prs=ctx.created_prs,
+            open_prs=ctx.open_prs,
+            fix_attempts=ctx.fix_attempts,
+            fixes_verified=ctx.fixes_verified,
+            fixes_failed_verification=ctx.fixes_failed_verification,
+            claude_invocations=ctx.claude_invocations,
+            deterministic_invocations=ctx.deterministic_invocations,
+            blocked_reasons=list(ctx.blocked_reasons),
+        )
+
+    def to_deltas(self) -> CounterDeltas:
+        return CounterDeltas(
+            created_prs=self.created_prs,
+            open_prs=self.open_prs,
+            fix_attempts=self.fix_attempts,
+            fixes_verified=self.fixes_verified,
+            fixes_failed_verification=self.fixes_failed_verification,
+            claude_invocations=self.claude_invocations,
+            deterministic_invocations=self.deterministic_invocations,
+            blocked_reasons=list(self.blocked_reasons),
+        )
+
+
 def _finalize_pr_for_issue(
     *,
     issue: Dict[str, Any],
@@ -470,14 +514,7 @@ def _process_one_issue(
     pattern_store = ctx.pattern_store
     cost_tracker = ctx.cost_tracker
     PER_REPO_BASELINE_CHECKS = ctx.PER_REPO_BASELINE_CHECKS
-    created_prs = ctx.created_prs
-    open_prs = ctx.open_prs
-    fix_attempts = ctx.fix_attempts
-    fixes_verified = ctx.fixes_verified
-    fixes_failed_verification = ctx.fixes_failed_verification
-    claude_invocations = ctx.claude_invocations
-    deterministic_invocations = ctx.deterministic_invocations
-    blocked_reasons = ctx.blocked_reasons
+    counters = _IssueCounters.from_ctx(ctx)
     safety_config = getattr(ctx, "safety_config", None)
     repo_config = getattr(ctx, "repo_config", None)
 
@@ -541,16 +578,7 @@ def _process_one_issue(
                     finding_ids=[finding.finding_id],
                     action="pr-open-existing",
                 )
-                return _counter_snapshot(
-                    created_prs,
-                    open_prs,
-                    fix_attempts,
-                    fixes_verified,
-                    fixes_failed_verification,
-                    claude_invocations,
-                    deterministic_invocations,
-                    blocked_reasons,
-                )
+                return counters.to_deltas()
         elif existing_pr:
             _append_text(
                 log_file,
@@ -576,17 +604,8 @@ def _process_one_issue(
         log_file=log_file,
     )
     if not wt_result.success:
-        blocked_reasons.append("failed-to-create-worktree")
-        return _counter_snapshot(
-            created_prs,
-            open_prs,
-            fix_attempts,
-            fixes_verified,
-            fixes_failed_verification,
-            claude_invocations,
-            deterministic_invocations,
-            blocked_reasons,
-        )
+        counters.blocked_reasons.append("failed-to-create-worktree")
+        return counters.to_deltas()
 
     hydrate_worktree(
         repo_path=repo_path, worktree_path=worktree_path, log_file=log_file
@@ -594,7 +613,7 @@ def _process_one_issue(
 
     run_status = "unknown"
     try:
-        fix_attempts += 1
+        counters.fix_attempts += 1
         set_issue_status(issue, "fix_attempted", "starting sandbox autofix attempt")
 
         worktree_baseline_results = run_named_checks(
@@ -656,14 +675,14 @@ def _process_one_issue(
                 )
                 if applied:
                     run_status = "fix-applied:cascade"
-                    deterministic_invocations += 1
+                    counters.deterministic_invocations += 1
                     _append_text(
                         log_file,
                         f"cascade-fix: succeeded finding_id={finding.finding_id} rule={finding.rule}",
                     )
                 else:
                     run_status = "fix-noop:cascade-exhausted"
-                    fixes_failed_verification += 1
+                    counters.fixes_failed_verification += 1
                     _append_text(
                         log_file,
                         f"cascade-fix: exhausted finding_id={finding.finding_id} rule={finding.rule}",
@@ -674,16 +693,7 @@ def _process_one_issue(
                             findings_file,
                             f"cascade exhausted rule={finding.rule}",
                         )
-                    return _counter_snapshot(
-                        created_prs,
-                        open_prs,
-                        fix_attempts,
-                        fixes_verified,
-                        fixes_failed_verification,
-                        claude_invocations,
-                        deterministic_invocations,
-                        blocked_reasons,
-                    )
+                    return counters.to_deltas()
             else:
                 llm_rules = _get_llm_fixable_rules()
                 is_llm_fixable = (
@@ -695,9 +705,9 @@ def _process_one_issue(
                     or is_llm_fixable
                 )
                 if use_claude_engine:
-                    claude_invocations += 1
+                    counters.claude_invocations += 1
                 else:
-                    deterministic_invocations += 1
+                    counters.deterministic_invocations += 1
                 extra_prompt = (
                     llm_rules.get(finding.rule, {}).get("prompt_hint")
                     if is_llm_fixable
@@ -713,17 +723,8 @@ def _process_one_issue(
                     )
                     run_status = "fix-skipped:cost-limit-reached"
                     set_issue_status(issue, "fix_skipped", run_status)
-                    fixes_failed_verification += 1
-                    return _counter_snapshot(
-                        created_prs,
-                        open_prs,
-                        fix_attempts,
-                        fixes_verified,
-                        fixes_failed_verification,
-                        claude_invocations,
-                        deterministic_invocations,
-                        blocked_reasons,
-                    )
+                    counters.fixes_failed_verification += 1
+                    return counters.to_deltas()
 
                 if use_claude_engine:
                     rc, claude_output, prompt_file = apply_claude_fix(
@@ -754,7 +755,7 @@ def _process_one_issue(
                     if rc != 0:
                         run_status = "fix-failed-verification:claude-command-failed"
                         set_issue_status(issue, "fix_failed_verification", run_status)
-                        fixes_failed_verification += 1
+                        counters.fixes_failed_verification += 1
                         if (
                             args.live_github_actions
                             and issue_number is not None
@@ -781,16 +782,7 @@ def _process_one_issue(
                             failure_count=current_failures + 1,
                             last_error=f"claude rc={rc}",
                         )
-                        return _counter_snapshot(
-                            created_prs,
-                            open_prs,
-                            fix_attempts,
-                            fixes_verified,
-                            fixes_failed_verification,
-                            claude_invocations,
-                            deterministic_invocations,
-                            blocked_reasons,
-                        )
+                        return counters.to_deltas()
                 else:
                     applied = apply_autofix(
                         worktree_path,
@@ -865,7 +857,7 @@ def _process_one_issue(
                             "fix_failed_verification",
                             "autofix could not modify target pattern",
                         )
-                        fixes_failed_verification += 1
+                        counters.fixes_failed_verification += 1
                         if finding.finding_id:
                             increment_fix_attempt(
                                 finding.finding_id,
@@ -894,16 +886,7 @@ def _process_one_issue(
                             failure_count=current_failures + 1,
                             last_error=f"autofix no-op rule={finding.rule}",
                         )
-                        return _counter_snapshot(
-                            created_prs,
-                            open_prs,
-                            fix_attempts,
-                            fixes_verified,
-                            fixes_failed_verification,
-                            claude_invocations,
-                            deterministic_invocations,
-                            blocked_reasons,
-                        )
+                        return counters.to_deltas()
 
         files_changed, loc_diff = diff_stats(worktree_path)
         _append_text(
@@ -925,7 +908,7 @@ def _process_one_issue(
                     "resolved_verified",
                     "finding already closed on branch; no code change needed",
                 )
-                fixes_verified += 1
+                counters.fixes_verified += 1
                 if (
                     args.live_github_actions
                     and issue_number is not None
@@ -948,22 +931,13 @@ def _process_one_issue(
                     finding_ids=[finding.finding_id],
                     action="resolved-noop-verified",
                 )
-                return _counter_snapshot(
-                    created_prs,
-                    open_prs,
-                    fix_attempts,
-                    fixes_verified,
-                    fixes_failed_verification,
-                    claude_invocations,
-                    deterministic_invocations,
-                    blocked_reasons,
-                )
+                return counters.to_deltas()
 
         if files_changed > args.max_files_changed or loc_diff > args.max_loc_diff:
             run_status = IssueStatus.NEEDS_HUMAN_SCOPE_LIMIT_EXCEEDED.value
-            blocked_reasons.append(run_status)
+            counters.blocked_reasons.append(run_status)
             set_issue_status(issue, "fix_failed_verification", run_status)
-            fixes_failed_verification += 1
+            counters.fixes_failed_verification += 1
             if (
                 args.live_github_actions
                 and issue_number is not None
@@ -1015,9 +989,9 @@ def _process_one_issue(
             run_status = (
                 f"{IssueStatus.NEEDS_HUMAN_VALIDATION_FAILED.value}:{validation_reason}"
             )
-            blocked_reasons.append(run_status)
+            counters.blocked_reasons.append(run_status)
             set_issue_status(issue, "fix_failed_verification", run_status)
-            fixes_failed_verification += 1
+            counters.fixes_failed_verification += 1
             if (
                 args.live_github_actions
                 and issue_number is not None
@@ -1042,7 +1016,7 @@ def _process_one_issue(
                 "fix_failed_verification",
                 "detector still firing after fix + validation",
             )
-            fixes_failed_verification += 1
+            counters.fixes_failed_verification += 1
             if (
                 args.live_github_actions
                 and issue_number is not None
@@ -1065,16 +1039,7 @@ def _process_one_issue(
                 failure_count=current_failures + 1,
                 last_error="detector still firing after fix",
             )
-            return _counter_snapshot(
-                created_prs,
-                open_prs,
-                fix_attempts,
-                fixes_verified,
-                fixes_failed_verification,
-                claude_invocations,
-                deterministic_invocations,
-                blocked_reasons,
-            )
+            return counters.to_deltas()
 
         finalize_result = _finalize_pr_for_issue(
             issue=issue,
@@ -1092,11 +1057,13 @@ def _process_one_issue(
             safety_config=safety_config,
             repo_config=repo_config,
         )
-        fixes_verified += finalize_result.fixes_verified_delta
-        fixes_failed_verification += finalize_result.fixes_failed_verification_delta
-        created_prs += finalize_result.created_prs_delta
-        open_prs += finalize_result.open_prs_delta
-        blocked_reasons.extend(finalize_result.blocked_reasons_additions)
+        counters.fixes_verified += finalize_result.fixes_verified_delta
+        counters.fixes_failed_verification += (
+            finalize_result.fixes_failed_verification_delta
+        )
+        counters.created_prs += finalize_result.created_prs_delta
+        counters.open_prs += finalize_result.open_prs_delta
+        counters.blocked_reasons.extend(finalize_result.blocked_reasons_additions)
         run_status = finalize_result.run_status
         if finalize_result.should_break:
             raise _BreakLoop()
@@ -1111,39 +1078,7 @@ def _process_one_issue(
         )
         _append_text(log_file, f"cleanup: branch={worktree_branch} status={run_status}")
 
-    return _counter_snapshot(
-        created_prs,
-        open_prs,
-        fix_attempts,
-        fixes_verified,
-        fixes_failed_verification,
-        claude_invocations,
-        deterministic_invocations,
-        blocked_reasons,
-    )
-
-
-def _counter_snapshot(
-    created_prs: int,
-    open_prs: int,
-    fix_attempts: int,
-    fixes_verified: int,
-    fixes_failed_verification: int,
-    claude_invocations: int,
-    deterministic_invocations: int,
-    blocked_reasons: List[str],
-) -> CounterDeltas:
-    """Bundle the eight mutable counters for return from ``_process_one_issue``."""
-    return CounterDeltas(
-        created_prs=created_prs,
-        open_prs=open_prs,
-        fix_attempts=fix_attempts,
-        fixes_verified=fixes_verified,
-        fixes_failed_verification=fixes_failed_verification,
-        claude_invocations=claude_invocations,
-        deterministic_invocations=deterministic_invocations,
-        blocked_reasons=blocked_reasons,
-    )
+    return counters.to_deltas()
 
 
 def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
