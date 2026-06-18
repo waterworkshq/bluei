@@ -484,39 +484,37 @@ def _finalize_pr_for_issue(
     )
 
 
-def _process_one_issue(
+@dataclass
+class _WorktreeSetup:
+    """Result of Phase 2: worktree path/branch handed to subsequent phases."""
+
+    worktree_path: Path
+    worktree_branch: str
+    existing_pr_for_repair: Optional[Dict[str, Any]] = None
+
+
+def _resolve_github(
     ctx: RunContext,
-    idx: int,
+    counters: _IssueCounters,
     issue: Dict[str, Any],
     finding: Finding,
-    baseline_results: Dict[str, Dict[str, Any]],
-) -> CounterDeltas:
-    """Phase D+E: process a single (issue, finding) through worktree setup,
-    fix dispatch, verification, and PR publication.
+) -> bool:
+    """Phase 1: Resolve GitHub issue + check for existing PR.
 
-    Counter semantics are preserved exactly: this function reads initial
-    counter values from ``ctx``, mutates them via local rebinding, and returns
-    the new values as a ``CounterDeltas`` snapshot. The orchestrator's locals
-    are then updated from the return value.
+    Creates/updates the GitHub issue when live actions are on and no issue
+    number is known, then looks for an existing PR for the finding. When an
+    open PR exists that is not under repair, short-circuits the whole pipeline.
 
-    Raises ``_BreakLoop`` to signal that the orchestrator should stop iterating
-    (replaces the original ``break`` statements).
+    Returns True if the orchestrator should short-circuit (existing open PR
+    found, no repair needed); False to continue to worktree setup. Mutates the
+    ``issue`` dict in place (issue_number/issue_url/PR metadata + a transient
+    ``_existing_pr_for_repair`` entry consumed by Phase 2).
     """
-    repo_path = ctx.repo_path
-    findings_file = ctx.findings_file
-    log_file = ctx.log_file
-    worktree_root = ctx.worktree_root
-    gh_repo_slug = ctx.gh_repo_slug
-    docs_index_file = ctx.docs_index_file
-    lessons_file = ctx.lessons_file
     args = ctx.args
+    gh_repo_slug = ctx.gh_repo_slug
+    repo_path = ctx.repo_path
+    log_file = ctx.log_file
     state = ctx.state
-    pattern_store = ctx.pattern_store
-    cost_tracker = ctx.cost_tracker
-    PER_REPO_BASELINE_CHECKS = ctx.PER_REPO_BASELINE_CHECKS
-    counters = _IssueCounters.from_ctx(ctx)
-    safety_config = getattr(ctx, "safety_config", None)
-    repo_config = getattr(ctx, "repo_config", None)
 
     issue_github = issue.setdefault("github", {})
     issue_number: Optional[int] = issue_github.get("issue_number")
@@ -578,12 +576,36 @@ def _process_one_issue(
                     finding_ids=[finding.finding_id],
                     action="pr-open-existing",
                 )
-                return counters.to_deltas()
+                return True
         elif existing_pr:
             _append_text(
                 log_file,
                 f"pr-cycle: ignoring closed linked PR #{existing_pr.get('number')} for finding={finding.finding_id}",
             )
+
+    issue["_existing_pr_for_repair"] = existing_pr_for_repair
+    return False
+
+
+def _setup_worktree(
+    ctx: RunContext,
+    counters: _IssueCounters,
+    idx: int,
+    issue: Dict[str, Any],
+    finding: Finding,
+    existing_pr_for_repair: Optional[Dict[str, Any]],
+) -> Optional[_WorktreeSetup]:
+    """Phase 2: Compute branch, create + hydrate the worktree.
+
+    Returns None when worktree creation failed (short-circuit with a blocked
+    reason recorded on ``counters``); otherwise returns a ``_WorktreeSetup``
+    describing the path/branch for the subsequent phases.
+    """
+    args = ctx.args
+    worktree_root = ctx.worktree_root
+    repo_path = ctx.repo_path
+    log_file = ctx.log_file
+    issue_github = issue.setdefault("github", {})
 
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
     finding_suffix = finding.finding_id[:8]
@@ -605,11 +627,75 @@ def _process_one_issue(
     )
     if not wt_result.success:
         counters.blocked_reasons.append("failed-to-create-worktree")
-        return counters.to_deltas()
+        return None
 
     hydrate_worktree(
         repo_path=repo_path, worktree_path=worktree_path, log_file=log_file
     )
+
+    return _WorktreeSetup(
+        worktree_path=worktree_path,
+        worktree_branch=worktree_branch,
+        existing_pr_for_repair=existing_pr_for_repair,
+    )
+
+
+def _process_one_issue(
+    ctx: RunContext,
+    idx: int,
+    issue: Dict[str, Any],
+    finding: Finding,
+    baseline_results: Dict[str, Dict[str, Any]],
+) -> CounterDeltas:
+    """Phase D+E: process a single (issue, finding) through worktree setup,
+    fix dispatch, verification, and PR publication.
+
+    Counter semantics are preserved exactly: this function reads initial
+    counter values from ``ctx``, mutates them via local rebinding, and returns
+    the new values as a ``CounterDeltas`` snapshot. The orchestrator's locals
+    are then updated from the return value.
+
+    Raises ``_BreakLoop`` to signal that the orchestrator should stop iterating
+    (replaces the original ``break`` statements).
+    """
+    repo_path = ctx.repo_path
+    findings_file = ctx.findings_file
+    log_file = ctx.log_file
+    worktree_root = ctx.worktree_root
+    gh_repo_slug = ctx.gh_repo_slug
+    docs_index_file = ctx.docs_index_file
+    lessons_file = ctx.lessons_file
+    args = ctx.args
+    state = ctx.state
+    pattern_store = ctx.pattern_store
+    cost_tracker = ctx.cost_tracker
+    PER_REPO_BASELINE_CHECKS = ctx.PER_REPO_BASELINE_CHECKS
+    counters = _IssueCounters.from_ctx(ctx)
+    safety_config = getattr(ctx, "safety_config", None)
+    repo_config = getattr(ctx, "repo_config", None)
+
+    # Phase 1: GitHub resolution (create/update issue + existing PR check).
+    # Short-circuits when an existing open PR is found and not under repair.
+    if _resolve_github(ctx, counters, issue, finding):
+        return counters.to_deltas()
+
+    # Re-derive issue metadata after Phase 1, which may have created/updated
+    # the GitHub issue and mutated the issue dict in place. The transient
+    # ``_existing_pr_for_repair`` entry is popped so it never persists.
+    issue_github = issue.setdefault("github", {})
+    issue_number: Optional[int] = issue_github.get("issue_number")
+    issue_url: str = str(issue_github.get("issue_url") or "")
+    existing_pr_for_repair: Optional[Dict[str, Any]] = issue.pop(
+        "_existing_pr_for_repair", None
+    )
+
+    # Phase 2: Worktree setup (branch computation + create + hydrate).
+    # Short-circuits when worktree creation fails (records blocked reason).
+    wt = _setup_worktree(ctx, counters, idx, issue, finding, existing_pr_for_repair)
+    if wt is None:
+        return counters.to_deltas()
+    worktree_path = wt.worktree_path
+    worktree_branch = wt.worktree_branch
 
     run_status = "unknown"
     try:
