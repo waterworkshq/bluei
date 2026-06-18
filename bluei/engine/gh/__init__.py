@@ -42,56 +42,18 @@ from bluei.engine.utils import run_capture
 # the call sites in this module (name resolution happens at call time).
 from bluei.engine.gh._core import finding_dedupe_marker, gh_json  # noqa: F401
 
+# Step 2: repo identity & slug helpers moved to bluei.engine.gh.repo.
+# get_origin_url resolves run_capture via the facade pattern (see repo.py);
+# the other three are pure.  Re-exported here to preserve the public surface
+# ``bluei.engine.gh.{get_origin_url, parse_github_repo, ...}``.
+from bluei.engine.gh.repo import (  # noqa: F401
+    get_origin_url,
+    parse_github_repo,
+    parse_issue_number_from_url,
+    parse_pr_number_from_url,
+)
+
 logger = logging.getLogger(__name__)
-
-
-def get_origin_url(repo_path: Path) -> str:
-    """Return the git remote ``origin`` URL, or empty string on failure."""
-    rc, out = run_capture(["git", "remote", "get-url", "origin"], cwd=repo_path)
-    if rc != 0:
-        return ""
-    return out.strip()
-
-
-def parse_github_repo(origin_url: str) -> tuple[str, str]:
-    """Extract (owner, repo) from a GitHub origin URL.
-
-    Args:
-        origin_url: A git remote URL (HTTPS or SSH).
-
-    Returns:
-        ``(owner, repo)`` tuple, or ``('', '')`` if not parseable.
-    """
-    normalized = origin_url.strip()
-    if normalized.endswith(".git"):
-        normalized = normalized[:-4]
-
-    marker = "github.com/"
-    if marker in normalized:
-        slug = normalized.split(marker, 1)[1]
-    elif normalized.startswith("git@github.com:"):
-        slug = normalized.split(":", 1)[1]
-    else:
-        return "", ""
-
-    parts = [part for part in slug.strip("/").split("/") if part]
-    if len(parts) != 2:
-        return "", ""
-    return parts[0], parts[1]
-
-
-def parse_issue_number_from_url(url: Optional[str]) -> Optional[int]:
-    if not url:
-        return None
-    match = re.search(r"/issues/(\d+)$", url)
-    return int(match.group(1)) if match else None
-
-
-def parse_pr_number_from_url(url: Optional[str]) -> Optional[int]:
-    if not url:
-        return None
-    match = re.search(r"/pull/(\d+)$", url)
-    return int(match.group(1)) if match else None
 
 
 def find_existing_github_issue(

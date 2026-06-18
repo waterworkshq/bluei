@@ -121,3 +121,65 @@ def test_workspace_root_resolution():
     # Should not raise and must return a bool for an arbitrary slug.
     result = gh.repo_is_sandbox("owner/some-repo")
     assert isinstance(result, bool)
+
+
+# --- Step 2: repo identity helpers extraction ---
+
+
+def test_parse_github_repo_ssh_url():
+    """Step 2 characterization: SSH ``git@github.com:owner/repo`` format."""
+    from bluei.engine.gh import parse_github_repo
+
+    owner, repo = parse_github_repo("git@github.com:acme/widget.git")
+    assert owner == "acme"
+    assert repo == "widget"
+
+
+def test_parse_github_repo_no_marker():
+    """Step 2 characterization: non-GitHub URL returns ``('', '')``."""
+    from bluei.engine.gh import parse_github_repo
+
+    owner, repo = parse_github_repo("https://gitlab.com/acme/widget")
+    assert owner == ""
+    assert repo == ""
+
+
+def test_get_origin_url_failure_returns_empty(tmp_path: Path):
+    """Step 2 characterization: rc != 0 from run_capture yields empty string."""
+    from unittest.mock import patch
+
+    from bluei.engine import gh
+
+    with patch.object(gh, "run_capture", return_value=(1, "")):
+        result = gh.get_origin_url(tmp_path)
+    assert result == ""
+
+
+def test_repo_module_exports_all_four_parsers():
+    """Step 2 extraction: repo module exposes the four moved helpers."""
+    from bluei.engine.gh import repo
+
+    for name in (
+        "get_origin_url",
+        "parse_github_repo",
+        "parse_issue_number_from_url",
+        "parse_pr_number_from_url",
+    ):
+        assert hasattr(repo, name), f"bluei.engine.gh.repo.{name} missing"
+
+
+def test_bluei_engine_gh_get_origin_url_is_repo_get_origin_url():
+    """Step 2 extraction: the facade re-export is the same callable.
+
+    Asserts ``bluei.engine.gh.get_origin_url`` and
+    ``bluei.engine.gh.repo.get_origin_url`` are literally the same object --
+    if they diverged (e.g. the facade still held a stale local definition),
+    patches on the facade would not reach the module-level call sites.
+    """
+    from bluei.engine import gh
+    from bluei.engine.gh import repo
+
+    assert gh.get_origin_url is repo.get_origin_url
+    assert gh.parse_github_repo is repo.parse_github_repo
+    assert gh.parse_issue_number_from_url is repo.parse_issue_number_from_url
+    assert gh.parse_pr_number_from_url is repo.parse_pr_number_from_url
