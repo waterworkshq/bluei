@@ -616,3 +616,89 @@ def test_evaluate_pr_reviews_branch_protection_call_uses_facade(tmp_path: Path):
         "has_reviews": False,
         "reason": "no-reviews-no-protection-pass",
     }
+
+
+# --- Step 7: PR regression audit extraction ---
+
+
+def test_pr_regression_module_exports_evaluate_pr_regression():
+    """Step 7 extraction: pr_regression module exposes the moved function."""
+    from bluei.engine.gh import pr_regression
+
+    assert hasattr(pr_regression, "evaluate_pr_regression"), (
+        "bluei.engine.gh.pr_regression.evaluate_pr_regression missing"
+    )
+
+
+def test_bluei_engine_gh_pr_regression_same_object_as_module():
+    """Step 7 extraction: facade re-export is literally the same callable.
+
+    Asserts ``bluei.engine.gh.evaluate_pr_regression`` is identical to
+    ``bluei.engine.gh.pr_regression.evaluate_pr_regression``.
+    """
+    from bluei.engine import gh
+    from bluei.engine.gh import pr_regression
+
+    assert gh.evaluate_pr_regression is pr_regression.evaluate_pr_regression, (
+        "bluei.engine.gh.evaluate_pr_regression is not "
+        "bluei.engine.gh.pr_regression.evaluate_pr_regression"
+    )
+
+
+def test_evaluate_pr_regression_pr_info_unavailable_uses_facade_gh_json(
+    tmp_path: Path,
+):
+    """Step 7 patch-surface: when ``gh_json`` returns a non-dict, the function
+    short-circuits via the facade-routed ``gh_json`` call.  Patching
+    ``bluei.engine.gh.gh_json`` must reach the call site inside pr_regression.py.
+    """
+    from unittest.mock import patch
+
+    from bluei.engine import gh
+
+    with patch.object(gh, "gh_json", return_value=None) as mock_gh_json:
+        result = gh.evaluate_pr_regression("acme/widget", 11, cwd=tmp_path)
+    assert mock_gh_json.called, (
+        "Patch on bluei.engine.gh.gh_json did not reach evaluate_pr_regression"
+    )
+    assert result["action"] == "safe-to-merge"
+    assert result["pr_info"] is None
+    assert result.get("error") == "pr-info-unavailable"
+
+
+def test_evaluate_pr_regression_resolves_check_health_via_facade(tmp_path: Path):
+    """Step 7 cross-module indirection: ``evaluate_pr_check_health`` moved
+    into merge_eval.py in Step 6, so a bare-name call inside pr_regression
+    would NameError.  Routing through ``_facade`` keeps both the call working
+    AND the patch surface intact -- patching
+    ``bluei.engine.gh.evaluate_pr_check_health`` must reach the call site.
+
+    Uses a two-call side_effect on gh_json: first call returns a valid PR
+    info dict (so the function proceeds past the early return), and we patch
+    run_capture + check_health to avoid invoking gh subprocesses for the diff
+    and the regression-engine imports stay lazy and unloaded on this path.
+    """
+    from unittest.mock import patch
+
+    from bluei.engine import gh
+
+    pr_info = {
+        "number": 11,
+        "headRefName": "feature-x",
+        "baseRefName": "main",
+        "title": "feat: x",
+    }
+
+    with (
+        patch.object(gh, "gh_json", return_value=pr_info),
+        patch.object(gh, "run_capture", return_value=(0, "")),
+        patch.object(
+            gh, "evaluate_pr_check_health", return_value={"eligible": True}
+        ) as mock_health,
+    ):
+        result = gh.evaluate_pr_regression("acme/widget", 11, cwd=tmp_path)
+    assert mock_health.called, (
+        "Patch on bluei.engine.gh.evaluate_pr_check_health did not reach "
+        "evaluate_pr_regression (cross-module _facade indirection broken)"
+    )
+    assert result["check_health"] == {"eligible": True}
