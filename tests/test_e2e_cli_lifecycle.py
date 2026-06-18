@@ -369,3 +369,205 @@ class TestFullChain:
 
         ret = _cmd_doctor([])
         assert ret == 0
+
+    def test_full_chain_init_onboard_scan_report(self, e2e_env, monkeypatch, capsys):
+        """Full lifecycle: init → onboard → scan → report (JSON).
+
+        Verifies each CLI stage composes with the next: init registers the
+        repo, onboard runs plugin discovery + writes config, scan produces
+        findings/status, report reads that state and emits structured JSON.
+        """
+        ev = e2e_env
+
+        # ── 1. init: quick registration ──
+        _patch_workspace(ev, monkeypatch)
+        from bin.bluei import _cmd_init
+
+        ret = _cmd_init(["--path", str(ev["repo_path"]), "--name", ev["repo_name"]])
+        assert ret == 0, "init should succeed"
+        registry_file = ev["workspace"] / "registry.yaml"
+        assert registry_file.exists()
+        assert ev["repo_name"] in registry_file.read_text()
+
+        # init registers the repo, which would make onboard refuse duplicates.
+        # Reset the registry + repo dir so onboard can run the full pipeline.
+        registry_file.unlink(missing_ok=True)
+        repo_state_dir = ev["workspace"] / "repos" / ev["repo_name"]
+        if repo_state_dir.exists():
+            shutil.rmtree(repo_state_dir)
+
+        # ── 2. onboard: plugin discovery + config.yaml ──
+        ret = _do_onboard(ev, monkeypatch)
+        assert ret == 0, "onboard should succeed after init state reset"
+        config_file = ev["workspace"] / "repos" / ev["repo_name"] / "config.yaml"
+        assert config_file.exists()
+        assert "python" in config_file.read_text().lower()
+
+        # ── 3. scan: produces findings.jsonl + status.json ──
+        result = _do_run(ev, monkeypatch)
+        assert result.success, "scan (issue-cycle dry-run) should succeed"
+        sd = _state_dir(ev)
+        assert (sd / "status.json").exists()
+        assert (sd / "findings.jsonl").exists()
+
+        # ── 4. report: JSON output composes over scan state ──
+        capsys.readouterr()  # drain any prior stdout from init/onboard/scan
+        from bin.bluei import _cmd_report
+
+        ret = _cmd_report(ev["repo_name"], ["--format", "json"])
+        assert ret == 0, "report --format json should succeed"
+
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert data["repo"]["name"] == ev["repo_name"]
+        assert "summary" in data
+        assert "health_trend" in data
+        assert "generated_at" in data
+        assert isinstance(data["summary"]["total_findings"], int)
+        # The scan produced findings → report should reflect them
+        assert data["summary"]["total_findings"] > 0
+
+
+class TestHealth:
+    """bluei health <name> — vitality score computation.
+
+    _cmd_health delegates to the engine subprocess via _run_engine; this test
+    pins the dispatch contract and exercises the real HealthEngine against
+    findings produced by an actual scan.
+    """
+
+    def test_health_computes_score(self, e2e_env, monkeypatch):
+        ev = e2e_env
+        # Onboard + scan to produce real findings in state
+        ret = _do_onboard(ev, monkeypatch)
+        assert ret == 0
+        result = _do_run(ev, monkeypatch)
+        assert result.success
+
+        # ── Dispatch contract: _cmd_health forwards to _run_engine ──
+        import bin.bluei as bluei_main
+
+        captured = {}
+
+        def fake_run_engine(args):
+            captured["args"] = list(args)
+            return 0
+
+        monkeypatch.setattr(bluei_main, "_run_engine", fake_run_engine)
+
+        from bin.bluei import _cmd_health
+
+        ret = _cmd_health(ev["repo_name"], [])
+        assert ret == 0
+        # The CLI must ask the engine to compute health for this repo
+        assert captured["args"] == ["health", "--repo", ev["repo_name"]]
+
+        # Passthrough args must be forwarded verbatim
+        ret = _cmd_health(ev["repo_name"], ["--verbose"])
+        assert ret == 0
+        assert captured["args"] == ["health", "--repo", ev["repo_name"], "--verbose"]
+
+        # ── Computation contract: HealthEngine yields a valid score ──
+        from bluei.app.config import ConfigManager
+        from bluei.app.health import HealthEngine
+        from bluei.app.state import StateManager
+
+        config_mgr = ConfigManager(ev["workspace"])
+        state = StateManager(config_mgr.repos_dir)
+        findings = state.load_findings(ev["repo_name"])
+
+        engine = HealthEngine()
+        health = engine.calculate(findings)
+
+        # Overall score is a bounded float
+        assert isinstance(health.score, float)
+        assert 0.0 <= health.score <= 100.0
+
+        # All 9 granular components + the code_quality aggregate must be present
+        expected_components = {
+            "bug_quality",
+            "lint_quality",
+            "technical_debt",
+            "documentation",
+            "performance",
+            "test_gaps",
+            "test_coverage",
+            "type_safety",
+            "maintainability",
+            "code_quality",
+        }
+        assert expected_components.issubset(health.components.keys())
+        for name, val in health.components.items():
+            assert 0 <= val <= 100, f"component {name}={val} out of [0, 100]"
+
+        # When findings exist, the engine must actually penalize something.
+        # The test repo triggers lint/perf rules, so those buckets should dip.
+        if findings:
+            penalized = [
+                c
+                for c in (
+                    "lint_quality",
+                    "performance",
+                    "bug_quality",
+                    "maintainability",
+                    "technical_debt",
+                )
+                if health.components.get(c, 100.0) < 100.0
+            ]
+            assert penalized, (
+                f"no component penalized despite {len(findings)} findings "
+                f"(rules={[f.rule for f in findings]})"
+            )
+
+
+class TestReport:
+    """bluei report <name> --format json — structured report over scan state."""
+
+    def test_report_json_output(self, e2e_env, monkeypatch, capsys):
+        ev = e2e_env
+        ret = _do_onboard(ev, monkeypatch)
+        assert ret == 0
+        result = _do_run(ev, monkeypatch)
+        assert result.success
+
+        capsys.readouterr()  # drain onboard/run stdout before report
+        from bin.bluei import _cmd_report
+
+        ret = _cmd_report(ev["repo_name"], ["--format", "json"])
+        assert ret == 0
+
+        out = capsys.readouterr().out
+        data = json.loads(out)
+
+        # ── Top-level shape ──
+        for key in ("repo", "summary", "health_trend", "generated_at"):
+            assert key in data, f"report JSON missing top-level key: {key}"
+
+        # ── repo subsection ──
+        assert data["repo"]["name"] == ev["repo_name"]
+        assert "path" in data["repo"]
+        assert "health_score" in data["repo"]
+        assert "language" in data["repo"]
+
+        # ── summary subsection (integer counters) ──
+        summary = data["summary"]
+        for key in ("total_findings", "open_issues", "open_prs"):
+            assert key in summary, f"summary missing {key}"
+            assert isinstance(summary[key], int), (
+                f"summary.{key} must be int, got {type(summary[key])}"
+            )
+
+        # ── health_trend is a list (possibly empty pre-history) ──
+        assert isinstance(data["health_trend"], list)
+
+        # ── generated_at is a timestamp string ──
+        assert isinstance(data["generated_at"], str)
+        assert len(data["generated_at"]) > 0
+
+        # ── Cross-check: total_findings reflects findings.jsonl on disk ──
+        findings_file = _state_dir(ev) / "findings.jsonl"
+        assert findings_file.exists()
+        findings_lines = [
+            line for line in findings_file.read_text().splitlines() if line.strip()
+        ]
+        assert summary["total_findings"] == len(findings_lines)
