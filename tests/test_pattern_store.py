@@ -56,7 +56,7 @@ def test_append_new_pattern_writes_jsonl_with_correct_fields(store_path):
     assert pattern_id.startswith("fp-")
     assert len(pattern_id) == 15
     assert record["pattern_id"] == pattern_id
-    assert record["confidence"] == 0.5
+    assert record["confidence"] == 0.8
     assert record["success_count"] == 1
     assert record["rule"] == "broad-except"
     assert record["before_snippet"] == "except:\n pass"
@@ -126,7 +126,7 @@ def test_lookup_returns_none_for_deactivated_pattern(store_path):
 
 def test_update_confidence_positive_delta(store_path):
     store = FixPatternStore(store_path)
-    pattern_id = store.append(make_pattern())
+    pattern_id = store.append(make_pattern(confidence=0.5))
 
     store.update_confidence(pattern_id, 0.2)
 
@@ -314,7 +314,9 @@ def test_active_pattern_cap_rejects_201st_append(store_path):
 def test_load_active_returns_only_patterns_at_or_above_threshold(store_path):
     store = FixPatternStore(store_path)
     active_id = store.append(make_pattern(rule="active", before_snippet="active"))
-    inactive_id = store.append(make_pattern(rule="inactive", before_snippet="inactive"))
+    inactive_id = store.append(
+        make_pattern(rule="inactive", before_snippet="inactive", confidence=0.5)
+    )
     store.update_confidence(inactive_id, -(0.5 - (DEACTIVATION_THRESHOLD - 0.01)))
 
     active = store.load_active()

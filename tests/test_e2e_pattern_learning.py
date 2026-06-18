@@ -635,17 +635,15 @@ class TestIntegratedLifecycle:
         )
         assert "pattern_id=xp-S602" in log_text
         assert "source_repos=1" in log_text
-        assert "confidence=0.95" in log_text, (
-            "High-confidence cross-repo pattern must reach the apply branch"
+        assert "confidence=0.49" in log_text, (
+            "Cross-repo confidence must be capped below PROMPT_HINT_THRESHOLD"
         )
 
-        # The current replay engine cannot complete the file write because
-        # privacy-normalized snippets (_v0 = _v1.run(...)) cannot be located
-        # inside a file that uses real identifiers. This is an observable,
-        # documented architectural gap — not a bug in this test.
-        assert "reason=snippet_not_found_in_file" in log_text, (
-            "Privacy-normalized snippets are not literal-matchable in files"
-        )
+        # Cross-repo patterns are capped at 0.49 (< PROMPT_HINT_THRESHOLD 0.5),
+        # so try_replay returns (False, None) without attempting the file write.
+        # Privacy-normalized snippets (_v0 = _v1.run(...)) cannot be literal-
+        # matched in real files anyway; the cap routes them to the LLM hint
+        # path instead of a doomed auto-apply.
         assert applied is False
         assert result_id is None
 

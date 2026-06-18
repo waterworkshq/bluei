@@ -13,6 +13,29 @@ _logger = logging.getLogger(__name__)
 from bluei.engine.models import Finding
 from bluei.engine.pattern_store import FixPattern, FixPatternStore, normalize_snippet
 from bluei.engine.report import infer_language_from_path
+
+
+def _matches_file_pattern(path: str, pattern: str) -> bool:
+    """Match a file path against a glob pattern with ** support.
+
+    Python's fnmatch doesn't support globstar — fnmatch('app.py', '**/*')
+    returns False because ** is treated as two literal * chars requiring a /.
+    This helper handles ** as 'match any path segments'.
+    """
+    if pattern in ("**/*", "**"):
+        return True
+    if fnmatch.fnmatch(path, pattern):
+        return True
+    if pattern.startswith("**/"):
+        suffix = pattern[3:]
+        return (
+            path == suffix
+            or path.endswith("/" + suffix)
+            or fnmatch.fnmatch(path, suffix)
+        )
+    return False
+
+
 from bluei.engine.state import append_log
 from bluei.engine.utils import run_capture
 
@@ -135,12 +158,23 @@ def _resolve_pattern(
             catalog=DETECTOR_CATALOG,
         )
         if xrepo_pattern is not None:
+            # Cap cross-repo confidence below AUTO_REPLAY_THRESHOLD.
+            # Cross-repo patterns have privacy-normalized snippets (_v0, _v1, etc.)
+            # that can't be literally matched in real source files. Auto-replay
+            # would silently fail with "snippet_not_found_in_file". Capping here
+            # ensures they fall through to the LLM hint path instead, which is
+            # the only working application method for cross-repo patterns today.
+            # TODO: implement AST-based structural replay to enable true cross-repo auto-apply.
+            effective_confidence = min(
+                xrepo_pattern.confidence, PROMPT_HINT_THRESHOLD - 0.01
+            )
             append_log(
                 log_file,
                 (
                     f"pattern-replay-xrepo-hit: rule={finding.rule} "
                     f"pattern_id={xrepo_pattern.pattern_id} "
-                    f"source_repos={len(xrepo_pattern.source_repos)}"
+                    f"source_repos={len(xrepo_pattern.source_repos)} "
+                    f"effective_confidence={effective_confidence:.2f} (capped: cross-repo snippets are privacy-normalized)"
                 ),
             )
             result = FixPattern(
@@ -151,7 +185,7 @@ def _resolve_pattern(
                 before_snippet=xrepo_pattern.before_snippet,
                 after_snippet=xrepo_pattern.after_snippet,
                 diff_patch="",
-                confidence=xrepo_pattern.confidence,
+                confidence=effective_confidence,
                 success_count=xrepo_pattern.success_count,
                 failure_count=xrepo_pattern.failure_count,
             )
@@ -185,7 +219,7 @@ def _try_replay_inner(
         )
         return (False, None)
 
-    if not fnmatch.fnmatch(finding.path, pattern.file_pattern):
+    if not _matches_file_pattern(finding.path, pattern.file_pattern):
         append_log(
             log_file,
             (

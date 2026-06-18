@@ -48,9 +48,8 @@ def _seed_pattern(
         source_finding_ids=kwargs.get("source_finding_ids", []),
     )
     pid = store.append(pattern)
-    delta = target_confidence - 0.5
-    if delta > 0:
-        store.update_confidence(pid, delta)
+    # Confidence is now preserved by _prepare_new_pattern (no longer reset
+    # to INITIAL_CONFIDENCE), so no update_confidence adjustment is needed.
     return pid
 
 

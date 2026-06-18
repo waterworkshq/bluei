@@ -57,8 +57,8 @@ def _seed_pattern(state_mgr, repo_name="test-repo", **overrides):
     patterns_file = state_mgr.get_fix_patterns_file(repo_name)
     store = FixPatternStore(patterns_file)
     pid = store.append(_make_pattern(**overrides))
-    if overrides.get("confidence", 0.5) != INITIAL_CONFIDENCE:
-        store.update_confidence(pid, overrides["confidence"] - INITIAL_CONFIDENCE)
+    # Confidence is now preserved by _prepare_new_pattern (no longer reset
+    # to INITIAL_CONFIDENCE), so no update_confidence adjustment is needed.
     return pid, patterns_file
 
 

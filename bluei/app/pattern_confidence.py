@@ -89,7 +89,9 @@ def adjust_from_replay_failure(
     """
     for pattern in store.load_active():
         if pattern.pattern_id == pattern_id:
-            new_confidence = min(1.0, max(0.0, pattern.confidence + CONFIDENCE_DECAY_REPLAY_FAIL))
+            new_confidence = min(
+                1.0, max(0.0, pattern.confidence + CONFIDENCE_DECAY_REPLAY_FAIL)
+            )
 
             if new_confidence < DEACTIVATION_THRESHOLD:
                 store.update_confidence(pattern_id, -pattern.confidence)
@@ -107,7 +109,11 @@ def _check_staleness(
 ) -> bool:
     """Return True if the pattern has not been verified within STALENESS_DAYS."""
     if last_verified_at is None:
-        return True
+        pattern = store.get_pattern(pattern_id)
+        if pattern is not None and pattern.created_at:
+            last_verified_at = pattern.created_at
+        else:
+            return True
     try:
         verified_dt = datetime.fromisoformat(last_verified_at)
         if verified_dt.tzinfo is None:

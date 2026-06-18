@@ -398,14 +398,17 @@ class TestEndToEndCrossRepo:
         )
 
         repo_b_store = FixPatternStore(tmp_path / "repo_b" / "patterns.jsonl")
-        finding = _mf(make_finding, 
+        finding = _mf(
+            make_finding,
             rule="discount-math-sign",
             snippet="price = base_price + markup",
             path="pricing.py",
         )
         result = _resolve_pattern(finding, repo_b_store, tmp_path / "log.txt", lib)
         assert result is not None
-        assert result.confidence >= 0.9
+        # Cross-repo confidence is capped below PROMPT_HINT_THRESHOLD because
+        # privacy-normalized snippets can't be literally replayed in real files.
+        assert result.confidence == pytest.approx(0.49)
 
     def test_multi_repo_confidence_increases(self, tmp_path):
         lib = SharedPatternLibrary(tmp_path / "shared")

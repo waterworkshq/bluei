@@ -205,8 +205,10 @@ def test_format_pattern_hint_includes_confidence():
 
 
 def _store_pattern_with_confidence(store, confidence):
-    pid = store.append(make_pattern())
-    store.update_confidence(pid, confidence - 0.5)
+    # Confidence is now preserved on append (pattern.confidence no longer
+    # reset to INITIAL_CONFIDENCE), so pass the desired confidence directly
+    # instead of adjusting via update_confidence.
+    pid = store.append(make_pattern(confidence=confidence))
     store._rebuild_from_disk()
     return pid
 

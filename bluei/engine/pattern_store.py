@@ -421,7 +421,9 @@ class FixPatternStore:
             before_snippet=normalized_before,
             after_snippet=normalize_snippet(pattern.after_snippet),
             diff_patch=pattern.diff_patch,
-            confidence=INITIAL_CONFIDENCE,
+            confidence=pattern.confidence
+            if pattern.confidence > 0
+            else INITIAL_CONFIDENCE,
             success_count=max(1, int(pattern.success_count or 0)),
             failure_count=max(0, int(pattern.failure_count or 0)),
             skip_count=max(0, int(pattern.skip_count or 0)),
