@@ -49,7 +49,7 @@ What's been built, and what's next.
 - **Reboot-resilient state** — worktree porcelain parsing, auto-prune, 6 corruption repair cases.
 - **8 language plugins** — Python, TypeScript, Go, Rust, Shell, Dockerfile, Markdown, plus test fixture.
 - **Canonical `bluei` package** — `bluei.app`, `bluei.engine`, `bluei.review`, `bluei.campaigns`.
-- **5,497 tests** across 180+ test files. Mock GitHub API throughout.
+- **5,821 tests** across 200+ test files. Mock GitHub API throughout.
 
 ---
 
@@ -57,7 +57,7 @@ What's been built, and what's next.
 
 ### Near-term (v0.2.0)
 
-- **Wire deferred features** — Mnemo cross-finding recall (`_get_mnemo_client`) and rule pack selection from templates (`select_rule_pack`).
+- **Wire deferred features** — Mnemo cross-finding recall (`_get_mnemo_client`) remains the last deferred wiring item.
 
 ### Medium-term
 
@@ -73,11 +73,17 @@ What's been built, and what's next.
 
 ### Shipped post v0.1.0-alpha.1
 
-- **Structural refactoring** — cycle.py decomposition (C3), cli.py decomposition (C4), lifecycle singletons (H4), orchestrator 4-module split (S3), structural_hash package (S4), pipeline phase extraction (S5), batch_recovery extraction (S2), observation + autonomous cycle decomposition (rec-16, rec-18).
+- **Tier 1 architecture cleanup** — ALL items complete: cycle.py decomposition (C3), cli.py decomposition (C4), lifecycle singletons (H4), orchestrator 4-module split (S3), structural_hash package (S4), pipeline phase extraction (S5), batch_recovery extraction (S2), observation + autonomous cycle decomposition (rec-16, rec-18).
+- **God module decompositions** — ALL complete: `engine/batch_pr.py` split into batch_execution/batch_grouping/batch_pr_creation/batch_recovery; `engine/gh.py` (1222L) converted to `engine/gh/` package (8 submodules); `review/observation.py` (1150L) split into 5 focused mixins; `review/autonomous.py` mixin-aligned.
+- **H5 review→app decoupling** — COMPLETE. `bluei/common/` layer extracted for shared types (`Repo`, `ReviewMode`, `ReviewRun`, `FeedbackEvent`). `review/` no longer imports from `app/`. Zero review→app violations.
+- **F1 rule_pack wiring** — `select_rule_pack()` now wired into onboarding: interactive `_prompt_rule_pack_confirmation` + `--rule-pack` CLI override.
+- **State schema reconciliation (Rec 07)** — `StateManager` delegates all shared schemas to canonical engine owners. Engine owns schema; StateManager is a path resolver.
+- **JSONL primitive consolidation** — `engine/jsonl.py` (`read_jsonl` + `append_jsonl`) consolidates 50+ inline reimplementations. All inline JSONL sites migrated.
+- **Engine→app layering** — 4/5 violation classes CLOSED. Zero engine→app imports in `bluei/engine/` (1 accepted: `mnemo_client.py` external dependency). `enforce_architecture.py` runs as CI gate.
 - **Merge-cycle audit closure** — all 21 items from `MERGE_CYCLE_AUDIT.md` fixed: DISMISSED review gate, observation state recovery, review-state race locking, merge-queue detection, HAS_HOOKS handling, worktree reuse validation, loop-count semantic guard, retry_pending_push escalation, configurable PR limits, language-aware candidate scanning, inter-PR rate throttling, atomic-write fsync, JSONL rotation, datetime cooldown comparison, generate_id entropy, runner finally-block protection.
 - **E2E test suite** — 83 tests across 9 domains.
 - **Notifications hardening** — digest severity filter, token masking, dashboard test split.
 
 ---
 
-*Updated 2026-06-14*
+*Updated 2026-06-18*

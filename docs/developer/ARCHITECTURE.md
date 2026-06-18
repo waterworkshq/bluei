@@ -24,7 +24,7 @@ fixes them, opens pull requests, and can auto-merge — all configurable by care
   plugins/ (language detection: python, typescript, go, rust, shell, docker, markdown)
 ```
 
-The canonical Python package is `bluei`. Runtime code is organized under `bluei.app`, `bluei.engine`, `bluei.review`, and `bluei.campaigns`.
+The canonical Python package is `bluei`. Runtime code is organized under `bluei.app`, `bluei.engine`, `bluei.review`, `bluei.campaigns`, and `bluei.common` (cross-layer shared types, sits between engine and app/review).
 
 ## Layers
 
@@ -52,7 +52,7 @@ report generation, campaign orchestration, and emergent rule discovery.
 | `registry.py` | YAML-based repo registry with CRUD. |
 | `bluei.app.onboarding/` | Repository onboarding package: detection, inference, templates, engine (5-module split per rec-22). |
 | `health.py` | Health score engine (0-100). Aggregates findings, test coverage, CI status. |
-| `bluei.review.cycle` | GitHub-native PR review lifecycle management. The largest module. |
+| `bluei.review.cycle` | GitHub-native PR review lifecycle. `ReviewCycleEngine` orchestrator composed from 9 focused mixins (Safety, Worktree, Generation, Observation, StatusClassification, StateRecording, PrTargeting, Publication, Autonomous). |
 | `report.py` | Report generation in text, PDF, HTML, JSON, and WhatsApp formats. |
 | `dashboard.py` | Observability dashboard HTML generator with SVG sparklines. |
 | `bluei.campaigns.planner` | Groups findings into ordered phases for batch execution. |
@@ -77,7 +77,7 @@ fixing, PR management, batch operations, and pattern learning.
 | `orchestrator.py` | Cycle orchestrator: builds command pipelines, `discover_findings()`, runs cycles. |
 | `lifecycle.py` | Fix lifecycle: `apply_autofix`, validation gates, git ops, directive seeding. |
 | `batch_pr.py` | Batch PR engine: groups findings into batches, manages multi-fix PRs. |
-| `gh.py` | GitHub API abstraction: PR creation, issue management, repo config. |
+| `gh/` | GitHub API abstraction package (decomposed from former `gh.py` god module): `_core.py`, `repo.py`, `sandbox.py`, `issue_ops.py`, `pr_ops.py`, `merge_eval.py`, `pr_regression.py`, `live_counts.py`. PR creation, issue management, repo config. |
 | `linters.py` | Linter integration: ruff, xo, staticcheck, shellcheck, etc. |
 | `constants.py` | Catalog of detection rules, tool paths, cooldown configs, cost rates. See [RULES_REFERENCE.md](../reference/RULES_REFERENCE.md) for the full rule catalog. |
 | `cascade.py` | Multi-engine cascade: tries deterministic fixes before falling to LLM. |
@@ -505,7 +505,7 @@ with all available keys. See also `docs/CONFIG_REFERENCE.md`.
 
 ## Testing
 
-~5761 tests across 200+ files (2026-06-17). All use `tmp_path` fixtures — no external services
+~5,821 tests across 200+ files (2026-06-18). All use `tmp_path` fixtures — no external services
 needed. Run with:
 
 ```bash

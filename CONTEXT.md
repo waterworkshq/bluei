@@ -56,10 +56,13 @@ _Avoid_: CI (external concept), verification (too close to verify_fix_closed).
 A structured event recorded when a cycle fails, merge fails, dedup saturation is detected, or rebase conflict trends increase. Written to `escalation_log.jsonl`.
 _Avoid_: alert (reserved for notifications), incident.
 
-## Flagged ambiguities
+## Resolved ambiguities
 
-- **"State"** is overloaded. `engine/state.py` provides bare functions for file I/O. `app/state.py` provides a StateManager class. When discussing state, specify which layer or say "StateManager" vs "engine state functions."
-- **"Escalation"** exists in both `engine/escalation.py` (pattern detection + structured logging) and `app/escalation.py` (thin wrapper + status checking). The engine module is the real implementation; the app module is a pass-through.
+Previously overloaded terms, now disambiguated by architectural decision:
+
+- **"State"** — RESOLVED (Rec 07). `StateManager` (`app/state.py`) delegates all shared schemas to canonical engine owners (`engine.state`, `engine.issue_lifecycle`, `engine.jsonl`). Engine owns schema and atomicity; StateManager is a path resolver. The `bluei/common/` layer provides cross-layer shared types. When discussing state, "StateManager" = the app-layer path resolver; "engine state functions" = the schema/IO owners.
+- **"Escalation"** — RESOLVED (rec-09). `app/escalation.py` is a 10-line re-export shim; `engine/escalation.py` is the sole implementation (pattern detection + structured logging + status checking).
+- **review → app coupling (H5)** — RESOLVED. `bluei/review/` is an independent subsystem: it imports from `bluei/engine/` and `bluei/common/` but never reaches into `bluei/app/`. Shared types (`Repo`, `ReviewMode`, `ReviewRun`, `FeedbackEvent`, etc.) live in `bluei/common/`.
 
 ## Example dialogue
 
