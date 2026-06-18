@@ -258,3 +258,140 @@ def test_workspace_root_resolution_still_correct(tmp_path: Path, monkeypatch):
     assert sandbox.repo_is_sandbox("acme/widget") is True
     assert sandbox.repo_is_sandbox("fork/acme/widget") is True
     assert sandbox.repo_is_sandbox("acme/other") is False
+
+
+# --- Step 4: issue lifecycle extraction ---
+
+
+def test_issue_ops_module_exports_all_five_symbols():
+    """Step 4 extraction: issue_ops module exposes the five moved functions."""
+    from bluei.engine.gh import issue_ops
+
+    for name in (
+        "find_existing_github_issue",
+        "gh_issue_comment",
+        "gh_issue_close",
+        "finding_from_issue_record",
+        "create_or_update_github_issue",
+    ):
+        assert hasattr(issue_ops, name), f"bluei.engine.gh.issue_ops.{name} missing"
+
+
+def test_bluei_engine_gh_issue_ops_same_object_as_module():
+    """Step 4 extraction: facade re-exports are literally the same callables.
+
+    Asserts each ``bluei.engine.gh.<name>`` is identical to
+    ``bluei.engine.gh.issue_ops.<name>``.  If they diverged (e.g. the facade
+    still held a stale local definition), patches on the facade would not
+    reach the module-level call sites.
+    """
+    from bluei.engine import gh
+    from bluei.engine.gh import issue_ops
+
+    for name in (
+        "find_existing_github_issue",
+        "gh_issue_comment",
+        "gh_issue_close",
+        "finding_from_issue_record",
+        "create_or_update_github_issue",
+    ):
+        facade_attr = getattr(gh, name)
+        module_attr = getattr(issue_ops, name)
+        assert facade_attr is module_attr, (
+            f"bluei.engine.gh.{name} is not bluei.engine.gh.issue_ops.{name}"
+        )
+
+
+def test_finding_from_issue_record_missing_finding_id_returns_none():
+    """Step 4 characterization: empty finding_id -> None (required-field guard)."""
+    from bluei.engine.gh import finding_from_issue_record
+
+    # finding_id empty, rule + path present
+    result = finding_from_issue_record(
+        {"finding_id": "", "path": "src/x.py", "rule": "E501"}
+    )
+    assert result is None
+
+
+def test_finding_from_issue_record_rule_alias_normalization():
+    """Step 4 characterization: legacy rule aliases are rewritten to xo-* names."""
+    from bluei.engine.gh import finding_from_issue_record
+
+    result = finding_from_issue_record(
+        {
+            "finding_id": "abc",
+            "path": "src/x.py",
+            "rule": "complexity",
+            "line": "10",
+            "confidence": "0.5",
+            "repo": "acme/widget",
+        }
+    )
+    assert result is not None
+    assert result.rule == "xo-complexity"
+    assert result.repo == "acme/widget"
+
+
+def test_finding_from_issue_record_bad_line_and_empty_repo_defaults():
+    """Step 4 characterization: unparseable line -> 0; empty repo -> qa-sandbox-repo."""
+    from bluei.engine.gh import finding_from_issue_record
+
+    result = finding_from_issue_record(
+        {
+            "finding_id": "abc",
+            "path": "src/y.py",
+            "rule": "E501",
+            "line": "not-a-number",
+            "confidence": "also-bad",
+            "repo": "",
+        }
+    )
+    assert result is not None
+    assert result.line == 0
+    assert result.confidence == 0.0
+    assert result.repo == "qa-sandbox-repo"
+
+
+def test_create_or_update_github_issue_dry_run_existing(tmp_path: Path):
+    """Step 4 characterization: dry_run on an existing issue comments nothing,
+    logs the dry-run line, and reports ``created=False`` with the issue number.
+
+    Patches ``find_existing_github_issue`` on the facade to confirm the
+    issue_ops call site resolves it through ``_facade`` (patch surface).
+    """
+    from unittest.mock import patch
+
+    from bluei.engine.models import Finding
+
+    from bluei.engine import gh
+
+    finding = Finding(
+        finding_id="fid-1",
+        repo="acme/widget",
+        path="src/a.py",
+        line=12,
+        rule="E501",
+        snippet="x = 1",
+        confidence=0.8,
+        quick_win=False,
+        safe_to_autofix=False,
+    )
+    log_file = tmp_path / "log.txt"
+    existing = {"number": "42", "url": "https://github.com/acme/widget/issues/42"}
+
+    # find_existing_github_issue is resolved through _facade inside issue_ops.
+    with patch.object(
+        gh, "find_existing_github_issue", return_value=existing
+    ) as mock_find:
+        result = gh.create_or_update_github_issue(
+            "acme/widget", finding, dry_run=True, log_file=log_file, cwd=tmp_path
+        )
+    assert mock_find.called, (
+        "find_existing_github_issue patch on facade did not reach issue_ops"
+    )
+    assert result == {
+        "number": 42,
+        "url": "https://github.com/acme/widget/issues/42",
+        "created": False,
+    }
+    assert "would comment existing GitHub issue #42" in log_file.read_text()

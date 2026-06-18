@@ -59,46 +59,21 @@ from bluei.engine.gh.repo import (  # noqa: F401
 # re-exported.  Note the parents[3] fix documented in sandbox.py.
 from bluei.engine.gh.sandbox import repo_is_sandbox  # noqa: F401
 
+# Step 4: issue lifecycle moved to bluei.engine.gh.issue_ops.  All five
+# functions route their gh-internal calls (gh_json, run_capture,
+# finding_dedupe_marker, find_existing_github_issue, gh_issue_comment,
+# parse_issue_number_from_url) through this facade via ``_facade.X(...)`` --
+# so patches on ``bluei.engine.gh.<name>`` continue to reach the call sites
+# in issue_ops.py at call time.
+from bluei.engine.gh.issue_ops import (  # noqa: F401
+    create_or_update_github_issue,
+    find_existing_github_issue,
+    finding_from_issue_record,
+    gh_issue_close,
+    gh_issue_comment,
+)
+
 logger = logging.getLogger(__name__)
-
-
-def find_existing_github_issue(
-    repo_slug: str, finding_id: str, cwd: Path
-) -> Optional[Dict[str, Any]]:
-    """Search for an existing GitHub issue containing a finding's dedupe marker.
-
-    Args:
-        repo_slug: GitHub repo in ``owner/repo`` format.
-        finding_id: Unique finding identifier embedded in issue bodies.
-        cwd: Working directory for the ``gh`` subprocess.
-
-    Returns:
-        Matching issue dict from ``gh issue list --json``, or ``None``.
-    """
-    marker = finding_dedupe_marker(finding_id)
-    payload = gh_json(
-        [
-            "gh",
-            "issue",
-            "list",
-            "--repo",
-            repo_slug,
-            "--state",
-            "all",
-            "--limit",
-            "200",
-            "--json",
-            "number,title,url,state,body",
-        ],
-        cwd=cwd,
-    )
-    if not isinstance(payload, list):
-        return None
-    for issue in payload:
-        body = str(issue.get("body") or "")
-        if marker in body:
-            return issue
-    return None
 
 
 def find_existing_github_pr(
@@ -202,94 +177,12 @@ def find_batch_pr_by_rule(
     return None
 
 
-def gh_issue_comment(repo_slug: str, issue_number: int, body: str, cwd: Path) -> bool:
-    rc, _ = run_capture(
-        [
-            "gh",
-            "issue",
-            "comment",
-            str(issue_number),
-            "--repo",
-            repo_slug,
-            "--body",
-            body,
-        ],
-        cwd=cwd,
-    )
-    return rc == 0
-
-
-def gh_issue_close(repo_slug: str, issue_number: int, comment: str, cwd: Path) -> bool:
-    rc, _ = run_capture(
-        [
-            "gh",
-            "issue",
-            "close",
-            str(issue_number),
-            "--repo",
-            repo_slug,
-            "--comment",
-            comment,
-        ],
-        cwd=cwd,
-    )
-    return rc == 0
-
-
 def gh_pr_comment(repo_slug: str, pr_number: int, body: str, cwd: Path) -> bool:
     rc, _ = run_capture(
         ["gh", "pr", "comment", str(pr_number), "--repo", repo_slug, "--body", body],
         cwd=cwd,
     )
     return rc == 0
-
-
-def finding_from_issue_record(issue: Dict[str, Any]) -> Optional[Finding]:
-    """Reconstruct a :class:`Finding` from a persisted issue record dict.
-
-    Args:
-        issue: Dict with keys ``finding_id``, ``path``, ``rule``, ``snippet``,
-            ``repo``, ``line``, ``confidence``, ``quick_win``, ``safe_to_autofix``.
-
-    Returns:
-        Populated :class:`Finding`, or ``None`` if required fields are missing.
-    """
-    finding_id = str(issue.get("finding_id") or "").strip()
-    path = str(issue.get("path") or "").strip()
-    rule = str(issue.get("rule") or "").strip()
-    rule_aliases = {
-        "max-lines": "xo-max-lines",
-        "complexity": "xo-complexity",
-        "no-warning-comments": "xo-no-warning-comments",
-    }
-    rule = rule_aliases.get(rule, rule)
-    snippet = str(issue.get("snippet") or "").strip()
-    repo = str(issue.get("repo") or "qa-sandbox-repo").strip() or "qa-sandbox-repo"
-    if not finding_id or not path or not rule:
-        return None
-    try:
-        line = int(issue.get("line", 0))
-    except Exception:
-        line = 0
-    try:
-        confidence = float(issue.get("confidence", 0.0))
-    except Exception:
-        confidence = 0.0
-    rule_meta = next(
-        (entry for entry in DETECTOR_CATALOG if entry.get("rule") == rule), {}
-    )
-    inferred_autofix = bool(rule_meta.get("autofix", False))
-    return Finding(
-        finding_id=finding_id,
-        repo=repo,
-        path=path,
-        line=line,
-        rule=rule,
-        snippet=snippet,
-        confidence=confidence,
-        quick_win=bool(issue.get("quick_win", confidence >= 0.9)),
-        safe_to_autofix=bool(issue.get("safe_to_autofix", inferred_autofix)),
-    )
 
 
 def fetch_open_prs_for_merge(repo_slug: str, cwd: Path) -> List[Dict[str, Any]]:
@@ -649,115 +542,6 @@ def merge_pr(
     if any(marker in normalized for marker in already_handled_markers):
         return True, "already-merged-or-queued"
     return False, (out.strip() or f"gh-pr-merge-failed-rc={rc}")
-
-
-def create_or_update_github_issue(
-    repo_slug: str,
-    finding: Finding,
-    dry_run: bool,
-    log_file: Path,
-    cwd: Path,
-) -> Dict[str, Any]:
-    """Create a GitHub issue for a finding, or comment on an existing one.
-
-    Args:
-        repo_slug: GitHub repo in ``owner/repo`` format.
-        finding: The :class:`Finding` to file an issue for.
-        dry_run: If ``True``, log actions without executing.
-        log_file: Path to append log entries to.
-        cwd: Working directory for the ``gh`` subprocess.
-
-    Returns:
-        Dict with ``number``, ``url``, ``created`` (bool), and optionally ``error``.
-    """
-    from bluei.engine.models import now_iso
-    from bluei.engine.state import _append_text
-
-    marker = finding_dedupe_marker(finding.finding_id)
-    existing = find_existing_github_issue(repo_slug, finding.finding_id, cwd=cwd)
-    sync_note = (
-        f"Sandbox runner sync at {now_iso()}\\n"
-        f"- rule: {finding.rule}\\n"
-        f"- path: {finding.path}:{finding.line}\\n"
-        f"- confidence: {finding.confidence}"
-    )
-
-    if existing:
-        number = int(existing["number"])
-        url = str(existing.get("url") or "")
-        if dry_run:
-            _append_text(
-                log_file,
-                f"dry-run-live: would comment existing GitHub issue #{number} finding_id={finding.finding_id}",
-            )
-        else:
-            gh_issue_comment(repo_slug, number, sync_note, cwd=cwd)
-            _append_text(
-                log_file,
-                f"live: commented existing GitHub issue #{number} finding_id={finding.finding_id}",
-            )
-        return {"number": number, "url": url, "created": False}
-
-    title = f"[bluei] {finding.rule} in {finding.path}:{finding.line}"
-    body = "\n".join(
-        [
-            "Automated speck found by bluei.",
-            "",
-            marker,
-            f"- dedupe_key: {finding.finding_id}",
-            f"- repo: {finding.repo}",
-            f"- file: {finding.path}:{finding.line}",
-            f"- rule: {finding.rule}",
-            f"- confidence: {finding.confidence}",
-            f"- snippet: `{finding.snippet}`",
-        ]
-    )
-
-    if dry_run:
-        _append_text(
-            log_file,
-            f"dry-run-live: would create GitHub issue for finding_id={finding.finding_id}",
-        )
-        return {"number": None, "url": "", "created": True}
-
-    rc, out = run_capture(
-        [
-            "gh",
-            "issue",
-            "create",
-            "--repo",
-            repo_slug,
-            "--title",
-            title,
-            "--body",
-            body,
-        ],
-        cwd=cwd,
-    )
-    if rc != 0:
-        _append_text(
-            log_file, f"error: gh issue create failed finding_id={finding.finding_id}"
-        )
-        return {
-            "number": None,
-            "url": "",
-            "created": False,
-            "error": "issue-create-failed",
-        }
-    url = out.strip().splitlines()[-1] if out.strip() else ""
-    number = parse_issue_number_from_url(url)
-    if number is None:
-        existing_after_create = find_existing_github_issue(
-            repo_slug, finding.finding_id, cwd=cwd
-        )
-        if existing_after_create:
-            number = int(existing_after_create["number"])
-            url = str(existing_after_create.get("url") or url)
-    _append_text(
-        log_file,
-        f"live: created GitHub issue url={url} finding_id={finding.finding_id}",
-    )
-    return {"number": number, "url": url, "created": True}
 
 
 def create_or_update_github_pr(
