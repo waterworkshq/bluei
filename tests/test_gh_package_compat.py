@@ -523,3 +523,96 @@ def test_create_or_update_github_pr_reuses_existing_via_facade(tmp_path: Path):
         "created": False,
     }
     assert "reuse existing PR #99" in log_file.read_text()
+
+
+# --- Step 6: merge-gate evaluators extraction ---
+
+
+def test_merge_eval_module_exports_all_four_symbols():
+    """Step 6 extraction: merge_eval module exposes the four moved functions."""
+    from bluei.engine.gh import merge_eval
+
+    for name in (
+        "fetch_open_prs_for_merge",
+        "evaluate_pr_check_health",
+        "evaluate_pr_reviews",
+        "evaluate_pr_mergeability",
+    ):
+        assert hasattr(merge_eval, name), f"bluei.engine.gh.merge_eval.{name} missing"
+
+
+def test_bluei_engine_gh_merge_eval_same_object_as_module():
+    """Step 6 extraction: facade re-exports are literally the same callables.
+
+    Asserts each ``bluei.engine.gh.<name>`` is identical to
+    ``bluei.engine.gh.merge_eval.<name>``.  If they diverged (e.g. the
+    facade still held a stale local definition), patches on the facade
+    would not reach the module-level call sites.
+    """
+    from bluei.engine import gh
+    from bluei.engine.gh import merge_eval
+
+    for name in (
+        "fetch_open_prs_for_merge",
+        "evaluate_pr_check_health",
+        "evaluate_pr_reviews",
+        "evaluate_pr_mergeability",
+    ):
+        facade_attr = getattr(gh, name)
+        module_attr = getattr(merge_eval, name)
+        assert facade_attr is module_attr, (
+            f"bluei.engine.gh.{name} is not bluei.engine.gh.merge_eval.{name}"
+        )
+
+
+def test_fetch_open_prs_for_merge_resolves_gh_json_via_facade(tmp_path: Path):
+    """Step 6 patch-surface: ``fetch_open_prs_for_merge`` calls ``gh_json``
+    through ``_facade`` -- patching ``bluei.engine.gh.gh_json`` must reach the
+    call site inside merge_eval.py and yield the sorted payload.
+    """
+    from unittest.mock import patch
+
+    from bluei.engine import gh
+
+    payload = [
+        {"number": 2, "isDraft": False, "createdAt": "2024-01-02T00:00:00Z"},
+        {"number": 1, "isDraft": False, "createdAt": "2024-01-01T00:00:00Z"},
+        {"number": 3, "isDraft": True, "createdAt": "2024-01-01T00:00:00Z"},
+    ]
+    with patch.object(gh, "gh_json", return_value=payload) as mock_gh_json:
+        result = gh.fetch_open_prs_for_merge("acme/widget", cwd=tmp_path)
+    assert mock_gh_json.called, (
+        "Patch on bluei.engine.gh.gh_json did not reach fetch_open_prs_for_merge"
+    )
+    # Non-drafts first, oldest first: PR 1 before PR 2; draft PR 3 last.
+    assert [pr["number"] for pr in result] == [1, 2, 3]
+
+
+def test_evaluate_pr_reviews_branch_protection_call_uses_facade(tmp_path: Path):
+    """Step 6 patch-surface: the second ``gh_json`` call (branch protection
+    lookup) inside ``evaluate_pr_reviews`` must also resolve through the
+    facade.  When ``latestReviews`` is empty, the function falls through to
+    the protection check; patching gh_json to return a no-protection dict
+    yields the no-reviews-no-protection pass.
+    """
+    from unittest.mock import patch
+
+    from bluei.engine import gh
+
+    def fake_gh_json(cmd, cwd):
+        # First call returns the PR view with empty reviews; second call
+        # returns the branch-protection payload.
+        if "pr" in cmd and "view" in cmd:
+            return {"baseRefName": "main", "latestReviews": []}
+        return {"required_status_checks": {}}  # no required_pull_request_reviews
+
+    with patch.object(gh, "gh_json", side_effect=fake_gh_json) as mock_gh_json:
+        result = gh.evaluate_pr_reviews("acme/widget", 7, cwd=tmp_path)
+    assert mock_gh_json.call_count == 2, (
+        "evaluate_pr_reviews should issue two gh_json calls (reviews + protection)"
+    )
+    assert result == {
+        "eligible": True,
+        "has_reviews": False,
+        "reason": "no-reviews-no-protection-pass",
+    }
