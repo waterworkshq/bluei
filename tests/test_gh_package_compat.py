@@ -702,3 +702,95 @@ def test_evaluate_pr_regression_resolves_check_health_via_facade(tmp_path: Path)
         "evaluate_pr_regression (cross-module _facade indirection broken)"
     )
     assert result["check_health"] == {"eligible": True}
+
+
+# --- Step 8: live counts extraction + final facade verification ---
+
+
+def test_live_counts_module_exports_fetch_github_live_counts():
+    """Step 8 extraction: live_counts module exposes the moved function."""
+    from bluei.engine.gh import live_counts
+
+    assert hasattr(live_counts, "fetch_github_live_counts"), (
+        "bluei.engine.gh.live_counts.fetch_github_live_counts missing"
+    )
+
+
+def test_bluei_engine_gh_live_counts_same_object_as_module():
+    """Step 8 extraction: facade re-export is literally the same callable.
+
+    Asserts ``bluei.engine.gh.fetch_github_live_counts`` is identical to
+    ``bluei.engine.gh.live_counts.fetch_github_live_counts``.
+    """
+    from bluei.engine import gh
+    from bluei.engine.gh import live_counts
+
+    assert gh.fetch_github_live_counts is live_counts.fetch_github_live_counts, (
+        "bluei.engine.gh.fetch_github_live_counts is not "
+        "bluei.engine.gh.live_counts.fetch_github_live_counts"
+    )
+
+
+def test_fetch_github_live_counts_non_github_origin_uses_facade(tmp_path: Path):
+    """Step 8 patch-surface: ``get_origin_url`` moved into repo.py in Step 2,
+    so a bare-name call inside live_counts would ``NameError``.  Routing
+    through ``_facade`` keeps both the call working AND the patch surface
+    intact -- patching ``bluei.engine.gh.get_origin_url`` must reach the
+    call site and yield the non-github-origin short-circuit.
+    """
+    from unittest.mock import patch
+
+    from bluei.engine import gh
+
+    with patch.object(
+        gh, "get_origin_url", return_value="https://gitlab.com/acme/widget"
+    ) as mock_get_origin:
+        counts, status = gh.fetch_github_live_counts(tmp_path)
+    assert mock_get_origin.called, (
+        "Patch on bluei.engine.gh.get_origin_url did not reach "
+        "fetch_github_live_counts (cross-module _facade indirection broken)"
+    )
+    assert counts is None
+    assert status == "non-github-origin"
+
+
+def test_init_has_no_function_definitions():
+    """Step 8 final guard: the monolith is fully decomposed.
+
+    After Step 8, ``bluei/engine/gh/__init__.py`` MUST contain no ``def``
+    statements at module level -- every concrete function has moved into a
+    per-concern submodule, and this file exists only as a re-export facade.
+    If this regresses (someone adds a function back into the facade), the
+    decomposition contract is broken.
+    """
+    import re
+    from pathlib import Path as _Path
+
+    init_path = (
+        _Path(__file__).resolve().parent.parent
+        / "bluei"
+        / "engine"
+        / "gh"
+        / "__init__.py"
+    )
+    src = init_path.read_text(encoding="utf-8")
+    # Match a `def` at the start of a line -- the facade should have none.
+    matches = re.findall(r"^def ", src, flags=re.MULTILINE)
+    assert matches == [], (
+        f"bluei/engine/gh/__init__.py defines {len(matches)} function(s); "
+        "the facade should be pure re-exports after the Step 8 decomposition"
+    )
+
+
+def test_init_reexport_count_matches_all():
+    """Step 8 final guard: every entry in ``__all__`` is actually importable
+    from the facade.  Catches typos in the re-export blocks (e.g. a name
+    listed in ``__all__`` but never imported).
+    """
+    from bluei.engine import gh
+
+    for name in gh.__all__:
+        assert hasattr(gh, name), (
+            f"bluei.engine.gh.__all__ lists {name!r} but it is not "
+            "importable from the facade"
+        )
