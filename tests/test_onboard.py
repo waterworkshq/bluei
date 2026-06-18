@@ -1181,3 +1181,391 @@ def test_init_tty_prompts_and_accepts_default(tmp_path, monkeypatch, capsys):
     registry = RepoRegistry(ConfigManager(workspace))
     loaded = registry.read("init-tty")
     assert loaded.config.rule_pack == "python-api-safe"
+
+
+# ── Coverage gaps: detection delegation methods ──────────────
+
+
+def test_detect_all_languages_delegates(onboard_env):
+    """detect_all_languages returns ranked (language, count) tuples."""
+    repo = onboard_env["repo_path"]
+    (repo / "main.py").write_text("print('hi')\n")
+    (repo / "setup.py").write_text("# setup\n")
+    ranked = onboard_env["engine"].detect_all_languages(repo)
+    assert isinstance(ranked, list)
+    # Python files present → python should rank
+    assert any(lang == "python" for lang, _ in ranked)
+
+
+def test_detect_git_remote_no_remote(onboard_env):
+    """detect_git_remote returns 'detected: false' when no origin is set."""
+    repo = onboard_env["repo_path"]
+    info = onboard_env["engine"].detect_git_remote(repo)
+    assert info["detected"] == "false"
+    # All fields present even when no remote
+    assert {"url", "host", "owner", "name", "platform", "detected"} <= set(info.keys())
+
+
+def test_detect_package_manager_pip(onboard_env):
+    """detect_package_manager returns 'pip' for a requirements.txt repo."""
+    repo = onboard_env["repo_path"]
+    (repo / "requirements.txt").write_text("flask\n")
+    pm = onboard_env["engine"].detect_package_manager(repo, "python")
+    assert pm == "pip"
+
+
+def test_detect_build_tool_pyproject(onboard_env):
+    """detect_build_tool returns 'pyproject' when pyproject.toml exists."""
+    repo = onboard_env["repo_path"]
+    (repo / "pyproject.toml").write_text('[project]\nname = "demo"\n')
+    bt = onboard_env["engine"].detect_build_tool(repo, "python")
+    assert bt == "pyproject"
+
+
+def test_get_language_version_python_version_file(onboard_env):
+    """_get_language_version reads .python-version when present."""
+    repo = onboard_env["repo_path"]
+    (repo / ".python-version").write_text("3.11\n")
+    version = onboard_env["engine"]._get_language_version(repo, "python")
+    assert version == "3.11"
+
+
+def test_is_actionable_language_true_false(onboard_env):
+    """_is_actionable_language True for supported langs, False otherwise."""
+    eng = onboard_env["engine"]
+    assert eng._is_actionable_language("python") is True
+    assert eng._is_actionable_language("rust") is True
+    assert eng._is_actionable_language("cobol") is False
+
+
+def test_infer_baseline_checks_for_language_delegates(onboard_env):
+    """_infer_baseline_checks_for_language returns a list for go."""
+    repo = onboard_env["repo_path"]
+    (repo / "go.mod").write_text("module demo\n\ngo 1.21\n")
+    checks = onboard_env["engine"]._infer_baseline_checks_for_language(repo, "go")
+    assert isinstance(checks, list)
+    assert ["go", "test", "./..."] in checks
+
+
+# ── Coverage gaps: select_plugin + onboard error paths ────────
+
+
+def test_select_plugin_returns_none_for_unsupported_language(onboard_env):
+    """select_plugin returns None when no plugin matches the language."""
+    assert onboard_env["engine"].select_plugin("cobol") is None
+    assert onboard_env["engine"].select_plugin("unknown") is None
+
+
+def test_onboard_raises_when_no_plugin_available(onboard_env):
+    """onboard raises ValueError when no plugin matches the detected language."""
+    repo = onboard_env["repo_path"]
+    (repo / "readme.md").write_text("just docs")
+    with pytest.raises(ValueError, match="No plugin available"):
+        onboard_env["engine"].onboard(
+            repo,
+            OnboardOptions(
+                name="no-plugin",
+                language="cobol",  # No plugin matches cobol
+                skip_preflight=True,
+                capture_baseline=False,
+            ),
+        )
+
+
+def test_onboard_uses_explicit_plugin_id_option(onboard_env):
+    """When options.plugin_id is set, it is used directly (bypasses select_plugin)."""
+    from unittest.mock import patch
+
+    repo = onboard_env["repo_path"]
+    (repo / "test.txt").write_text("test")
+
+    with patch.object(
+        onboard_env["engine"],
+        "select_plugin",
+        side_effect=AssertionError("select_plugin should be bypassed"),
+    ):
+        result = onboard_env["engine"].onboard(
+            repo,
+            OnboardOptions(
+                name="explicit-plugin",
+                language="test",
+                plugin_id="plugin-test",  # Explicit override
+                skip_preflight=True,
+                capture_baseline=False,
+            ),
+        )
+    assert result.plugin_id == "plugin-test"
+
+
+def test_onboard_raises_on_preflight_missing_tools(onboard_env):
+    """onboard raises ValueError when preflight finds missing required tools."""
+    from unittest.mock import patch
+    from bluei.app.preflight import PreflightResult, ToolCheck
+
+    repo = onboard_env["repo_path"]
+    (repo / "main.py").write_text("print('hi')\n")
+
+    failing_preflight = PreflightResult(
+        repo_path=str(repo),
+        language="python",
+        tool_checks=[
+            ToolCheck(tool="ruff", found=False, path=None),
+            ToolCheck(tool="pytest", found=False, path=None),
+        ],
+    )
+
+    with patch("bluei.app.preflight.run_preflight", return_value=failing_preflight):
+        with pytest.raises(ValueError, match="Preflight failed: missing tools"):
+            onboard_env["engine"].onboard(
+                repo,
+                OnboardOptions(
+                    name="missing-tools",
+                    language="python",
+                    capture_baseline=False,
+                ),
+            )
+
+
+# ── Coverage gaps: build_review_items branches ───────────────
+
+
+def _make_review_config(onboard_env, **discovery_overrides):
+    """Helper: build a RepoConfig with overrides applied to discovery/safety dicts."""
+    from bluei.app.models import LanguageInfo
+
+    repo = onboard_env["repo_path"]
+    (repo / "main.py").write_text("print('hi')\n")
+    language = LanguageInfo(name="python")
+    config = onboard_env["engine"].generate_config(
+        repo, "review-test", language, None, "plugin-python"
+    )
+    if discovery_overrides:
+        config.discovery = {**config.discovery, **discovery_overrides}
+    return repo, language, config
+
+
+def test_build_review_items_docker_backed_discovery(onboard_env):
+    """ReviewItem emitted when discovery.use_docker is True."""
+    repo, language, config = _make_review_config(onboard_env, use_docker=True)
+    items = onboard_env["engine"].build_review_items(repo, language, config)
+    docker_items = [i for i in items if "docker-backed discovery" in i.message.lower()]
+    assert len(docker_items) == 1, items
+    assert docker_items[0].severity == "info"
+    assert docker_items[0].category == "config"
+
+
+def test_build_review_items_monorepo_without_package_dirs(onboard_env):
+    """Monorepo flag (without package_dirs) still yields a monorepo review item."""
+    repo, language, config = _make_review_config(onboard_env, monorepo=True)
+    # Ensure no package_dirs to hit the inner `if package_dirs` False branch
+    config.discovery.pop("package_dirs", None)
+    items = onboard_env["engine"].build_review_items(repo, language, config)
+    mono_items = [
+        i for i in items if "monorepo/workspace layout detected" in i.message.lower()
+    ]
+    assert len(mono_items) == 1, items
+    # No 'Workspace package patterns' item expected when package_dirs is empty
+    pkg_items = [i for i in items if "workspace package patterns" in i.message.lower()]
+    assert pkg_items == []
+
+
+def test_build_review_items_monorepo_with_package_dirs(onboard_env):
+    """Monorepo with package_dirs yields both monorepo + package-patterns items."""
+    repo, language, config = _make_review_config(
+        onboard_env, monorepo=True, package_dirs=["packages/*", "apps/*"]
+    )
+    items = onboard_env["engine"].build_review_items(repo, language, config)
+    pkg_items = [i for i in items if "workspace package patterns" in i.message.lower()]
+    assert len(pkg_items) == 1, items
+    assert "packages/*" in pkg_items[0].message
+    assert "apps/*" in pkg_items[0].message
+
+
+def test_build_review_items_emits_github_workflows_note(onboard_env):
+    """A repo with .github/workflows/ triggers the CI-mirror review item."""
+    repo, language, config = _make_review_config(onboard_env)
+    (repo / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+    items = onboard_env["engine"].build_review_items(repo, language, config)
+    ci_items = [i for i in items if "github actions workflows" in i.message.lower()]
+    assert len(ci_items) == 1, items
+    assert ci_items[0].category == "config"
+
+
+def test_build_review_items_unknown_language_warns(onboard_env):
+    """An unknown primary language triggers a warn-severity review item."""
+    from bluei.app.models import LanguageInfo
+
+    repo = onboard_env["repo_path"]
+    (repo / "readme.md").write_text("docs only")
+    language = LanguageInfo(name="unknown")
+    # Use python plugin just so config generation succeeds; we only care about review items
+    config = onboard_env["engine"].generate_config(
+        repo, "unk-lang", language, None, "plugin-python"
+    )
+    items = onboard_env["engine"].build_review_items(repo, language, config)
+    unk_items = [
+        i for i in items if "language detection returned unknown" in i.message.lower()
+    ]
+    assert len(unk_items) == 1, items
+    assert unk_items[0].severity == "warn"
+    assert unk_items[0].category == "config"
+
+
+def test_build_review_items_aggressive_profile_warns(onboard_env):
+    """An aggressive safety profile triggers the verify-caps review item."""
+    from bluei.app.models import LanguageInfo, SafetyProfile
+
+    repo, language, config = _make_review_config(onboard_env)
+    config.safety["profile"] = SafetyProfile.AGGRESSIVE.value
+    items = onboard_env["engine"].build_review_items(repo, language, config)
+    agg_items = [i for i in items if "aggressive profile selected" in i.message.lower()]
+    assert len(agg_items) == 1, items
+    assert agg_items[0].severity == "warn"
+    assert agg_items[0].category == "safety"
+
+
+# ── Coverage gaps: _prompt_rule_pack_confirmation ValueError branch ──
+
+
+def test_prompt_rule_pack_confirmation_invalid_input_then_pick(capsys):
+    """Helper loops on non-numeric input, prints 'Invalid choice', then accepts a valid pick."""
+    from unittest.mock import patch
+    from bluei.app.onboarding.engine import _prompt_rule_pack_confirmation
+
+    class FakeCM:
+        def list_rule_packs(self):
+            return {"alpha-safe": None, "beta-safe": None}
+
+    # 'n' declines suggestion; 'foo' triggers ValueError; '1' picks alpha-safe
+    inputs = iter(["n", "foo", "1"])
+    with patch("builtins.input", side_effect=lambda _p="": next(inputs)):
+        result = _prompt_rule_pack_confirmation("alpha-safe", FakeCM())
+
+    captured = capsys.readouterr()
+    assert "Invalid choice" in captured.out
+    assert result == "alpha-safe"
+
+
+def test_prompt_rule_pack_confirmation_out_of_range_loops(capsys):
+    """Helper loops when the chosen number is out of range."""
+    from unittest.mock import patch
+    from bluei.app.onboarding.engine import _prompt_rule_pack_confirmation
+
+    class FakeCM:
+        def list_rule_packs(self):
+            return {"alpha-safe": None, "beta-safe": None}
+
+    # '99' out of range → loops; '2' valid → beta-safe
+    inputs = iter(["99", "2"])
+    with patch("builtins.input", side_effect=lambda _p="": next(inputs)):
+        result = _prompt_rule_pack_confirmation(None, FakeCM())
+
+    captured = capsys.readouterr()
+    assert "Invalid choice" in captured.out
+    assert result == "beta-safe"
+
+
+# ── Coverage gaps: upgrade_config ─────────────────────────────
+
+
+def test_upgrade_config_raises_on_missing_repo(onboard_env):
+    """upgrade_config raises ValueError when the repo is not registered."""
+    with pytest.raises(ValueError, match="repo not found: ghost-repo"):
+        onboard_env["engine"].upgrade_config("ghost-repo")
+
+
+def test_upgrade_config_noop_when_already_current(onboard_env):
+    """upgrade_config is a no-op when meta.onboarding_version >= ONBOARDING_VERSION."""
+    repo = onboard_env["repo_path"]
+    (repo / "test.txt").write_text("test")
+    onboard_env["engine"].onboard(
+        repo,
+        OnboardOptions(
+            name="up-to-date",
+            language="test",
+            capture_baseline=False,
+            skip_preflight=True,
+        ),
+    )
+
+    result = onboard_env["engine"].upgrade_config("up-to-date")
+    from bluei.app.models import ONBOARDING_VERSION
+
+    assert result == {
+        "repo": "up-to-date",
+        "old_version": ONBOARDING_VERSION,
+        "new_version": ONBOARDING_VERSION,
+        "upgraded": False,
+    }
+
+
+def test_upgrade_config_upgrades_old_version(onboard_env):
+    """upgrade_config regenerates config when meta.onboarding_version is older."""
+    import yaml
+    from bluei.app.models import ONBOARDING_VERSION, RepoStatus
+
+    repo = onboard_env["repo_path"]
+    (repo / "test.txt").write_text("test")
+    onboard_env["engine"].onboard(
+        repo,
+        OnboardOptions(
+            name="legacy-repo",
+            language="test",
+            capture_baseline=False,
+            skip_preflight=True,
+        ),
+    )
+
+    # Force the persisted config to look like an older onboarding version
+    config_path = onboard_env["config"].get_repo_config_path("legacy-repo")
+    data = yaml.safe_load(config_path.read_text())
+    data.setdefault("meta", {})["onboarding_version"] = 1
+    config_path.write_text(yaml.dump(data, default_flow_style=False))
+
+    result = onboard_env["engine"].upgrade_config("legacy-repo")
+    assert result == {
+        "repo": "legacy-repo",
+        "old_version": 1,
+        "new_version": ONBOARDING_VERSION,
+        "upgraded": True,
+    }
+
+    # Verify the persisted config reflects the new version + upgrade metadata
+    reloaded = onboard_env["registry"].read("legacy-repo")
+    assert reloaded.config.meta.get("onboarding_version") == ONBOARDING_VERSION
+    assert reloaded.config.meta.get("upgraded_from") == 1
+    assert reloaded.status == RepoStatus.READY
+
+
+def test_upgrade_config_preserves_safety_policy(onboard_env):
+    """upgrade_config must carry the prior safety policy onto the new config."""
+    import yaml
+
+    repo = onboard_env["repo_path"]
+    (repo / "test.txt").write_text("test")
+    onboard_env["engine"].onboard(
+        repo,
+        OnboardOptions(
+            name="safety-preserved",
+            language="test",
+            mode="pr",
+            profile="balanced",
+            capture_baseline=False,
+            skip_preflight=True,
+        ),
+    )
+
+    # Force old version
+    config_path = onboard_env["config"].get_repo_config_path("safety-preserved")
+    data = yaml.safe_load(config_path.read_text())
+    data.setdefault("meta", {})["onboarding_version"] = 1
+    config_path.write_text(yaml.dump(data, default_flow_style=False))
+
+    # Capture pre-upgrade safety policy
+    pre = onboard_env["registry"].read("safety-preserved").config.safety
+
+    onboard_env["engine"].upgrade_config("safety-preserved")
+
+    post = onboard_env["registry"].read("safety-preserved").config.safety
+    assert post["mode"] == pre["mode"]
+    assert post["profile"] == pre["profile"]
