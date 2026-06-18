@@ -395,3 +395,131 @@ def test_create_or_update_github_issue_dry_run_existing(tmp_path: Path):
         "created": False,
     }
     assert "would comment existing GitHub issue #42" in log_file.read_text()
+
+
+# --- Step 5: PR lifecycle extraction ---
+
+
+def test_pr_ops_module_exports_all_six_symbols():
+    """Step 5 extraction: pr_ops module exposes the six moved functions."""
+    from bluei.engine.gh import pr_ops
+
+    for name in (
+        "find_existing_github_pr",
+        "find_batch_pr_by_rule",
+        "gh_pr_comment",
+        "merge_failure_requires_pr_fix",
+        "merge_pr",
+        "create_or_update_github_pr",
+    ):
+        assert hasattr(pr_ops, name), f"bluei.engine.gh.pr_ops.{name} missing"
+
+
+def test_bluei_engine_gh_pr_ops_same_object_as_module():
+    """Step 5 extraction: facade re-exports are literally the same callables.
+
+    Asserts each ``bluei.engine.gh.<name>`` is identical to
+    ``bluei.engine.gh.pr_ops.<name>`` (notably ``merge_pr`` and
+    ``create_or_update_github_pr``, the two complex hubs).
+    """
+    from bluei.engine import gh
+    from bluei.engine.gh import pr_ops
+
+    for name in (
+        "find_existing_github_pr",
+        "find_batch_pr_by_rule",
+        "gh_pr_comment",
+        "merge_failure_requires_pr_fix",
+        "merge_pr",
+        "create_or_update_github_pr",
+    ):
+        facade_attr = getattr(gh, name)
+        module_attr = getattr(pr_ops, name)
+        assert facade_attr is module_attr, (
+            f"bluei.engine.gh.{name} is not bluei.engine.gh.pr_ops.{name}"
+        )
+
+
+def test_merge_pr_dry_run_simulated(tmp_path: Path):
+    """Step 5 characterization: dry_run returns success without invoking gh."""
+    from unittest.mock import patch
+
+    from bluei.engine import gh
+
+    with patch.object(gh, "run_capture") as mock_rc:
+        ok, reason = gh.merge_pr("acme/widget", 7, dry_run=True, cwd=tmp_path)
+    assert not mock_rc.called, "dry_run merge must not call run_capture"
+    assert ok is True
+    assert reason == "dry-run-merge-simulated"
+
+
+def test_merge_pr_safety_block_observe_mode(tmp_path: Path):
+    """Step 5 characterization: observe-mode safety_config blocks the merge
+    and short-circuits before ``run_capture`` is ever called.
+
+    Guards that ``merge_pr`` still imports ``check_merge_allowed`` from its
+    canonical location (``bluei.engine.safety_gates``) after the move into
+    pr_ops.py.
+    """
+    from unittest.mock import patch
+
+    from bluei.engine import gh
+
+    safety = {"mode": "observe"}
+    with patch.object(gh, "run_capture") as mock_rc:
+        ok, reason = gh.merge_pr(
+            "acme/widget", 7, dry_run=False, cwd=tmp_path, safety_config=safety
+        )
+    assert not mock_rc.called, "blocked merge must not call run_capture"
+    assert ok is False
+    assert reason.startswith("blocked-by-safety-mode:")
+
+
+def test_create_or_update_github_pr_reuses_existing_via_facade(tmp_path: Path):
+    """Step 5 patch-surface: ``find_existing_github_pr`` is resolved through
+    ``_facade`` inside pr_ops -- patching it on the facade must reach the call
+    site and yield the reuse-path result without invoking ``run_capture``.
+    """
+    from unittest.mock import patch
+
+    from bluei.engine.models import Finding
+
+    from bluei.engine import gh
+
+    finding = Finding(
+        finding_id="fid-pr-1",
+        repo="acme/widget",
+        path="src/b.py",
+        line=3,
+        rule="E501",
+        snippet="y = 2",
+        confidence=0.7,
+        quick_win=False,
+        safe_to_autofix=False,
+    )
+    log_file = tmp_path / "pr.log"
+    existing = {"number": "99", "url": "https://github.com/acme/widget/pull/99"}
+
+    with (
+        patch.object(gh, "find_existing_github_pr", return_value=existing) as mock_find,
+        patch.object(gh, "run_capture") as mock_rc,
+    ):
+        result = gh.create_or_update_github_pr(
+            "acme/widget",
+            finding,
+            branch="fix/x",
+            issue_number=None,
+            dry_run=False,
+            log_file=log_file,
+            cwd=tmp_path,
+        )
+    assert mock_find.called, (
+        "find_existing_github_pr patch on facade did not reach pr_ops"
+    )
+    assert not mock_rc.called, "reuse-existing path must not call run_capture"
+    assert result == {
+        "number": 99,
+        "url": "https://github.com/acme/widget/pull/99",
+        "created": False,
+    }
+    assert "reuse existing PR #99" in log_file.read_text()
