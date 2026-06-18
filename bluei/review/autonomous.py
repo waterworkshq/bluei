@@ -43,6 +43,76 @@ from bluei.review.rules import (
 from bluei.review.feedback import _flush_injected_feedback
 
 
+def _format_run_completion_reason(
+    lifecycle_phase: str,
+    pr_number: Optional[int],
+    candidate_source: str,
+    guard_enabled: bool,
+    live_actions: bool,
+    publish_filter_result: Any,
+    safety_reason: str,
+    current_safety_state: MonitoredSafetyState,
+    prior_publish: Dict[str, Any],
+    run_id: str,
+) -> str:
+    """Format the human-readable run_completion_reason for the ReviewRun artifact.
+
+    Pure: no state I/O, no side effects. Extracted from _build_run_artifact
+    (rec-18 followup) to make each branch independently unit-testable.
+    """
+    if lifecycle_phase == "shadow-published":
+        return (
+            f"shadow: summary would have been posted to PR #{pr_number} "
+            f"(live_rollout_mode=shadow; no actual GitHub API call made); "
+            f"candidates={candidate_source}"
+        )
+    elif lifecycle_phase == "guard-disabled":
+        return (
+            f"guard-disabled: local-only run; "
+            f"guarded_live_review={guard_enabled}, live_actions={live_actions}"
+        )
+    elif lifecycle_phase == "guarded-live-published":
+        return (
+            f"published: summary comment posted to PR #{pr_number} via guarded path; "
+            f"candidates={candidate_source}"
+        )
+    elif lifecycle_phase == "filter-blocked":
+        return (
+            f"filter-blocked: publication blocked by limited-publish filters; "
+            f"filters_decision={publish_filter_result.decision} "
+            f"reason={publish_filter_result.failed_reason!r}; "
+            f"candidates={candidate_source}"
+        )
+    elif lifecycle_phase == "guarded-live-refused":
+        runs_entries = prior_publish.get("runs", {})
+        run_entry = runs_entries.get(run_id, {})
+        refusal_reason = run_entry.get("error", "unknown")
+        return (
+            f"refused: publication blocked ({refusal_reason}); "
+            f"candidates={candidate_source}"
+        )
+    elif lifecycle_phase == "guarded-live-failed":
+        runs_entries = prior_publish.get("runs", {})
+        run_entry = runs_entries.get(run_id, {})
+        error_reason = run_entry.get("error", "unknown")
+        return (
+            f"failed: publication error ({error_reason}); candidates={candidate_source}"
+        )
+    elif lifecycle_phase == "safety-blocked":
+        return (
+            f"safety-blocked: circuit-breaker blocked live publication; "
+            f"safety_reason={safety_reason}; "
+            f"circuit_open={current_safety_state.circuit_open}; "
+            f"failure_count={current_safety_state.failure_count}; "
+            f"candidates={candidate_source}"
+        )
+    else:
+        return (
+            f"completed: lifecycle_phase={lifecycle_phase}, "
+            f"candidates={candidate_source}"
+        )
+
+
 class AutonomousMixin:
     def _build_run_artifact(
         self,
@@ -165,58 +235,18 @@ class AutonomousMixin:
         now = now_iso()
 
         # Compute run_completion_reason: human-readable summary of why the run ended
-        if lifecycle_phase == "shadow-published":
-            run_completion_reason = (
-                f"shadow: summary would have been posted to PR #{pr_number} "
-                f"(live_rollout_mode=shadow; no actual GitHub API call made); "
-                f"candidates={candidate_source}"
-            )
-        elif lifecycle_phase == "guard-disabled":
-            run_completion_reason = (
-                f"guard-disabled: local-only run; "
-                f"guarded_live_review={guard_enabled}, live_actions={live_actions}"
-            )
-        elif lifecycle_phase == "guarded-live-published":
-            run_completion_reason = (
-                f"published: summary comment posted to PR #{pr_number} via guarded path; "
-                f"candidates={candidate_source}"
-            )
-        elif lifecycle_phase == "filter-blocked":
-            run_completion_reason = (
-                f"filter-blocked: publication blocked by limited-publish filters; "
-                f"filters_decision={publish_filter_result.decision} "
-                f"reason={publish_filter_result.failed_reason!r}; "
-                f"candidates={candidate_source}"
-            )
-        elif lifecycle_phase == "guarded-live-refused":
-            runs_entries = prior_publish.get("runs", {})
-            run_entry = runs_entries.get(run_id, {})
-            refusal_reason = run_entry.get("error", "unknown")
-            run_completion_reason = (
-                f"refused: publication blocked ({refusal_reason}); "
-                f"candidates={candidate_source}"
-            )
-        elif lifecycle_phase == "guarded-live-failed":
-            runs_entries = prior_publish.get("runs", {})
-            run_entry = runs_entries.get(run_id, {})
-            error_reason = run_entry.get("error", "unknown")
-            run_completion_reason = (
-                f"failed: publication error ({error_reason}); "
-                f"candidates={candidate_source}"
-            )
-        elif lifecycle_phase == "safety-blocked":
-            run_completion_reason = (
-                f"safety-blocked: circuit-breaker blocked live publication; "
-                f"safety_reason={safety_reason}; "
-                f"circuit_open={current_safety_state.circuit_open}; "
-                f"failure_count={current_safety_state.failure_count}; "
-                f"candidates={candidate_source}"
-            )
-        else:
-            run_completion_reason = (
-                f"completed: lifecycle_phase={lifecycle_phase}, "
-                f"candidates={candidate_source}"
-            )
+        run_completion_reason = _format_run_completion_reason(
+            lifecycle_phase=lifecycle_phase,
+            pr_number=pr_number,
+            candidate_source=candidate_source,
+            guard_enabled=guard_enabled,
+            live_actions=live_actions,
+            publish_filter_result=publish_filter_result,
+            safety_reason=safety_reason,
+            current_safety_state=current_safety_state,
+            prior_publish=prior_publish,
+            run_id=run_id,
+        )
 
         review_run_data = {
             "id": run_id,
