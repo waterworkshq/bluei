@@ -1,6 +1,6 @@
 {
   "name": "bluei",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-beta.1",
   "description": "bluei — Autonomous repository health. Trust the silence.",
   "note": "NPM package for bluei. Part of Waterworks HQ.",
   "bin": {

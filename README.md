@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/v/release/waterworkshq/bluei" alt="version" />
-  <img src="https://img.shields.io/badge/tests-5821%20passed-brightgreen" alt="tests" />
+  <img src="https://img.shields.io/badge/tests-6017%20passed-brightgreen" alt="tests" />
   <img src="https://img.shields.io/github/license/waterworkshq/bluei" alt="license" />
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey" alt="platform" />
 </p>
@@ -13,7 +13,7 @@
   <a href="https://bluei.dev">bluei.dev</a>
 </h3>
 
-> **⚠️ Pre-release software.** This is `v0.1.0-alpha.1` — an early preview with significant bugs, incomplete features, and breaking changes ahead. **Do not use in production.** Use for evaluation, testing, and contributions only. Production-ready releases will follow in the coming weeks.
+> **⚠️ Pre-release software.** This is `v0.1.0-beta.1` — an early preview with significant bugs, incomplete features, and breaking changes ahead. **Do not use in production.** Use for evaluation, testing, and contributions only. Production-ready releases will follow in the coming weeks.
 
 # bluei — Trust the silence
 
@@ -343,7 +343,13 @@ Key design principles:
 
 | Area | Status | Notes |
 |------|--------|-------|
-|Will be populated later|
+| v0.2.0-alpha.1 "Evidence" | Planned | Flywheel Ledger + Pattern Court Lite: deterministic-vs-LLM metrics, cascade-stage counts, replay outcomes, savings estimates |
+| v0.2.0-alpha.2 "Safe Learning" | Planned | Golden Validation Bundles, operator controls, and shadow replay before learned fixes can promote themselves |
+| v0.2.0-alpha.3 "Deterministic Assets" | Planned | Recipe Foundry, Rule Hatchery, and Python AST structural replay |
+| v0.2.0-alpha.4 "Repo Native" | Planned | Repo Taste Profile and Campaign Lab for evidence-gathering Campaigns |
+| v0.2.0-alpha.5 "Economics" | Planned | Model Governor and proof harness for model downgrade and cost/reliability evidence |
+
+See [Roadmap](docs/meta/ROADMAP.md) for release boundaries and the planning seed map.
 
 ---
 

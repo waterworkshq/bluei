@@ -52,6 +52,18 @@ _Avoid_: branch (a worktree is backed by a branch but is a filesystem-level conc
 The post-fix check suite that confirms a fix doesn't introduce regressions — lint, type-check, test, and smoke-test pass.
 _Avoid_: CI (external concept), verification (too close to verify_fix_closed).
 
+**Deterministic Flywheel**
+The product loop where successful novel fixes are converted into deterministic future capability: Patterns, Recipes, transforms, Golden Validation Bundles, or Emergent Rules, so recurring Findings need less LLM judgment over time.
+_Avoid_: AI memory loop, optimization cycle, learning loop.
+
+**Repo Taste Profile**
+A repo-local summary of conventions bluei has observed and can use when fixing Findings: preferred libraries, naming style, test style, framework idioms, and recurring exceptions.
+_Avoid_: coding style (too narrow), team preferences (too broad), memory.
+
+**Golden Validation Bundle**
+A small regression fixture extracted from a successful fix, used to validate that a Pattern, Recipe, transform, or Emergent Rule still behaves correctly.
+_Avoid_: golden test (ambiguous), fixture only, regression test.
+
 **Escalation**
 A structured event recorded when a cycle fails, merge fails, dedup saturation is detected, or rebase conflict trends increase. Written to `escalation_log.jsonl`.
 _Avoid_: alert (reserved for notifications), incident.
