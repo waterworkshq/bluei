@@ -919,4 +919,4 @@ class TestEdgeCases:
         store2 = FixPatternStore(store_path)
         updated = store2.get_pattern(pid)
         assert updated.success_count >= 2
-        assert updated.last_used_at is not None
+        assert updated.last_verified_at is not None

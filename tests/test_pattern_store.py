@@ -76,10 +76,12 @@ def test_append_new_pattern_writes_jsonl_with_correct_fields(store_path):
         "created_at",
         "last_used_at",
         "last_verified_at",
+        "last_failed_at",
         "source_finding_ids",
         "framework_constraint",
         "file_pattern",
         "structural_hash",
+        "excluded_paths",
     }
 
 
@@ -152,8 +154,9 @@ def test_record_replay_success_increments_success_count_and_timestamps(store_pat
 
     record = read_jsonl(store_path)[0]
     assert record["success_count"] == 2
-    assert record["last_used_at"] is not None
-    assert record["last_verified_at"] == record["last_used_at"]
+    assert record["last_verified_at"] is not None
+    assert record["last_used_at"] is None
+    assert record["last_failed_at"] is None
 
 
 def test_record_replay_failure_increments_skip_count(store_path):

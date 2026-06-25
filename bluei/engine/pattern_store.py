@@ -9,6 +9,7 @@ below the deactivation confidence threshold are pruned during rotation.
 from __future__ import annotations
 
 import fcntl
+import fnmatch
 import hashlib
 import json
 import os
@@ -18,6 +19,7 @@ import threading
 import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -58,6 +60,28 @@ def snippet_hash(snippet: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+class ReplayOutcome(Enum):
+    """Three-way taxonomy for pattern-replay attempts.
+
+    Recorded exactly once per replay attempt so that ``success_count``,
+    ``skip_count``, and ``failure_count`` reflect three real, honest buckets
+    instead of conflating validation failures with misses. See ADR-0004.
+    """
+
+    HIT = "hit"
+    MISS = "miss"
+    FAILURE = "failure"
+
+
+def _matches_excluded_path(
+    target_path: Optional[str], excluded_paths: List[str]
+) -> bool:
+    """Return True when ``target_path`` matches any glob in ``excluded_paths``."""
+    if not target_path or not excluded_paths:
+        return False
+    return any(fnmatch.fnmatch(target_path, glob) for glob in excluded_paths)
+
+
 @dataclass
 class FixPattern:
     """A single learned before→after fix template with confidence tracking.
@@ -77,12 +101,16 @@ class FixPattern:
         skip_count: Number of times the pattern was tried but not applicable.
         source: Origin of the pattern (``autofix``, ``claude``, ``contextual``).
         created_at: ISO-8601 UTC timestamp.
-        last_used_at: When the pattern was last returned by a lookup.
-        last_verified_at: When the pattern last had a successful replay.
+        last_used_at: When the pattern was last returned by a MISS lookup.
+        last_verified_at: When the pattern last had a successful (HIT) replay.
+        last_failed_at: When the pattern last produced a FAILURE replay.
         source_finding_ids: Finding IDs that contributed to this pattern.
         framework_constraint: Optional framework name to scope applicability.
         file_pattern: Glob pattern for matching files (default ``**/*``).
         structural_hash: Abstracted AST hash of ``before_snippet``.
+        excluded_paths: Glob patterns; when a target path matches any of these,
+            the pattern is a non-candidate at the lookup layer (no attempt,
+            no spurious MISS).
     """
 
     pattern_id: str
@@ -100,10 +128,12 @@ class FixPattern:
     created_at: str = field(default_factory=now_iso)
     last_used_at: Optional[str] = None
     last_verified_at: Optional[str] = None
+    last_failed_at: Optional[str] = None
     source_finding_ids: List[str] = field(default_factory=list)
     framework_constraint: Optional[str] = None
     file_pattern: str = "**/*"
     structural_hash: Optional[str] = None
+    excluded_paths: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -122,10 +152,12 @@ class FixPattern:
             "created_at": self.created_at,
             "last_used_at": self.last_used_at,
             "last_verified_at": self.last_verified_at,
+            "last_failed_at": self.last_failed_at,
             "source_finding_ids": list(self.source_finding_ids),
             "framework_constraint": self.framework_constraint,
             "file_pattern": self.file_pattern,
             "structural_hash": self.structural_hash,
+            "excluded_paths": list(self.excluded_paths),
         }
 
     @classmethod
@@ -146,10 +178,12 @@ class FixPattern:
             created_at=str(data.get("created_at") or now_iso()),
             last_used_at=data.get("last_used_at"),
             last_verified_at=data.get("last_verified_at"),
+            last_failed_at=data.get("last_failed_at"),
             source_finding_ids=list(data.get("source_finding_ids") or []),
             framework_constraint=data.get("framework_constraint"),
             file_pattern=data.get("file_pattern", "**/*"),
             structural_hash=data.get("structural_hash"),
+            excluded_paths=list(data.get("excluded_paths") or []),
         )
 
 
@@ -180,7 +214,11 @@ class FixPatternStore:
         self._rebuild_from_disk()
 
     def lookup(
-        self, rule: str, before_snippet: str, framework: Optional[str] = None
+        self,
+        rule: str,
+        before_snippet: str,
+        framework: Optional[str] = None,
+        target_path: Optional[str] = None,
     ) -> Optional[FixPattern]:
         """Exact-match lookup by rule + normalized before-snippet hash.
 
@@ -189,6 +227,10 @@ class FixPatternStore:
             before_snippet: Raw source text to match against stored patterns.
             framework: Optional framework filter; skips patterns scoped to a
                 different framework.
+            target_path: Optional target file path; when provided, patterns
+                whose ``excluded_paths`` match it are treated as
+                non-candidates and the lookup returns ``None`` (no spurious
+                MISS, no wasted cascade attempt).
 
         Returns:
             Matching ``FixPattern`` with confidence ≥ threshold, or ``None``.
@@ -205,10 +247,16 @@ class FixPatternStore:
             and pattern.framework_constraint != framework
         ):
             return None
+        if _matches_excluded_path(target_path, pattern.excluded_paths):
+            return None
         return pattern
 
     def lookup_structural(
-        self, rule: str, snippet: str, language: str
+        self,
+        rule: str,
+        snippet: str,
+        language: str,
+        target_path: Optional[str] = None,
     ) -> Optional[FixPattern]:
         """Structural-match lookup using an abstracted AST hash.
 
@@ -216,6 +264,9 @@ class FixPatternStore:
             rule: Linter rule name to scope the search.
             snippet: Raw source text to hash structurally.
             language: Language hint for the structural hasher.
+            target_path: Optional target file path; when provided, patterns
+                whose ``excluded_paths`` match it are treated as
+                non-candidates and the lookup returns ``None``.
 
         Returns:
             Matching ``FixPattern`` with confidence ≥ threshold, or ``None``.
@@ -229,6 +280,8 @@ class FixPatternStore:
         pattern = self._patterns.get(pattern_id)
         if not pattern or pattern.confidence < DEACTIVATION_THRESHOLD:
             return None
+        if _matches_excluded_path(target_path, pattern.excluded_paths):
+            return None
         return pattern
 
     def lookup_fuzzy(
@@ -238,6 +291,7 @@ class FixPatternStore:
         language: str,
         threshold: float = 0.75,
         catalog: Optional[List[Dict[str, Any]]] = None,
+        target_path: Optional[str] = None,
     ) -> Optional[FixPattern]:
         """Best-effort fuzzy lookup against all active patterns for a rule.
 
@@ -247,6 +301,9 @@ class FixPatternStore:
             language: Language hint for the similarity scorer.
             threshold: Minimum similarity score (0–1) to accept a match.
             catalog: Optional rule catalog used to derive a per-rule threshold.
+            target_path: Optional target file path; when provided, candidate
+                patterns whose ``excluded_paths`` match it are skipped so the
+                lookup returns ``None`` instead of a spurious match.
 
         Returns:
             Highest-scoring ``FixPattern`` above ``threshold``, or ``None``.
@@ -263,6 +320,8 @@ class FixPatternStore:
         best_pattern: Optional[FixPattern] = None
         best_score = 0.0
         for pattern in candidates:
+            if _matches_excluded_path(target_path, pattern.excluded_paths):
+                continue
             score = fuzzy_structural_match(snippet, pattern.before_snippet, language)
             if score > best_score and score >= effective_threshold:
                 best_score = score
@@ -338,12 +397,28 @@ class FixPatternStore:
             self._write_index_unlocked()
 
     def record_replay(self, pattern_id: str, success: bool) -> None:
-        """Record the outcome of replaying a pattern against a target file.
+        """Backward-compat overload mapping ``True→HIT``, ``False→MISS``.
+
+        Prefer :meth:`record_replay_outcome` for new call sites so the
+        three-way taxonomy (HIT/MISS/FAILURE) is explicit. The signature is
+        preserved so existing keyword callers (``success=``) keep working
+        unchanged. See ADR-0004.
+        """
+        outcome = ReplayOutcome.HIT if success else ReplayOutcome.MISS
+        self.record_replay_outcome(pattern_id, outcome)
+
+    def record_replay_outcome(self, pattern_id: str, outcome: ReplayOutcome) -> None:
+        """Record a three-way replay outcome for a pattern.
+
+        Storage mapping (ADR-0004):
+
+        - ``HIT`` → ``success_count++``, stamp ``last_verified_at``
+        - ``MISS`` → ``skip_count++``, stamp ``last_used_at``
+        - ``FAILURE`` → ``failure_count++``, stamp ``last_failed_at``
 
         Args:
             pattern_id: ID of the pattern that was replayed.
-            success: ``True`` if the replay was confirmed correct, ``False``
-                if the result was skipped or inapplicable.
+            outcome: One of :class:`ReplayOutcome`'s HIT / MISS / FAILURE.
         """
         with self._locked():
             records = self._load_records_unlocked()
@@ -351,14 +426,19 @@ class FixPatternStore:
             timestamp = now_iso()
             for record in records:
                 if record.get("pattern_id") == pattern_id:
-                    if success:
+                    if outcome is ReplayOutcome.HIT:
                         record["success_count"] = (
                             int(record.get("success_count", 0)) + 1
                         )
                         record["last_verified_at"] = timestamp
-                    else:
+                    elif outcome is ReplayOutcome.MISS:
                         record["skip_count"] = int(record.get("skip_count", 0)) + 1
-                    record["last_used_at"] = timestamp
+                        record["last_used_at"] = timestamp
+                    elif outcome is ReplayOutcome.FAILURE:
+                        record["failure_count"] = (
+                            int(record.get("failure_count", 0)) + 1
+                        )
+                        record["last_failed_at"] = timestamp
                     found = True
                     break
             if not found:
@@ -367,6 +447,53 @@ class FixPatternStore:
             self._rotate_if_needed_unlocked()
             self._rebuild_from_disk_unlocked()
             self._write_index_unlocked()
+
+    def add_excluded_path(self, pattern_id: str, glob: str) -> bool:
+        """Add a glob to a pattern's ``excluded_paths``.
+
+        No-op (returns ``False``) if the pattern is missing or the glob is
+        already present. Returns ``True`` when the store was mutated and the
+        in-memory index was rebuilt.
+        """
+        with self._locked():
+            records = self._load_records_unlocked()
+            for record in records:
+                if record.get("pattern_id") != pattern_id:
+                    continue
+                excluded = list(record.get("excluded_paths") or [])
+                if glob in excluded:
+                    return False
+                excluded.append(glob)
+                record["excluded_paths"] = excluded
+                self._write_records_unlocked(records)
+                self._rotate_if_needed_unlocked()
+                self._rebuild_from_disk_unlocked()
+                self._write_index_unlocked()
+                return True
+        return False
+
+    def remove_excluded_path(self, pattern_id: str, glob: str) -> bool:
+        """Remove a glob from a pattern's ``excluded_paths``.
+
+        No-op (returns ``False``) if the pattern is missing or the glob is
+        not present. Returns ``True`` when the store was mutated.
+        """
+        with self._locked():
+            records = self._load_records_unlocked()
+            for record in records:
+                if record.get("pattern_id") != pattern_id:
+                    continue
+                excluded = list(record.get("excluded_paths") or [])
+                if glob not in excluded:
+                    return False
+                excluded.remove(glob)
+                record["excluded_paths"] = excluded
+                self._write_records_unlocked(records)
+                self._rotate_if_needed_unlocked()
+                self._rebuild_from_disk_unlocked()
+                self._write_index_unlocked()
+                return True
+        return False
 
     def lookup_by_finding(self, finding_id: str) -> Optional[FixPattern]:
         """Find a pattern whose source_finding_ids contain the given finding."""
@@ -431,12 +558,14 @@ class FixPatternStore:
             created_at=pattern.created_at or now_iso(),
             last_used_at=pattern.last_used_at,
             last_verified_at=pattern.last_verified_at,
+            last_failed_at=pattern.last_failed_at,
             source_finding_ids=list(pattern.source_finding_ids),
             framework_constraint=pattern.framework_constraint,
             file_pattern=pattern.file_pattern,
             structural_hash=compute_structural_hash(
                 normalized_before, pattern.language
             ),
+            excluded_paths=list(pattern.excluded_paths),
         )
 
     def _rebuild_from_disk(self) -> None:
