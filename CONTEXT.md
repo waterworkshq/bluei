@@ -56,6 +56,22 @@ _Avoid_: CI (external concept), verification (too close to verify_fix_closed).
 The product loop where successful novel fixes are converted into deterministic future capability: Patterns, Recipes, transforms, Golden Validation Bundles, or Emergent Rules, so recurring Findings need less LLM judgment over time.
 _Avoid_: AI memory loop, optimization cycle, learning loop.
 
+**Flywheel Ledger**
+The observability surface that makes the Deterministic Flywheel measurable: how many Findings were resolved deterministically vs. by an LLM, which cascade stage won, Pattern replay outcomes, and the token/dollar cost avoided. Pure observation — it changes no fix behavior.
+_Avoid_: metrics dashboard (too generic), telemetry dump, analytics.
+
+**Pattern Court**
+The evidence and decision layer for learned Patterns: why a Pattern matched, where it should not apply, and how it performed. Splits across releases — Court Lite (alpha.1) observes and explains; full Court (alpha.2) adds shadow learning and demotion/promotion.
+_Avoid_: pattern validator (too narrow), pattern manager.
+
+**Evidence Envelope**
+The inspectable metadata surrounding a Pattern that makes it contestable: replay outcomes, last success/last failure, positive and negative path scope, and source Findings. Grows additively; never breaks Patterns written by older versions.
+_Avoid_: pattern metadata (too generic), pattern record.
+
+**Replay Outcome**
+The three-way result of replaying a Pattern against a Finding: HIT (matched and passed the Validation Gate), MISS (candidate but not applicable — snippet or file absent), or FAILURE (matched but the Validation Gate rejected the fix). FAILURE is negative evidence; MISS is benign.
+_Avoid_: replay result (ambiguous two-way), replay status.
+
 **Repo Taste Profile**
 A repo-local summary of conventions bluei has observed and can use when fixing Findings: preferred libraries, naming style, test style, framework idioms, and recurring exceptions.
 _Avoid_: coding style (too narrow), team preferences (too broad), memory.
