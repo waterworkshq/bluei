@@ -6,6 +6,7 @@ health_history.jsonl, state.json reconciliation_events, and runs
 into a canonical intermediate JSON format for dashboard consumption.
 """
 
+import html as html_mod
 import logging
 import json
 import os
@@ -604,6 +605,114 @@ def generate_report_html(
     return rendered
 
 
+def _build_flywheel_html(ledger: Dict[str, Any]) -> str:
+    """Build the Deterministic Flywheel HTML section.
+
+    Returns empty string when ledger is empty/None.
+    """
+    if not ledger:
+        return ""
+
+    attempted = ledger.get("findings_attempted", 0)
+    det_total = ledger.get("resolved_deterministic_total", 0)
+    resolved_llm = ledger.get("resolved_llm", 0)
+    exhausted = ledger.get("exhausted", 0)
+    savings = ledger.get("savings_usd", 0.0)
+    cost_total = ledger.get("cost_total_usd", 0.0)
+
+    # Rates per ADR-0002: num/denom (%)
+    if attempted > 0:
+        det_rate = f"{det_total}/{attempted} ({round(det_total / attempted * 100, 1)}%)"
+        llm_rate = (
+            f"{resolved_llm}/{attempted} ({round(resolved_llm / attempted * 100, 1)}%)"
+        )
+    else:
+        det_rate = "n/a"
+        llm_rate = "n/a"
+
+    # Headline stat-cards
+    headline = (
+        '<div class="stats-grid">'
+        '  <div class="stat-card">'
+        f'    <div class="stat-value">{det_rate}</div>'
+        '    <div class="stat-label">Deterministic</div>'
+        "  </div>"
+        '  <div class="stat-card">'
+        f'    <div class="stat-value">{llm_rate}</div>'
+        '    <div class="stat-label">LLM Fallback</div>'
+        "  </div>"
+        '  <div class="stat-card">'
+        f'    <div class="stat-value">{exhausted}</div>'
+        '    <div class="stat-label">Exhausted</div>'
+        "  </div>"
+        '  <div class="stat-card">'
+        f'    <div class="stat-value">${savings:.2f}</div>'
+        '    <div class="stat-label">Savings</div>'
+        "  </div>"
+        "</div>\n"
+    )
+
+    # Per-stage breakdown
+    by_stage = ledger.get("resolved_deterministic_by_stage", {})
+    stage_rows = ""
+    for stage, count in by_stage.items():
+        stage_rows += (
+            f"<tr>  <td>{html_mod.escape(stage)}</td>  <td>{count}</td></tr>\n"
+        )
+    stage_table = ""
+    if stage_rows:
+        stage_table = (
+            f"<table><tr><th>Stage</th><th>Resolved</th></tr>\n{stage_rows}</table>\n"
+        )
+
+    # Pattern replay
+    replay_hits = ledger.get("pattern_replay_resolutions", 0)
+    active_patterns = ledger.get("active_pattern_count", 0)
+    replay_block = ""
+    if replay_hits or active_patterns:
+        replay_block = (
+            f"<p><strong>Pattern replay:</strong> {replay_hits} resolving hits · "
+            f"{active_patterns} active patterns</p>\n"
+        )
+
+    # Top failing patterns (≤3)
+    top_failing = ledger.get("top_failing_patterns", [])
+    failing_rows = ""
+    for entry in top_failing[:3]:
+        rule = html_mod.escape(entry.get("rule", "?"))
+        count = entry.get("failure_count", 0)
+        failing_rows += f"<li><code>{rule}</code> (failure_count={count})</li>\n"
+    if failing_rows:
+        replay_block += (
+            f"<p><strong>Top failing patterns:</strong></p>\n<ul>{failing_rows}</ul>\n"
+        )
+
+    # Cost
+    cost_block = ""
+    if cost_total or savings:
+        cost_block = (
+            f"<p><strong>Cost:</strong> ${cost_total:.2f} spent · "
+            f"${savings:.2f} avoided</p>\n"
+        )
+
+    # Footnote — required verbatim per ADR-0003
+    footnote = (
+        '<p style="font-size:0.8em;color:#7f8c8d;margin-top:12px">'
+        "<em>Dollar savings reflect standalone Pattern-replay substitutions; "
+        "cascade-internal Pattern/composite and built-in deterministic stages "
+        "are reported as throughput, not cost.</em></p>\n"
+    )
+
+    return (
+        "<h2>Deterministic Flywheel</h2>\n"
+        f"{headline}"
+        f"{stage_table}"
+        f"{replay_block}"
+        f"{cost_block}"
+        f"{footnote}"
+    )
+
+
 def _generate_placeholder_html(data: Dict[str, Any]) -> str:
     """Fallback placeholder HTML when the dashboard template is not available."""
     repo = data["repo"]
@@ -679,6 +788,8 @@ def _generate_placeholder_html(data: Dict[str, Any]) -> str:
     else:
         health_band = "Critical"
         health_color = "#e74c3c"
+
+    flywheel_section = _build_flywheel_html(data.get("flywheel_ledger") or {})
 
     html = (
         f"""<!DOCTYPE html>
@@ -764,6 +875,7 @@ def _generate_placeholder_html(data: Dict[str, Any]) -> str:
     </div>
   </div>
 
+  {flywheel_section}
   <h2>Specks by Category</h2>
   {cat_bars}
 

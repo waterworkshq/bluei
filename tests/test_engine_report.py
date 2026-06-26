@@ -1356,3 +1356,124 @@ def test_pattern_replay_uses_canonical_language_inference():
         (".rs", "rust"),
     ]:
         assert infer_language_from_path(f"foo{ext}") == expected
+
+
+# ── T3.3: Flywheel section in _generate_placeholder_html ──
+
+FULL_LEDGER = {
+    "findings_attempted": 25,
+    "resolved_deterministic_by_stage": {
+        "pattern-replay": 12,
+        "recipe": 5,
+        "autofix": 3,
+    },
+    "resolved_deterministic_total": 20,
+    "resolved_llm": 3,
+    "exhausted": 2,
+    "pattern_replay_resolutions": 12,
+    "savings_usd": 0.48,
+    "cost_total_usd": 1.25,
+    "active_pattern_count": 8,
+    "top_failing_patterns": [
+        {"pattern_id": "pat-001", "rule": "broad-except", "failure_count": 5},
+        {"pattern_id": "pat-002", "rule": "ruff-c408", "failure_count": 3},
+        {"pattern_id": "pat-003", "rule": "shellcheck-sc2086", "failure_count": 2},
+    ],
+}
+
+
+def _base_data(**extra):
+    """Minimal valid data dict for _generate_placeholder_html."""
+    data = {
+        "repo": {
+            "name": "fw-repo",
+            "path": "/tmp/fw",
+            "language": "python",
+            "health_score": 70,
+            "last_scan": "2026-01-15T10:00:00Z",
+        },
+        "summary": {
+            "total_findings": 10,
+            "open_issues": 1,
+            "open_prs": 0,
+            "fix_attempts": 5,
+            "fixes_verified": 2,
+            "total_prs": 1,
+        },
+        "findings_by_category": {},
+        "top_rules": [],
+        "health_trend": [],
+        "findings_by_language": {},
+        "generated_at": "2026-01-15T12:00:00Z",
+    }
+    data.update(extra)
+    return data
+
+
+class TestFlywheelHtmlSection:
+    """T3.3: Deterministic Flywheel section in _generate_placeholder_html."""
+
+    def test_flywheel_section_present_when_ledger_populated(self):
+        """Heading, per-stage, rate, savings, footnote all present."""
+        html = _generate_placeholder_html(_base_data(flywheel_ledger=FULL_LEDGER))
+        assert "Deterministic Flywheel" in html
+        assert "20/25 (80.0%)" in html
+        assert "3/25 (12.0%)" in html
+        assert "$0.48" in html
+        assert "pattern-replay" in html
+        assert "recipe" in html
+        assert "autofix" in html
+        assert "12 resolving hits" in html
+        assert "8 active patterns" in html
+        assert "broad-except" in html
+        assert "failure_count=5" in html
+
+    def test_flywheel_section_absent_when_ledger_empty(self):
+        """No flywheel section when ledger is empty dict."""
+        html = _generate_placeholder_html(_base_data(flywheel_ledger={}))
+        assert "Deterministic Flywheel" not in html
+
+    def test_flywheel_section_absent_when_ledger_missing(self):
+        """No flywheel section when key absent from data."""
+        html = _generate_placeholder_html(_base_data())
+        assert "Deterministic Flywheel" not in html
+
+    def test_flywheel_divide_by_zero_shows_na(self):
+        """attempted=0 renders n/a, not a crash."""
+        zero_ledger = {
+            "findings_attempted": 0,
+            "resolved_deterministic_total": 0,
+            "resolved_llm": 0,
+            "exhausted": 0,
+        }
+        html = _generate_placeholder_html(_base_data(flywheel_ledger=zero_ledger))
+        assert "Deterministic Flywheel" in html
+        assert "n/a" in html
+
+    def test_flywheel_adr0003_footnote_present(self):
+        """ADR-0003 footnote verbatim when section renders."""
+        html = _generate_placeholder_html(_base_data(flywheel_ledger=FULL_LEDGER))
+        assert "Dollar savings reflect standalone Pattern-replay substitutions" in html
+        assert "throughput, not cost" in html
+
+    def test_flywheel_html_escapes_rule_names(self):
+        """Rule names are HTML-escaped in the flywheel section."""
+        ledger = {
+            "findings_attempted": 1,
+            "resolved_deterministic_total": 1,
+            "resolved_llm": 0,
+            "exhausted": 0,
+            "top_failing_patterns": [
+                {"rule": "<script>alert(1)</script>", "failure_count": 1},
+            ],
+        }
+        html = _generate_placeholder_html(_base_data(flywheel_ledger=ledger))
+        assert "&lt;script&gt;" in html
+        # The escaped version appears in the flywheel section;
+        # the raw JSON <details> dump may contain the unescaped form.
+
+    def test_flywheel_cost_section_present(self):
+        """Cost block renders when cost/savings are nonzero."""
+        html = _generate_placeholder_html(_base_data(flywheel_ledger=FULL_LEDGER))
+        assert "$1.25 spent" in html
+        assert "$0.48 avoided" in html
