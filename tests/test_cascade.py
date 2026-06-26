@@ -1168,3 +1168,100 @@ def test_composite_attempt_exception_returns_failure(tmp_path):
         result = stage.attempt(_finding(), tmp_path, ctx)
     assert not result.success
     assert "store boom" in result.error
+
+
+# --- PROMPT-03: Ledger emission tests ---
+
+
+class _AlwaysSucceedWithTelemetry(CascadeStage):
+    name = "always-succeed"
+    tier = 1
+
+    def can_handle(self, finding, context):
+        return True
+
+    def attempt(self, finding, worktree, context):
+        return CascadeResult(
+            success=True,
+            stage_name=self.name,
+            changes_made=[finding.path],
+            validation_passed=True,
+            latency_ms=42,
+        )
+
+
+def test_ledger_emit_on_cascade_success_both_destinations(tmp_path):
+    """(a) Successful cascade emits exactly one resolved_deterministic record
+    to BOTH the ledger_path file and ledger_records list."""
+    import json
+
+    log = tmp_path / "log.txt"
+    log.write_text("")
+    ledger_path = tmp_path / "ledger.jsonl"
+    ledger_records: list = []
+
+    cascade = DeterministicCascade([_AlwaysSucceedWithTelemetry()])
+    ctx = CascadeContext(
+        log_file=log,
+        ledger_path=ledger_path,
+        cycle="pr-cycle",
+        ledger_records=ledger_records,
+    )
+    result = cascade.execute(_finding(), tmp_path, ctx)
+
+    assert result.success
+    assert result.stage_name == "always-succeed"
+
+    assert len(ledger_records) == 1
+    record = ledger_records[0]
+    assert record["outcome"] == "resolved_deterministic"
+    assert record["final_stage"] == "always-succeed"
+    assert record["via"] == "cascade"
+    assert record["cycle"] == "pr-cycle"
+    assert record["finding_id"] == "f-1"
+    assert record["rule"] == "ruff-e501"
+    assert record["latency_ms"] >= 0
+
+    assert ledger_path.exists()
+    lines = ledger_path.read_text().strip().splitlines()
+    assert len(lines) == 1
+    file_record = json.loads(lines[0])
+    assert file_record["outcome"] == "resolved_deterministic"
+    assert file_record["final_stage"] == "always-succeed"
+
+
+def test_ledger_no_emission_on_cascade_exhaustion(tmp_path):
+    """Cascade exhaustion path does NOT emit — apply_cascade_fix owns that."""
+    import json
+
+    log = tmp_path / "log.txt"
+    log.write_text("")
+    ledger_path = tmp_path / "ledger.jsonl"
+    ledger_records: list = []
+
+    cascade = DeterministicCascade([_AlwaysFail()])
+    ctx = CascadeContext(
+        log_file=log,
+        ledger_path=ledger_path,
+        cycle="pr-cycle",
+        ledger_records=ledger_records,
+    )
+    result = cascade.execute(_finding(), tmp_path, ctx)
+
+    assert not result.success
+    assert result.stage_name == "cascade_exhausted"
+    assert len(ledger_records) == 0
+    assert not ledger_path.exists()
+
+
+def test_ledger_default_params_no_emission(tmp_path):
+    """(d) All three new params default to None — no emission, no file created,
+    no exception (existing behavior preserved)."""
+    log = tmp_path / "log.txt"
+    log.write_text("")
+
+    cascade = DeterministicCascade([_AlwaysSucceedWithTelemetry()])
+    ctx = CascadeContext(log_file=log)
+    result = cascade.execute(_finding(), tmp_path, ctx)
+
+    assert result.success

@@ -16,7 +16,8 @@ from typing import Any, Dict, List, Optional, Set
 
 _logger = logging.getLogger(__name__)
 
-from bluei.engine.models import Finding
+from bluei.engine.jsonl import append_jsonl
+from bluei.engine.models import Finding, now_iso
 from bluei.engine.state import _append_text
 from bluei.engine.utils import run_capture
 
@@ -76,6 +77,9 @@ class CascadeContext:
     allow_llm: bool = True
     shared_library: Any = None
     replay_threshold_overrides: Dict[str, float] = field(default_factory=dict)
+    ledger_path: Optional[Path] = None
+    cycle: Optional[str] = None
+    ledger_records: Optional[List[Dict[str, Any]]] = None
 
 
 class CascadeStage(ABC):
@@ -182,6 +186,9 @@ class DeterministicCascade:
                         context.log_file, f"cascade: stage={stage.name} succeeded"
                     )
                     self._write_telemetry(context, telemetry)
+                    self._emit_ledger_record(
+                        context, telemetry, outcome="resolved_deterministic"
+                    )
                     return result
             else:
                 telemetry.stages_failed.append(
@@ -228,6 +235,38 @@ class DeterministicCascade:
             )
         except Exception:
             _logger.debug("Failed to write cascade telemetry")
+
+    def _emit_ledger_record(
+        self,
+        context: CascadeContext,
+        telemetry: CascadeTelemetry,
+        *,
+        outcome: str,
+        final_stage: Optional[str] = None,
+        pattern_id: Optional[str] = None,
+    ) -> None:
+        """Emit one resolution record to both in-memory accumulator and durable JSONL sink."""
+        if context.ledger_path is None and context.ledger_records is None:
+            return
+        record: Dict[str, Any] = {
+            "cycle": context.cycle,
+            "finding_id": telemetry.finding_id,
+            "rule": telemetry.rule,
+            "stages_tried": list(telemetry.stages_tried),
+            "final_stage": final_stage or telemetry.final_stage,
+            "outcome": outcome,
+            "via": "cascade",
+            "pattern_id": pattern_id,
+            "latency_ms": telemetry.total_latency_ms,
+            "timestamp": now_iso(),
+        }
+        if context.ledger_records is not None:
+            context.ledger_records.append(record)
+        if context.ledger_path is not None:
+            try:
+                append_jsonl(context.ledger_path, record)
+            except Exception:
+                _logger.debug("Failed to write ledger record")
 
 
 class LinterFixStage(CascadeStage):

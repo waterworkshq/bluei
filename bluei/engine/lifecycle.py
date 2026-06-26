@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
-from bluei.engine.models import Finding
+from bluei.engine.jsonl import append_jsonl
+from bluei.engine.models import Finding, now_iso
 from bluei.engine.mnemo_client import MnemoClient
 from bluei.engine.reforge import (
     RefactorClass,
@@ -712,6 +713,9 @@ def apply_cascade_fix(
     pattern_store_path: Optional[Path] = None,
     detected_frameworks: Optional[list] = None,
     deterministic_only: bool = False,
+    ledger_path: Optional[Path] = None,
+    cycle: Optional[str] = None,
+    ledger_records: Optional[List[Dict[str, Any]]] = None,
 ) -> bool:
     """Apply the deterministic cascade to fix a finding."""
     from bluei.engine.cascade import (
@@ -764,6 +768,9 @@ def apply_cascade_fix(
         allow_llm=not deterministic_only,
         shared_library=shared_library,
         replay_threshold_overrides=replay_threshold_overrides,
+        ledger_path=ledger_path,
+        cycle=cycle,
+        ledger_records=ledger_records,
     )
 
     cascade = DeterministicCascade(default_cascade_stages())
@@ -785,6 +792,30 @@ def apply_cascade_fix(
         return True
 
     # Cascade fallback: all deterministic stages failed → hand off to LLM
+    def _emit_fallback_record(outcome: str, final_stage: str) -> None:
+        """Emit a fallback resolution record (LLM success or exhaustion)."""
+        if ledger_path is None and ledger_records is None:
+            return
+        record: Dict[str, Any] = {
+            "cycle": cycle,
+            "finding_id": finding.finding_id,
+            "rule": finding.rule,
+            "stages_tried": [],
+            "final_stage": final_stage,
+            "outcome": outcome,
+            "via": "cascade",
+            "pattern_id": None,
+            "latency_ms": result.latency_ms,
+            "timestamp": now_iso(),
+        }
+        if ledger_records is not None:
+            ledger_records.append(record)
+        if ledger_path is not None:
+            try:
+                append_jsonl(ledger_path, record)
+            except Exception:
+                pass
+
     if context.allow_llm:
         _append_text(
             log_file,
@@ -809,8 +840,13 @@ def apply_cascade_fix(
                 detected_frameworks=detected_frameworks,
             ),
         )
+        if rc == 0:
+            _emit_fallback_record("resolved_llm", "llm")
+        else:
+            _emit_fallback_record("exhausted", "cascade_exhausted")
         return rc == 0
 
+    _emit_fallback_record("exhausted", "cascade_exhausted")
     return False
 
 

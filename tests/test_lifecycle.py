@@ -453,6 +453,169 @@ class TestApplyCascadeFix:
         apply_cascade_fix(tmp_path, make_finding(path=path), log)
         assert mock_ctx_cls.call_args[1]["language"] == expected_lang
 
+    @patch("bluei.engine.cascade.DeterministicCascade")
+    @patch("bluei.engine.cascade.CascadeContext")
+    @patch("bluei.engine.cascade.default_cascade_stages", return_value=[])
+    @patch("bluei.engine.lifecycle._is_pattern_sharing_enabled", return_value=False)
+    def test_emits_exhausted_deterministic_only(
+        self,
+        mock_share,
+        mock_stages,
+        mock_ctx_cls,
+        mock_cascade_cls,
+        tmp_path,
+        make_finding,
+    ):
+        """(b) Exhausted cascade with allow_llm=False emits one exhausted record
+        from apply_cascade_fix, NOT from the cascade exhaustion path."""
+        mock_ctx_cls.return_value = MagicMock(allow_llm=False)
+        cascade = MagicMock()
+        cascade.execute.return_value = MagicMock(
+            success=False, stage_name="cascade_exhausted", latency_ms=100
+        )
+        mock_cascade_cls.return_value = cascade
+        log = tmp_path / "log.txt"
+        log.write_text("")
+        ledger_records: list = []
+
+        result = apply_cascade_fix(
+            tmp_path,
+            make_finding(),
+            log,
+            deterministic_only=True,
+            ledger_records=ledger_records,
+        )
+        assert result is False
+        assert len(ledger_records) == 1
+        record = ledger_records[0]
+        assert record["outcome"] == "exhausted"
+        assert record["final_stage"] == "cascade_exhausted"
+        assert record["via"] == "cascade"
+
+    @patch(
+        "bluei.engine.lifecycle.apply_claude_fix", return_value=(0, "fixed", "/tmp/p")
+    )
+    @patch("bluei.engine.cascade.DeterministicCascade")
+    @patch("bluei.engine.cascade.CascadeContext")
+    @patch("bluei.engine.cascade.default_cascade_stages", return_value=[])
+    @patch("bluei.engine.lifecycle._get_or_create_store")
+    @patch("bluei.engine.lifecycle._is_pattern_sharing_enabled", return_value=False)
+    def test_emits_resolved_llm_on_llm_success(
+        self,
+        mock_share,
+        mock_store,
+        mock_stages,
+        mock_ctx_cls,
+        mock_cascade_cls,
+        mock_claude,
+        tmp_path,
+        make_finding,
+    ):
+        """(c) allow_llm=True + LLM success → exactly one resolved_llm record."""
+        mock_ctx_cls.return_value = MagicMock(allow_llm=True)
+        cascade = MagicMock()
+        cascade.execute.return_value = MagicMock(
+            success=False, stage_name="cascade_exhausted", latency_ms=100
+        )
+        mock_cascade_cls.return_value = cascade
+        log = tmp_path / "log.txt"
+        log.write_text("")
+        ledger_records: list = []
+
+        result = apply_cascade_fix(
+            tmp_path,
+            make_finding(),
+            log,
+            ledger_records=ledger_records,
+        )
+        assert result is True
+        assert len(ledger_records) == 1
+        record = ledger_records[0]
+        assert record["outcome"] == "resolved_llm"
+        assert record["final_stage"] == "llm"
+        assert record["via"] == "cascade"
+
+    @patch(
+        "bluei.engine.lifecycle.apply_claude_fix",
+        return_value=(1, "error", "/tmp/p"),
+    )
+    @patch("bluei.engine.cascade.DeterministicCascade")
+    @patch("bluei.engine.cascade.CascadeContext")
+    @patch("bluei.engine.cascade.default_cascade_stages", return_value=[])
+    @patch("bluei.engine.lifecycle._get_or_create_store")
+    @patch("bluei.engine.lifecycle._is_pattern_sharing_enabled", return_value=False)
+    def test_emits_exhausted_when_llm_fails(
+        self,
+        mock_share,
+        mock_store,
+        mock_stages,
+        mock_ctx_cls,
+        mock_cascade_cls,
+        mock_claude,
+        tmp_path,
+        make_finding,
+    ):
+        """LLM attempt fails → emits exhausted record."""
+        mock_ctx_cls.return_value = MagicMock(allow_llm=True)
+        cascade = MagicMock()
+        cascade.execute.return_value = MagicMock(
+            success=False, stage_name="cascade_exhausted", latency_ms=100
+        )
+        mock_cascade_cls.return_value = cascade
+        log = tmp_path / "log.txt"
+        log.write_text("")
+        ledger_records: list = []
+
+        result = apply_cascade_fix(
+            tmp_path,
+            make_finding(),
+            log,
+            ledger_records=ledger_records,
+        )
+        assert result is False
+        assert len(ledger_records) == 1
+        assert ledger_records[0]["outcome"] == "exhausted"
+        assert ledger_records[0]["final_stage"] == "cascade_exhausted"
+
+    @patch(
+        "bluei.engine.lifecycle.apply_claude_fix", return_value=(0, "fixed", "/tmp/p")
+    )
+    @patch("bluei.engine.cascade.DeterministicCascade")
+    @patch("bluei.engine.cascade.CascadeContext")
+    @patch("bluei.engine.cascade.default_cascade_stages", return_value=[])
+    @patch("bluei.engine.lifecycle._get_or_create_store")
+    @patch("bluei.engine.lifecycle._is_pattern_sharing_enabled", return_value=False)
+    def test_exactly_one_record_llm_after_cascade_exhaustion(
+        self,
+        mock_share,
+        mock_store,
+        mock_stages,
+        mock_ctx_cls,
+        mock_cascade_cls,
+        mock_claude,
+        tmp_path,
+        make_finding,
+    ):
+        """Exactly-one: cascade exhausts + LLM succeeds → one resolved_llm record."""
+        mock_ctx_cls.return_value = MagicMock(allow_llm=True)
+        cascade = MagicMock()
+        cascade.execute.return_value = MagicMock(
+            success=False, stage_name="cascade_exhausted", latency_ms=100
+        )
+        mock_cascade_cls.return_value = cascade
+        log = tmp_path / "log.txt"
+        log.write_text("")
+        ledger_records: list = []
+
+        apply_cascade_fix(
+            tmp_path,
+            make_finding(),
+            log,
+            ledger_records=ledger_records,
+        )
+        assert len(ledger_records) == 1
+        assert ledger_records[0]["outcome"] == "resolved_llm"
+
 
 # --- TestGitOperations ---
 
