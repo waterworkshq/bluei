@@ -788,6 +788,12 @@ def apply_cascade_fix(
         )
         tier = resolve_tier(finding)
         if not _tier_validate(tier, worktree_path, finding, log_file):
+            # NOTE: the cascade already emitted a resolved_deterministic ledger
+            # record (success path). Tier-validation is a stricter gate, so a
+            # rejection here means the finding was NOT actually resolved, yet the
+            # ledger record stands. This over-report is accepted per ADR-0001
+            # (option C — apply_cascade_fix keeps its bool return); the record
+            # measures "a deterministic stage produced a cascade-level-valid fix."
             return False
         return True
 

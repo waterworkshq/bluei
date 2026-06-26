@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import time
 
 from bluei.engine.models import Finding, FixEngine, IssueStatus, now_iso
 from bluei.engine.state import (
@@ -716,6 +717,7 @@ def _process_one_issue(
         replay_pattern_hint: Optional[str] = None
 
         if pattern_store is not None:
+            _replay_t0 = time.monotonic()
             replayed, replay_pid = try_replay(
                 worktree_path=worktree_path,
                 finding=finding,
@@ -724,6 +726,7 @@ def _process_one_issue(
                 log_file=log_file,
                 record_outcome=False,
             )
+            _replay_latency_ms = int((time.monotonic() - _replay_t0) * 1000)
             if replayed:
                 replay_succeeded = True
                 # record_outcome=False deferred all internal recording; record HIT explicitly
@@ -754,7 +757,7 @@ def _process_one_issue(
                         "outcome": "resolved_deterministic",
                         "via": "standalone-replay",
                         "pattern_id": replay_pid,
-                        "latency_ms": 0,
+                        "latency_ms": _replay_latency_ms,
                         "timestamp": now_iso(),
                     }
                 )

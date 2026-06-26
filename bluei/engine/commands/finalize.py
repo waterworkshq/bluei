@@ -22,11 +22,13 @@ def _build_flywheel_ledger(
 ) -> Dict[str, Any]:
     """Build the flywheel_ledger block from in-memory records + cost tracker + pattern store.
 
-    Per-cycle ledger_records capture only resolving pattern-replay HITS
-    (records with outcome="resolved_deterministic", final_stage="pattern-replay").
-    They do NOT capture pattern-replay misses or failures — those don't produce
-    resolution records. So the per-cycle block reports pattern_replay_resolutions
-    (resolving hits), not full HIT/MISS/FAILURE.
+    ``ledger_records`` holds exactly one record per *attempted* Finding across all
+    resolution paths (standalone-replay HIT, cascade stage wins, LLM fallback,
+    exhaustion). Per-stage deterministic wins are read off each record's
+    ``final_stage``. Note: pattern-replay *misses* and *failures* produce no
+    resolution record (they don't resolve the Finding), so the per-cycle block
+    reports ``pattern_replay_resolutions`` (resolving hits only), not full
+    HIT/MISS/FAILURE — those live on the Pattern store cumulatively (AC-C4 health).
     """
     findings_attempted = len(ledger_records)
 

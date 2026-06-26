@@ -1265,3 +1265,31 @@ def test_ledger_default_params_no_emission(tmp_path):
     result = cascade.execute(_finding(), tmp_path, ctx)
 
     assert result.success
+
+
+def test_pattern_replay_can_handle_respects_excluded_paths(tmp_path):
+    """can_handle threads target_path so an excluded path yields False (no wasted attempt)."""
+    from bluei.engine.pattern_store import FixPattern, FixPatternStore
+    from bluei.engine.cascade import CascadeContext, PatternReplayCascadeStage
+
+    store = FixPatternStore(tmp_path / "patterns.jsonl")
+    pid = store.append(
+        FixPattern(
+            pattern_id="tmp",
+            rule="ruff-e501",
+            language="python",
+            file_path="src/*.py",
+            before_snippet="line too long",
+            after_snippet="line too long.",
+            diff_patch="",
+            confidence=0.99,
+        )
+    )
+    store.add_excluded_path(pid, "src/**")
+
+    stage = PatternReplayCascadeStage(confidence_threshold=0.85)
+    ctx = CascadeContext(pattern_store=store)
+    # excluded path -> can_handle False
+    assert stage.can_handle(_finding(path="src/app.py"), ctx) is False
+    # non-excluded path -> can_handle True (pattern found, not scoped out)
+    assert stage.can_handle(_finding(path="lib/app.py"), ctx) is True

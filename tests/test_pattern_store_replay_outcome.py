@@ -487,3 +487,35 @@ def test_add_remove_roundtrip_with_reload(store_path):
     p = fresh.get_pattern(pattern_id)
     assert p is not None
     assert p.excluded_paths == ["vendor/**"]
+
+
+def test_excluded_paths_globstar_matches_nested_paths(store_path):
+    """``**`` in excluded_paths matches across path segments (parity with file_pattern)."""
+    store = FixPatternStore(store_path)
+    pattern_id = store.append(make_pattern())
+    store.add_excluded_path(pattern_id, "vendor/**")
+    # ** matches a nested path
+    assert (
+        store.lookup(
+            "broad-except", "except:\n    pass", target_path="vendor/pkg/mod.py"
+        )
+        is None
+    )
+    # ** does not exclude an unrelated top-level dir
+    assert (
+        store.lookup("broad-except", "except:\n    pass", target_path="src/app.py")
+        is not None
+    )
+
+
+def test_excluded_paths_bare_globstar_matches_anything(store_path):
+    """A bare ``**`` excludes every path."""
+    store = FixPatternStore(store_path)
+    pattern_id = store.append(make_pattern())
+    store.add_excluded_path(pattern_id, "**")
+    assert (
+        store.lookup(
+            "broad-except", "except:\n    pass", target_path="any/deep/path.py"
+        )
+        is None
+    )

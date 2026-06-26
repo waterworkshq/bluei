@@ -76,10 +76,29 @@ class ReplayOutcome(Enum):
 def _matches_excluded_path(
     target_path: Optional[str], excluded_paths: List[str]
 ) -> bool:
-    """Return True when ``target_path`` matches any glob in ``excluded_paths``."""
+    """Return True when ``target_path`` matches any glob in ``excluded_paths``.
+
+    Globstar-aware (``**`` matches across path segments), mirroring
+    ``pattern_replay._matches_file_pattern`` so positive (``file_pattern``)
+    and negative (``excluded_paths``) scoping behave consistently. Single ``*``
+    follows fnmatch (crosses ``/``) in both, by design.
+    """
     if not target_path or not excluded_paths:
         return False
-    return any(fnmatch.fnmatch(target_path, glob) for glob in excluded_paths)
+    for pattern in excluded_paths:
+        if pattern in ("**/*", "**"):
+            return True
+        if fnmatch.fnmatch(target_path, pattern):
+            return True
+        if pattern.startswith("**/"):
+            suffix = pattern[3:]
+            if (
+                target_path == suffix
+                or target_path.endswith("/" + suffix)
+                or fnmatch.fnmatch(target_path, suffix)
+            ):
+                return True
+    return False
 
 
 @dataclass

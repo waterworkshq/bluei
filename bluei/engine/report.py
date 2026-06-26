@@ -797,7 +797,7 @@ def _generate_placeholder_html(data: Dict[str, Any]) -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>QA Report: {repo["name"]}</title>
+<title>QA Report: {html_mod.escape(str(repo["name"]))}</title>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
   body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f1923; color: #e0e0e0; padding: 20px; }}
@@ -835,7 +835,7 @@ def _generate_placeholder_html(data: Dict[str, Any]) -> str:
 </head>
 <body>
 <div class="container">
-  <h1>QA Report: {repo["name"]}</h1>
+  <h1>QA Report: {html_mod.escape(str(repo["name"]))}</h1>
   <div class="subtitle">Generated {data["generated_at"][:19].replace("T", " ")} UTC · Last scan: {repo["last_scan"][:19].replace("T", " ") if repo["last_scan"] else "never"}</div>
 
   <div class="health-card">

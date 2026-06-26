@@ -504,16 +504,19 @@ class PatternReplayCascadeStage(CascadeStage):
             threshold = overrides.get(finding.rule, self.confidence_threshold)
             normalized = normalize_snippet(finding.snippet)
             language = getattr(finding, "language", None) or "python"
-            pattern = context.pattern_store.lookup(finding.rule, normalized)
+            target_path = finding.path
+            pattern = context.pattern_store.lookup(
+                finding.rule, normalized, target_path=target_path
+            )
             if pattern is not None and pattern.confidence >= threshold:
                 return True
             pattern = context.pattern_store.lookup_structural(
-                finding.rule, normalized, language
+                finding.rule, normalized, language, target_path=target_path
             )
             if pattern is not None and pattern.confidence >= threshold:
                 return True
             pattern = context.pattern_store.lookup_fuzzy(
-                finding.rule, normalized, language
+                finding.rule, normalized, language, target_path=target_path
             )
             return pattern is not None and pattern.confidence >= threshold
         except Exception:

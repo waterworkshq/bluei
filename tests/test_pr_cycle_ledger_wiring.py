@@ -447,3 +447,34 @@ def test_standalone_and_cascade_record_shapes_are_field_identical(tmp_path):
     assert standalone_keys == cascade_keys, (
         f"shape drift — standalone={standalone_keys} cascade={cascade_keys}"
     )
+
+
+def test_standalone_hit_record_carries_measured_latency(tmp_path):
+    """latency_ms is the measured try_replay duration, not a hardcoded sentinel."""
+    store = FixPatternStore(tmp_path / "patterns.jsonl")
+    pid = store.append(_pattern())
+    store._rebuild_from_disk()
+    ctx = _build_ctx(tmp_path, store)
+    finding = _finding(rule="broad-except")
+    issue = {
+        "issue_id": "i1",
+        "finding_id": "f001",
+        "status": "open",
+        "rule": "broad-except",
+    }
+
+    with _neutralize_post_fix():
+        with (
+            patch(
+                "bluei.engine.commands.pr_cycle.try_replay", return_value=(True, pid)
+            ),
+            patch("bluei.engine.lifecycle.apply_cascade_fix"),
+            patch(
+                "bluei.engine.commands.pr_cycle.time.monotonic",
+                side_effect=[100.0, 100.25],
+            ),
+        ):
+            _process_one_issue(ctx, 0, issue, finding, {})
+
+    rec = ctx.ledger_records[0]
+    assert rec["latency_ms"] == 250  # (100.25 - 100.0) * 1000

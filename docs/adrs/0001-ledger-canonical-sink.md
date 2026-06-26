@@ -13,5 +13,5 @@ The Deterministic Flywheel's value is buried today: `CascadeTelemetry` is writte
 ## Consequences
 
 - One row per Finding (resolved or exhausted), uniform shape regardless of which path produced it. Emission happens at two points — inside the cascade (cascade-resolved/exhausted) and in pr_cycle (standalone-replay HIT, which short-circuits the cascade); the `via` field distinguishes them.
-- `CascadeContext` gains `ledger_path` + `run_id` (the cascade cannot see the state dir today — `log_file` lives in `logs/` per `DEFAULT_LOG`, while `cost_log.jsonl` and the new sink are siblings at `state_file.parent`, i.e. wherever `state_file` resolves at runtime).
+- `CascadeContext` gains `ledger_path` + `ledger_records` (the in-memory accumulator bridging the bool boundary per ADR-0005). **`run_id` is deferred** — see ADR-0005; the per-cycle block reads the in-memory accumulator, so no `run_id` is needed and none is added to the sink rows. (`CascadeContext` cannot see the state dir today — `log_file` lives in `logs/` per `DEFAULT_LOG`, while `cost_log.jsonl` and the new sink are siblings at `state_file.parent`, i.e. wherever `state_file` resolves at runtime.)
 - Cascade log-file telemetry remains as-is for debug; the JSONL sink is the aggregation source.
