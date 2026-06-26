@@ -343,7 +343,7 @@ Key design principles:
 
 | Area | Status | Notes |
 |------|--------|-------|
-| v0.2.0-alpha.1 "Evidence" | Planned | Flywheel Ledger + Pattern Court Lite: deterministic-vs-LLM metrics, cascade-stage counts, replay outcomes, savings estimates |
+| v0.2.0-alpha.1 "Evidence" | Delivered | Flywheel Ledger + Pattern Court Lite: deterministic-vs-LLM metrics, cascade-stage counts, honest three-way replay outcomes, savings, and Pattern Court Lite explainability |
 | v0.2.0-alpha.2 "Safe Learning" | Planned | Golden Validation Bundles, operator controls, and shadow replay before learned fixes can promote themselves |
 | v0.2.0-alpha.3 "Deterministic Assets" | Planned | Recipe Foundry, Rule Hatchery, and Python AST structural replay |
 | v0.2.0-alpha.4 "Repo Native" | Planned | Repo Taste Profile and Campaign Lab for evidence-gathering Campaigns |

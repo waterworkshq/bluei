@@ -12,6 +12,7 @@ What's been built, and what's next.
 |------|-------|
 | v0.1.0-alpha.1 | Initial pre-release: deterministic fix cascade, pattern learning, review lifecycle, onboarding, 8 language plugins |
 | v0.1.0-beta.1 | Post-alpha hardening: Tier 1 architecture cleanup, god-module decompositions, H5 review→app decoupling, merge-cycle audit closure, JSONL/state reconciliation, E2E test suite |
+| v0.2.0-alpha.1 | "Evidence": Flywheel Ledger (deterministic-vs-LLM resolution metrics, cascade-stage counts, honest three-way HIT/MISS/FAILURE replay outcomes, standalone-Pattern-replay $ savings) + Pattern Court Lite (`last_failed_at`/`excluded_paths` envelopes with lookup-layer enforcement, enriched `patterns show`/`list`, `exclude`/`unexclude` producer). Rendered across the `clean` summary, `report` (markdown + HTML), and dashboard. Observability only — no fix-behavior changes. |
 
 > Full release notes live in [`CHANGELOG.md`](../CHANGELOG.md).
 
@@ -21,20 +22,9 @@ What's been built, and what's next.
 
 Each minor release should tell one coherent story. The `0.2.0` line is the deterministic flywheel era: each release increments the alpha counter through the flywheel build-out, aiming for `0.2.0-beta` → `0.2.0-rc` → `0.2.0` stable once the arc is feature-complete and proven on real repos. Release boundaries are risk-management decisions: evidence, promotion, structural replay, repo taste, and model routing should not all ship in one batch.
 
-### v0.2.0-alpha.1 - "Evidence"
+### Carried forward from v0.2.0-alpha.1
 
-Make the deterministic flywheel visible before changing automation behavior.
-
-| Feature | Problem it solves |
-|---------|-------------------|
-| Flywheel Ledger | Shows deterministic-vs-LLM resolution rate, cascade-stage counts, Pattern replay outcomes, and estimated token/dollar savings |
-| Pattern Court Lite | Adds minimal Pattern evidence envelopes and replay explanations so learned fixes are inspectable |
-
-**Why here:** bluei already has deterministic stages, Pattern replay, and cost tracking, but the value is buried. v0.2.0-alpha.1 should prove the thesis with observability first, not introduce risky auto-promotion.
-
-Planning seeds: `docs/plans/v2/01-flywheel-ledger.md`, `docs/plans/v2/02-pattern-court.md`
-
-**Deferred from alpha.1** (recorded so future releases do not drop them):
+v0.2.0-alpha.1 "Evidence" has shipped (see Delivered above). These items were scoped out of that release and are inherited by later releases (mostly alpha.2):
 
 | Deferred item | Target | Why deferred |
 |---------------|--------|--------------|
