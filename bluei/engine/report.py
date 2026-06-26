@@ -465,6 +465,7 @@ def extract_report_data(
         "findings_by_language": dict(findings_by_language),
         "reconciliation_events": reconciliation_events,
         "recent_runs": run_metrics["runs"],
+        "flywheel_ledger": status_data.get("flywheel_ledger") or {},
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 

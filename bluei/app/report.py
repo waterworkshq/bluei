@@ -146,6 +146,8 @@ class ReportGenerator:
             for cat, count in (data.get("findings_by_category", {}) or {}).items()
         }
 
+        flywheel_ledger = data.get("flywheel_ledger") or {}
+
         generator = cls(workspace=workspace) if workspace is not None else cls()
         return generator.generate_markdown_report(
             repo=repo,
@@ -154,7 +156,88 @@ class ReportGenerator:
             history=history,
             findings_by_category=findings_by_category,
             review_care=review_care,
+            flywheel_ledger=flywheel_ledger,
         )
+
+    @staticmethod
+    def _format_flywheel_section(ledger: Dict) -> List[str]:
+        """Format the Deterministic Flywheel markdown section.
+
+        Args:
+            ledger: The flywheel_ledger block from status.json.
+
+        Returns:
+            List of markdown lines (including heading and trailing blank).
+        """
+        lines: List[str] = [
+            "---",
+            "",
+            "## Deterministic Flywheel",
+            "",
+        ]
+
+        attempted = ledger.get("findings_attempted", 0)
+        det_total = ledger.get("resolved_deterministic_total", 0)
+        resolved_llm = ledger.get("resolved_llm", 0)
+        exhausted = ledger.get("exhausted", 0)
+
+        # Resolution rates — num/denom (%) per ADR-0002
+        if attempted > 0:
+            det_pct = round(det_total / attempted * 100, 1)
+            llm_pct = round(resolved_llm / attempted * 100, 1)
+            lines.append(
+                f"**Resolution rate:** {det_total}/{attempted} ({det_pct}%) deterministic · "
+                f"{resolved_llm}/{attempted} ({llm_pct}%) LLM fallback"
+            )
+        else:
+            lines.append("**Resolution rate:** n/a (no findings attempted)")
+        lines.append("")
+
+        # Per-stage breakdown
+        by_stage = ledger.get("resolved_deterministic_by_stage", {})
+        if by_stage:
+            stage_parts = [f"{stage}: {count}" for stage, count in by_stage.items()]
+            lines.append(f"**Per-stage:** {' · '.join(stage_parts)}")
+            lines.append(f"- LLM fallback: {resolved_llm}")
+            lines.append(f"- Exhausted: {exhausted}")
+            lines.append("")
+
+        # Pattern replay
+        replay_hits = ledger.get("pattern_replay_resolutions", 0)
+        active_patterns = ledger.get("active_pattern_count", 0)
+        if replay_hits or active_patterns:
+            lines.append(
+                f"**Pattern replay:** {replay_hits} resolving hits · "
+                f"{active_patterns} active patterns"
+            )
+            lines.append("")
+
+        # Top failing patterns (up to 3)
+        top_failing = ledger.get("top_failing_patterns", [])
+        if top_failing:
+            lines.append("**Top failing patterns:**")
+            for entry in top_failing[:3]:
+                pid = entry.get("pattern_id", "?")
+                rule = entry.get("rule", "?")
+                count = entry.get("failure_count", 0)
+                lines.append(f"- `{pid}` — {rule} (failure_count={count})")
+            lines.append("")
+
+        # Cost
+        cost_total = ledger.get("cost_total_usd", 0.0)
+        savings = ledger.get("savings_usd", 0.0)
+        if cost_total or savings:
+            lines.append(f"**Cost:** ${cost_total:.2f} spent · ${savings:.2f} avoided")
+            lines.append("")
+
+        # Footnote — required per ADR-0003
+        lines.append(
+            "*Dollar savings reflect standalone Pattern-replay substitutions; "
+            "cascade-internal Pattern/composite and built-in deterministic stages "
+            "are reported as throughput, not cost.*"
+        )
+        lines.append("")
+        return lines
 
     def generate_markdown_report(
         self,
@@ -164,6 +247,7 @@ class ReportGenerator:
         history: List[Dict],
         findings_by_category: Dict[str, int],
         review_care: Optional[Dict] = None,
+        flywheel_ledger: Optional[Dict] = None,
     ) -> str:
         """Generate a markdown report for a repository."""
 
@@ -236,6 +320,10 @@ class ReportGenerator:
                     "",
                 ]
             )
+
+        # Deterministic Flywheel section (only when ledger is non-empty)
+        if flywheel_ledger:
+            lines.extend(self._format_flywheel_section(flywheel_ledger))
 
         # Findings breakdown
         lines.extend(
