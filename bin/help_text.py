@@ -317,12 +317,16 @@ By default runs as a dry-run — add --no-dry-run to actually heal.{RESET}
   bluei patterns show {CYAN}<pattern_id>{RESET} --repo {CYAN}<name>{RESET}   {DIM}Show full pattern details{RESET}
   bluei patterns deactivate {CYAN}<pattern_id>{RESET} --repo {CYAN}<name>{RESET}  {DIM}Deactivate a pattern{RESET}
   bluei patterns reactivate {CYAN}<pattern_id>{RESET} --repo {CYAN}<name>{RESET}  {DIM}Reactivate a deactivated pattern{RESET}
+  bluei patterns exclude {CYAN}<pattern_id> <glob>{RESET} --repo {CYAN}<name>{RESET}  {DIM}Exclude a path glob from a pattern{RESET}
+  bluei patterns unexclude {CYAN}<pattern_id> <glob>{RESET} --repo {CYAN}<name>{RESET}  {DIM}Remove a path glob exclusion{RESET}
 
 {BOLD}Subcommands:{RESET}
   list                  {DIM}List all active patterns with confidence and stats{RESET}
   show {CYAN}<id>{RESET}            {DIM}Show full details including diff patch{RESET}
   deactivate {CYAN}<id>{RESET}      {DIM}Manually deactivate a pattern (set confidence to 0){RESET}
   reactivate {CYAN}<id>{RESET}      {DIM}Reactivate a deactivated pattern (set confidence to 0.5){RESET}
+  exclude {CYAN}<id> <glob>{RESET}  {DIM}Exclude a path glob from a pattern's matches{RESET}
+  unexclude {CYAN}<id> <glob>{RESET}  {DIM}Remove a previously added path glob exclusion{RESET}
 
 {BOLD}Options:{RESET}
   --repo {CYAN}<name>{RESET}            Project name (required)
@@ -331,6 +335,7 @@ By default runs as a dry-run — add --no-dry-run to actually heal.{RESET}
   bluei patterns list --repo my-app
   bluei patterns show fp-a1b2c3d4e5f6 --repo my-app
   bluei patterns deactivate fp-a1b2c3d4e5f6 --repo my-app
+  bluei patterns exclude fp-a1b2c3d4e5f6 'vendor/*' --repo my-app
 """,
     "campaign": f"""{BOLD}bluei campaign{RESET} {CYAN}<subcommand>{RESET} [{YELLOW}options{RESET}]
 

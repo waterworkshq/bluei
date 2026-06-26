@@ -17,7 +17,7 @@ _parse_option = parse_option
 
 
 def _cmd_patterns(rest: list[str]) -> int:
-    """Handle patterns subcommands: list, show, deactivate, reactivate."""
+    """Handle patterns subcommands: list, show, deactivate, reactivate, exclude, unexclude."""
     from bluei.engine.pattern_store import FixPatternStore, DEACTIVATION_THRESHOLD
     from bluei.engine.pattern_replay import PROMPT_HINT_THRESHOLD
     from bluei.app.config import ConfigManager
@@ -56,6 +56,10 @@ def _cmd_patterns(rest: list[str]) -> int:
         return _patterns_deactivate(sub_rest, store)
     elif subcmd == "reactivate":
         return _patterns_reactivate(sub_rest, store)
+    elif subcmd == "exclude":
+        return _patterns_exclude(sub_rest, store)
+    elif subcmd == "unexclude":
+        return _patterns_unexclude(sub_rest, store)
     else:
         print(
             f"bluei: unknown patterns subcommand '{subcmd}'. Try 'bluei help patterns'.",
@@ -74,13 +78,13 @@ def _patterns_list(store) -> int:
 
     patterns.sort(key=lambda p: p.confidence, reverse=True)
     print(
-        f"{'PATTERN ID':<20} {'RULE':<25} {'CONFIDENCE':>10} {'SUCC':>5} {'FAIL':>5} {'LAST USED'}"
+        f"{'PATTERN ID':<20} {'RULE':<25} {'CONFIDENCE':>10} {'HIT':>5} {'MISS':>5} {'FAIL':>5} {'LAST USED'}"
     )
-    print("-" * 85)
+    print("-" * 91)
     for p in patterns:
         last_used = p.last_used_at[:19] if p.last_used_at else "never"
         print(
-            f"{p.pattern_id:<20} {p.rule:<25} {p.confidence:>10.3f} {p.success_count:>5} {p.failure_count:>5} {last_used}"
+            f"{p.pattern_id:<20} {p.rule:<25} {p.confidence:>10.3f} {p.success_count:>5} {p.skip_count:>5} {p.failure_count:>5} {last_used}"
         )
     print()
     print(f"Total: {len(patterns)} active patterns")
@@ -113,11 +117,14 @@ def _patterns_show(rest: list[str], store) -> int:
     print(f"Source:     {p.source}")
     print(f"Confidence: {p.confidence:.3f}")
     print(
-        f"Success:    {p.success_count}  Fail: {p.failure_count}  Skip: {p.skip_count}"
+        f"Replay:    HIT={p.success_count}  MISS={p.skip_count}  FAILURE={p.failure_count}"
     )
+    if p.excluded_paths:
+        print(f"Excluded:   {', '.join(p.excluded_paths)}")
     print(f"Created:    {p.created_at[:19]}")
     print(f"Last used:  {(p.last_used_at or 'never')[:19]}")
     print(f"Last verified: {(p.last_verified_at or 'never')[:19]}")
+    print(f"Last failed: {(p.last_failed_at or 'never')[:19]}")
     if p.source_finding_ids:
         print(f"Findings:   {', '.join(p.source_finding_ids[:5])}")
     print()
@@ -190,4 +197,52 @@ def _patterns_reactivate(rest: list[str], store) -> int:
     print(
         f"Pattern {pattern_id} reactivated (confidence set to {PROMPT_HINT_THRESHOLD})."
     )
+    return 0
+
+
+def _parse_two_positionals(rest: list[str]):
+    """Extract the first two non-flag positionals (pattern_id, glob)."""
+    positionals = [arg for arg in rest if not arg.startswith("-")]
+    return positionals[0] if len(positionals) >= 1 else None, (
+        positionals[1] if len(positionals) >= 2 else None
+    )
+
+
+def _patterns_exclude(rest: list[str], store) -> int:
+    pattern_id, glob = _parse_two_positionals(rest)
+    if not pattern_id or not glob:
+        print(
+            "bluei: patterns exclude requires <pattern_id> <glob>. Try 'bluei help patterns'.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not store.get_pattern(pattern_id):
+        print(f"bluei: pattern '{pattern_id}' not found.", file=sys.stderr)
+        return 1
+
+    if store.add_excluded_path(pattern_id, glob):
+        print(f"Pattern {pattern_id}: excluded path '{glob}' added.")
+        return 0
+    print(f"Pattern {pattern_id}: path '{glob}' already excluded (no change).")
+    return 0
+
+
+def _patterns_unexclude(rest: list[str], store) -> int:
+    pattern_id, glob = _parse_two_positionals(rest)
+    if not pattern_id or not glob:
+        print(
+            "bluei: patterns unexclude requires <pattern_id> <glob>. Try 'bluei help patterns'.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not store.get_pattern(pattern_id):
+        print(f"bluei: pattern '{pattern_id}' not found.", file=sys.stderr)
+        return 1
+
+    if store.remove_excluded_path(pattern_id, glob):
+        print(f"Pattern {pattern_id}: excluded path '{glob}' removed.")
+        return 0
+    print(f"Pattern {pattern_id}: path '{glob}' was not excluded (no change).")
     return 0

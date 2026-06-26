@@ -400,9 +400,11 @@ def _cmd_patterns(rest: list[str]) -> int:
 # Re-exports for test monkeypatch compat
 from bin.cmd_patterns import (  # noqa: E402, F401
     _patterns_deactivate,
+    _patterns_exclude,
     _patterns_list,
     _patterns_reactivate,
     _patterns_show,
+    _patterns_unexclude,
 )
 
 
