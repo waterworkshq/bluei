@@ -317,10 +317,12 @@ from bluei.app.dashboard import (
     _health_band,
     _number,
     _percent,
+    _rate,
     _read_json,
     _read_yaml,
     _render_campaigns,
     _render_escalation_feed,
+    _render_flywheel_card,
     _render_notification_feed,
     _render_raw_state_card,
     _render_repo_card,
@@ -1144,3 +1146,271 @@ class TestRenderFunctions:
         html_str = render_dashboard_html(data)
         assert "bluei dashboard" in html_str
         assert "Fleet Overview" in html_str
+
+
+# ---------------------------------------------------------------------------
+# Flywheel Ledger card (PROMPT-08 / T3.5)
+# ---------------------------------------------------------------------------
+
+
+def _flywheel_ledger_fixture() -> dict:
+    """Fixture matching slice-5 finalize output shape."""
+    return {
+        "findings_attempted": 10,
+        "resolved_deterministic_by_stage": {
+            "pattern-replay": 3,
+            "recipe": 2,
+            "ast": 1,
+        },
+        "resolved_deterministic_total": 6,
+        "resolved_llm": 3,
+        "exhausted": 1,
+        "pattern_replay_resolutions": 3,
+        "savings_usd": 0.42,
+        "cost_total_usd": 1.20,
+        "rates": {
+            "deterministic_resolution": "6/10 (60.0%)",
+            "llm_fallback": "3/10 (30.0%)",
+            "exhausted": "1/10 (10.0%)",
+        },
+        "active_pattern_count": 7,
+        "top_failing_patterns": [
+            {"pattern_id": "p-1", "rule": "broad-except", "failure_count": 5},
+            {"pattern_id": "p-2", "rule": "<script>x</script>", "failure_count": 2},
+        ],
+    }
+
+
+class TestRateHelper:
+    def test_normal(self):
+        assert _rate(6, 10) == "6/10 (60.0%)"
+
+    def test_zero_denom(self):
+        assert _rate(0, 0) == "n/a"
+
+    def test_zero_num(self):
+        assert _rate(0, 5) == "0/5 (0.0%)"
+
+
+class TestBuildRepoSummaryFlywheel:
+    def test_includes_flywheel_ledger_from_status_json(self, tmp_path):
+        repo_dir = tmp_path / "repos" / "demo"
+        state_dir = repo_dir / "state"
+        state_dir.mkdir(parents=True)
+        (repo_dir / "config.yaml").write_text("language: python\n")
+        ledger = _flywheel_ledger_fixture()
+        (state_dir / "status.json").write_text(
+            json.dumps({"flywheel_ledger": ledger}), encoding="utf-8"
+        )
+        result = _build_repo_summary(repo_dir, history_limit=30)
+        assert result["flywheel_ledger"] == ledger
+
+    def test_empty_when_status_json_missing(self, tmp_path):
+        repo_dir = tmp_path / "repos" / "demo"
+        (repo_dir / "state").mkdir(parents=True)
+        (repo_dir / "config.yaml").write_text("language: python\n")
+        result = _build_repo_summary(repo_dir, history_limit=30)
+        assert result["flywheel_ledger"] == {}
+
+    def test_empty_when_status_json_malformed(self, tmp_path):
+        repo_dir = tmp_path / "repos" / "demo"
+        state_dir = repo_dir / "state"
+        state_dir.mkdir(parents=True)
+        (repo_dir / "config.yaml").write_text("language: python\n")
+        (state_dir / "status.json").write_text("not valid json", encoding="utf-8")
+        result = _build_repo_summary(repo_dir, history_limit=30)
+        assert result["flywheel_ledger"] == {}
+
+
+class TestRenderFlywheelCard:
+    def test_empty_returns_empty_string(self):
+        assert _render_flywheel_card({"name": "x", "flywheel_ledger": {}}) == ""
+
+    def test_missing_returns_empty_string(self):
+        assert _render_flywheel_card({"name": "x"}) == ""
+
+    def test_renders_metrics_and_footnote(self):
+        repo = {"name": "demo", "flywheel_ledger": _flywheel_ledger_fixture()}
+        card = _render_flywheel_card(repo)
+        assert "Deterministic Flywheel — demo" in card
+        # ADR-0002 num/denom (%) rates
+        assert "6/10 (60.0%)" in card
+        assert "3/10 (30.0%)" in card
+        assert "1/10 (10.0%)" in card
+        # Savings (ADR-0003)
+        assert "$0.42" in card
+        # Per-stage table
+        assert "pattern-replay" in card
+        assert "recipe" in card
+        assert "ast" in card
+        # Pattern replay
+        assert "3" in card  # replay hits
+        assert "7" in card  # active patterns
+        # Top failing pattern
+        assert "broad-except" in card
+        # ADR-0003 footnote verbatim
+        assert "standalone Pattern-replay substitutions" in card
+
+    def test_escapes_rule_names(self):
+        ledger = _flywheel_ledger_fixture()
+        repo = {"name": "demo", "flywheel_ledger": ledger}
+        card = _render_flywheel_card(repo)
+        assert "<script>" not in card
+        assert "&lt;script&gt;" in card
+
+    def test_divide_by_zero_na(self):
+        ledger = {
+            "findings_attempted": 0,
+            "resolved_deterministic_total": 0,
+            "resolved_llm": 0,
+            "exhausted": 0,
+            "savings_usd": 0.0,
+            "cost_total_usd": 0.0,
+            "resolved_deterministic_by_stage": {},
+            "pattern_replay_resolutions": 0,
+            "active_pattern_count": 0,
+            "top_failing_patterns": [],
+        }
+        card = _render_flywheel_card({"name": "z", "flywheel_ledger": ledger})
+        assert "n/a" in card
+
+
+class TestDashboardFlywheelRendering:
+    def test_render_includes_flywheel_card_in_learning(self):
+        data = {
+            "generated_at": "2026-01-01",
+            "repos": [
+                {
+                    "name": "demo",
+                    "language": "python",
+                    "current_vitality": 80,
+                    "trend": 5,
+                    "last_run_at": "t1",
+                    "open_findings": 0,
+                    "health_history": [{"timestamp": "t1", "health": 80}],
+                    "fix_patterns": {"active_count": 0, "top": []},
+                    "emergent_rules": {"counts": {}},
+                    "campaigns": {"items": []},
+                    "escalations": {"recent": []},
+                    "review_metrics": {
+                        "runs": 0,
+                        "publication_rate": 0,
+                        "retry_failures": 0,
+                    },
+                    "auto_tune": {"mode": "off", "override_count": 0},
+                    "cycle_signals": {"suppressed_count": 0},
+                    "rebase_stats": {"success_rate": 0},
+                    "notifications": {"recent": []},
+                    "raw_state": {"files": {}},
+                    "flywheel_ledger": _flywheel_ledger_fixture(),
+                }
+            ],
+        }
+        html_str = render_dashboard_html(data)
+        assert "Deterministic Flywheel — demo" in html_str
+        assert "6/10 (60.0%)" in html_str
+
+    def test_render_omits_flywheel_section_when_empty(self):
+        data = {
+            "generated_at": "2026-01-01",
+            "repos": [
+                {
+                    "name": "demo",
+                    "language": "python",
+                    "current_vitality": 80,
+                    "trend": 5,
+                    "last_run_at": "t1",
+                    "open_findings": 0,
+                    "health_history": [{"timestamp": "t1", "health": 80}],
+                    "fix_patterns": {"active_count": 0, "top": []},
+                    "emergent_rules": {"counts": {}},
+                    "campaigns": {"items": []},
+                    "escalations": {"recent": []},
+                    "review_metrics": {
+                        "runs": 0,
+                        "publication_rate": 0,
+                        "retry_failures": 0,
+                    },
+                    "auto_tune": {"mode": "off", "override_count": 0},
+                    "cycle_signals": {"suppressed_count": 0},
+                    "rebase_stats": {"success_rate": 0},
+                    "notifications": {"recent": []},
+                    "raw_state": {"files": {}},
+                    "flywheel_ledger": {},
+                }
+            ],
+        }
+        html_str = render_dashboard_html(data)
+        assert "Deterministic Flywheel" not in html_str
+        # Existing Learning Systems layout intact
+        assert "Learning Systems" in html_str
+
+    def test_existing_cards_grid_intact(self):
+        """Flywheel cards sit alongside the existing cards grid without breaking it."""
+        data = {
+            "generated_at": "2026-01-01",
+            "repos": [
+                {
+                    "name": "demo",
+                    "language": "python",
+                    "current_vitality": 80,
+                    "trend": 5,
+                    "last_run_at": "t1",
+                    "open_findings": 0,
+                    "health_history": [{"timestamp": "t1", "health": 80}],
+                    "fix_patterns": {"active_count": 1, "top": [{"rule": "my-rule"}]},
+                    "emergent_rules": {"counts": {"active": 1}},
+                    "campaigns": {"items": []},
+                    "escalations": {"recent": []},
+                    "review_metrics": {
+                        "runs": 0,
+                        "publication_rate": 0,
+                        "retry_failures": 0,
+                    },
+                    "auto_tune": {"mode": "off", "override_count": 0},
+                    "cycle_signals": {"suppressed_count": 0},
+                    "rebase_stats": {"success_rate": 0},
+                    "notifications": {"recent": []},
+                    "raw_state": {"files": {}},
+                    "flywheel_ledger": _flywheel_ledger_fixture(),
+                }
+            ],
+        }
+        html_str = render_dashboard_html(data)
+        # Original card content still present
+        assert "my-rule" in html_str
+        # Flywheel card present
+        assert "Deterministic Flywheel — demo" in html_str
+        # Other tabs intact
+        assert "Campaign Tracker" in html_str
+        assert "Review Cycle Health" in html_str
+        assert "Raw State Explorer" in html_str
+
+
+class TestWriteDashboardFlywheelRoundTrip:
+    def test_html_contains_section_for_populated_fixture(self, tmp_path):
+        repos_dir = tmp_path / "repos"
+        repo_dir = repos_dir / "demo"
+        state_dir = repo_dir / "state"
+        state_dir.mkdir(parents=True)
+        (repo_dir / "config.yaml").write_text("language: python\n")
+        (state_dir / "status.json").write_text(
+            json.dumps({"flywheel_ledger": _flywheel_ledger_fixture()}),
+            encoding="utf-8",
+        )
+        out = tmp_path / "dash.html"
+        write_dashboard(repos_dir=repos_dir, output_path=out, output_format="html")
+        content = out.read_text()
+        assert "Deterministic Flywheel — demo" in content
+        assert "6/10 (60.0%)" in content
+
+    def test_html_omits_section_for_empty(self, tmp_path):
+        repos_dir = tmp_path / "repos"
+        repo_dir = repos_dir / "demo"
+        state_dir = repo_dir / "state"
+        state_dir.mkdir(parents=True)
+        (repo_dir / "config.yaml").write_text("language: python\n")
+        out = tmp_path / "dash.html"
+        write_dashboard(repos_dir=repos_dir, output_path=out, output_format="html")
+        content = out.read_text()
+        assert "Deterministic Flywheel" not in content

@@ -118,6 +118,10 @@ def render_dashboard_html(data: Dict[str, Any]) -> str:
     repos = data.get("repos", [])
     rows = "\n".join(_render_repo_row(repo) for repo in repos)
     cards = "\n".join(_render_repo_card(repo) for repo in repos)
+    flywheel_cards = "\n".join(_render_flywheel_card(repo) for repo in repos)
+    flywheel_grid = (
+        f'<div class="grid">{flywheel_cards}</div>' if flywheel_cards else ""
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -212,6 +216,7 @@ def render_dashboard_html(data: Dict[str, Any]) -> str:
     <section>
       <h2 class="collapsible">Learning Systems</h2>
       <div class="grid">{cards}</div>
+      {flywheel_grid}
     </section>
     </div>
     <div class="section-panel active" id="section-campaigns">
@@ -313,6 +318,7 @@ def _build_repo_summary(repo_dir: Path, *, history_limit: int) -> Dict[str, Any]
         first_health.get("health") or first_health.get("score"), default=current
     )
     findings = read_jsonl(state_dir / "findings.jsonl", dicts_only=True)
+    status_data = _read_json(state_dir / "status.json")
     return {
         "name": repo_dir.name,
         "language": config.get("language", "unknown"),
@@ -321,6 +327,7 @@ def _build_repo_summary(repo_dir: Path, *, history_limit: int) -> Dict[str, Any]
         "last_run_at": latest_health.get("timestamp")
         or latest_health.get("generated_at"),
         "open_findings": len(findings),
+        "flywheel_ledger": status_data.get("flywheel_ledger") or {},
         "component_scores": latest_health.get("components", {}),
         "health_history": health_history,
         "fix_patterns": _summarize_fix_patterns(state_dir / "fix_patterns.jsonl"),
@@ -654,6 +661,100 @@ def _render_repo_card(repo: Dict[str, Any]) -> str:
   <div class="metric"><span>Top pattern</span><code>{html.escape(str(top.get("rule", "none")))}</code></div>
   <div class="metric"><span>Emergent rules</span><strong>{html.escape(json.dumps(emergent.get("counts", {}), sort_keys=True))}</strong></div>
 </article>"""
+
+
+_FLYWHEEL_FOOTNOTE = (
+    "Dollar savings reflect standalone Pattern-replay substitutions; "
+    "cascade-internal Pattern/composite and built-in deterministic stages "
+    "are reported as throughput, not cost."
+)
+
+_FLYWHEEL_STAGES = (
+    "pattern-replay",
+    "recipe",
+    "autofix",
+    "composite-pattern",
+    "ast",
+)
+
+
+def _render_flywheel_card(repo: Dict[str, Any]) -> str:
+    """Render the Deterministic Flywheel card for a repo.
+
+    Returns ``""`` when ``repo["flywheel_ledger"]`` is empty/missing so no
+    hollow card is rendered. Headline rates follow ADR-0002 (num/denom (%));
+    the ADR-0003 footnote is always present when the card renders.
+    """
+    ledger = repo.get("flywheel_ledger") or {}
+    if not ledger:
+        return ""
+
+    name = html.escape(str(repo.get("name", "")))
+    attempted = int(_number(ledger.get("findings_attempted"), default=0))
+    det_total = int(_number(ledger.get("resolved_deterministic_total"), default=0))
+    resolved_llm = int(_number(ledger.get("resolved_llm"), default=0))
+    exhausted = int(_number(ledger.get("exhausted"), default=0))
+    savings = _number(ledger.get("savings_usd"), default=0.0)
+    cost_total = _number(ledger.get("cost_total_usd"), default=0.0)
+
+    det_rate = _rate(det_total, attempted)
+    llm_rate = _rate(resolved_llm, attempted)
+    exhaust_rate = _rate(exhausted, attempted)
+
+    by_stage = ledger.get("resolved_deterministic_by_stage") or {}
+    stage_rows = "".join(
+        f"<tr><td>{html.escape(stage)}</td><td>{int(_number(by_stage.get(stage), default=0))}</td></tr>"
+        for stage in _FLYWHEEL_STAGES
+        if _number(by_stage.get(stage), default=0) > 0
+    )
+    stage_table = ""
+    if stage_rows:
+        stage_table = (
+            "<table><thead><tr><th>Stage</th><th>Resolved</th></tr></thead>"
+            f"<tbody>{stage_rows}</tbody></table>"
+        )
+
+    replay_hits = int(_number(ledger.get("pattern_replay_resolutions"), default=0))
+    active_patterns = int(_number(ledger.get("active_pattern_count"), default=0))
+    top_failing = ledger.get("top_failing_patterns") or []
+    failing_items = "".join(
+        f"<li><code>{html.escape(str(entry.get('rule', '?')))}</code> "
+        f"(failures={int(_number(entry.get('failure_count'), default=0))})</li>"
+        for entry in top_failing[:3]
+    )
+
+    replay_html = (
+        f'<div class="metric"><span>Replay resolving hits</span><strong>{replay_hits}</strong></div>'
+        f'<div class="metric"><span>Active patterns</span><strong>{active_patterns}</strong></div>'
+    )
+    if failing_items:
+        replay_html += (
+            f'<p class="muted">Top failing patterns:</p><ul>{failing_items}</ul>'
+        )
+
+    cost_html = (
+        f'<div class="metric"><span>Cost spent</span><strong>${cost_total:.2f}</strong></div>'
+        f'<div class="metric"><span>Cost avoided</span><strong>${savings:.2f}</strong></div>'
+    )
+
+    return f"""<article class="card">
+  <h3>Deterministic Flywheel — {name}</h3>
+  <div class="metric"><span>Deterministic</span><strong>{det_rate}</strong></div>
+  <div class="metric"><span>LLM fallback</span><strong>{llm_rate}</strong></div>
+  <div class="metric"><span>Exhausted</span><strong>{exhaust_rate}</strong></div>
+  <div class="metric"><span>Savings</span><strong>${savings:.2f}</strong></div>
+  {stage_table}
+  {replay_html}
+  {cost_html}
+  <p class="muted">{_FLYWHEEL_FOOTNOTE}</p>
+</article>"""
+
+
+def _rate(num: int, denom: int) -> str:
+    """Format a rate as ``num/denom (%)`` per ADR-0002; ``n/a`` on zero denom."""
+    if denom <= 0:
+        return "n/a"
+    return f"{num}/{denom} ({num * 100 / denom:.1f}%)"
 
 
 def _render_campaigns(repo: Dict[str, Any]) -> str:
