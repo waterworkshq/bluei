@@ -49,6 +49,7 @@ from bluei.engine.utils import (
 from bluei.engine.reforge import RefactorClass
 from bluei.engine.git_utils import get_branch
 from bluei.engine.pattern_replay import try_replay
+from bluei.engine.pattern_store import ReplayOutcome
 from bluei.engine.constants import (
     BASELINE_VALIDATION_CHECKS,
     CLAUDE_REQUIRED_RULES,
@@ -721,9 +722,13 @@ def _process_one_issue(
                 store=pattern_store,
                 baseline_checks=PER_REPO_BASELINE_CHECKS,
                 log_file=log_file,
+                record_outcome=False,
             )
             if replayed:
                 replay_succeeded = True
+                # record_outcome=False deferred all internal recording; record HIT explicitly
+                if replay_pid is not None:
+                    pattern_store.record_replay_outcome(replay_pid, ReplayOutcome.HIT)
                 _append_text(
                     log_file,
                     f"pattern-replay-savings: pattern_id={replay_pid} rule={finding.rule}",
@@ -738,6 +743,20 @@ def _process_one_issue(
                     saved_cost=saved,
                     pattern_id=replay_pid or "",
                     rule=finding.rule,
+                )
+                ctx.ledger_records.append(
+                    {
+                        "cycle": args.run_phase,
+                        "finding_id": finding.finding_id,
+                        "rule": finding.rule,
+                        "stages_tried": [],
+                        "final_stage": "pattern-replay",
+                        "outcome": "resolved_deterministic",
+                        "via": "standalone-replay",
+                        "pattern_id": replay_pid,
+                        "latency_ms": 0,
+                        "timestamp": now_iso(),
+                    }
                 )
             elif replay_pid is not None:
                 from bluei.engine.pattern_replay import format_pattern_hint
@@ -758,6 +777,9 @@ def _process_one_issue(
                     if args.pattern_store_path
                     else None,
                     deterministic_only=args.deterministic_only,
+                    ledger_path=ctx.state_file.parent / "cascade_resolutions.jsonl",
+                    cycle=args.run_phase,
+                    ledger_records=ctx.ledger_records,
                 )
                 if applied:
                     run_status = "fix-applied:cascade"
