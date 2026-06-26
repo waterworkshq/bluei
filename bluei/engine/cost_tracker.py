@@ -86,6 +86,7 @@ class CostTracker:
         self._soft_warn = soft_warn
         self._hard_limit = hard_limit
         self._cycle_cost: float = 0.0
+        self._cycle_savings: float = 0.0
         self._warned_flag: bool = False
         self._exceeded_flag: bool = False
         self._invocations: int = 0
@@ -191,6 +192,8 @@ class CostTracker:
                 "cost_tracker: failed to write savings %s — %s", self._log_path, exc
             )
 
+        self._cycle_savings += saved_cost
+
     def estimate_invocation_cost(
         self,
         model: str,
@@ -213,6 +216,10 @@ class CostTracker:
     def cycle_total(self) -> float:
         """Return the total cost accumulated for the current cycle."""
         return self._cycle_cost
+
+    def cycle_savings(self) -> float:
+        """Return the total pattern replay savings for the current cycle."""
+        return self._cycle_savings
 
     def warned(self) -> bool:
         """Return True if the soft warning threshold has been reached."""

@@ -20,6 +20,7 @@ def _skip_escalation_analysis():
 def _cost_tracker():
     ct = MagicMock()
     ct.cycle_total.return_value = 0.05
+    ct.cycle_savings.return_value = 0.0
     ct.warned.return_value = False
     ct.exceeded_limit.return_value = False
     return ct
@@ -80,6 +81,8 @@ def _finalize_kwargs(tmp_path, **overrides):
         cost_tracker=_cost_tracker(),
         cost_log_path=tmp_path / "cost.json",
         gh_repo_slug="acme/widget",
+        ledger_records=[],
+        pattern_store=None,
     )
     defaults.update(overrides)
     return defaults

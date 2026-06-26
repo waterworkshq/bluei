@@ -46,12 +46,23 @@ def enrich_health_with_cost(
     if not entries:
         return health_summary
 
-    total_cost = sum(e.get("cost", 0.0) for e in entries)
-    total_invocations = len(entries)
+    total_cost = 0.0
+    total_invocations = 0
+    savings_total = 0.0
+    savings_count = 0
+    for e in entries:
+        if e.get("type") == "pattern_replay_savings":
+            savings_total += e.get("saved_cost", 0.0)
+            savings_count += 1
+            continue
+        total_cost += e.get("cost", 0.0)
+        total_invocations += 1
 
     # Per-model breakdown
     per_model: Dict[str, dict] = {}
     for e in entries:
+        if e.get("type") == "pattern_replay_savings":
+            continue
         model = e.get("model", "unknown")
         rec = per_model.setdefault(model, {"count": 0, "cost": 0.0})
         rec["count"] += 1
@@ -69,6 +80,12 @@ def enrich_health_with_cost(
             for m, v in per_model.items()
         },
     }
+
+    if savings_count > 0:
+        cost_info["pattern_replay_savings"] = {
+            "total_saved": round(savings_total, 6),
+            "count": savings_count,
+        }
 
     health_summary["cost"] = cost_info
     return health_summary

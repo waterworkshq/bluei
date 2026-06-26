@@ -2,6 +2,7 @@
 
 import json
 import logging
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -12,6 +13,97 @@ from bluei.engine.utils import append_lesson
 from bluei.engine.commands.helpers import update_status_artifact
 
 logger = logging.getLogger(__name__)
+
+
+def _build_flywheel_ledger(
+    ledger_records: List[Dict[str, Any]],
+    cost_tracker: Any,
+    pattern_store: Any,
+) -> Dict[str, Any]:
+    """Build the flywheel_ledger block from in-memory records + cost tracker + pattern store.
+
+    Per-cycle ledger_records capture only resolving pattern-replay HITS
+    (records with outcome="resolved_deterministic", final_stage="pattern-replay").
+    They do NOT capture pattern-replay misses or failures — those don't produce
+    resolution records. So the per-cycle block reports pattern_replay_resolutions
+    (resolving hits), not full HIT/MISS/FAILURE.
+    """
+    findings_attempted = len(ledger_records)
+
+    resolved_deterministic_by_stage: Counter = Counter()
+    resolved_llm = 0
+    exhausted = 0
+    pattern_replay_resolutions = 0
+
+    for rec in ledger_records:
+        outcome = rec.get("outcome")
+        if outcome == "resolved_deterministic":
+            final_stage = rec.get("final_stage", "unknown")
+            resolved_deterministic_by_stage[final_stage] += 1
+            if final_stage == "pattern-replay":
+                pattern_replay_resolutions += 1
+        elif outcome == "resolved_llm":
+            resolved_llm += 1
+        elif outcome == "exhausted":
+            exhausted += 1
+
+    resolved_deterministic_total = sum(resolved_deterministic_by_stage.values())
+
+    savings_usd = round(cost_tracker.cycle_savings(), 6)
+    cost_total_usd = round(cost_tracker.cycle_total(), 6)
+
+    # Rates per ADR-0002: num/denom (%)
+    if findings_attempted > 0:
+        det_rate = f"{resolved_deterministic_total}/{findings_attempted} ({resolved_deterministic_total * 100 / findings_attempted:.1f}%)"
+        llm_rate = f"{resolved_llm}/{findings_attempted} ({resolved_llm * 100 / findings_attempted:.1f}%)"
+        exhaust_rate = f"{exhausted}/{findings_attempted} ({exhausted * 100 / findings_attempted:.1f}%)"
+    else:
+        det_rate = "0/0 (n/a)"
+        llm_rate = "0/0 (n/a)"
+        exhaust_rate = "0/0 (n/a)"
+
+    rates = {
+        "deterministic_resolution": det_rate,
+        "llm_fallback": llm_rate,
+        "exhausted": exhaust_rate,
+    }
+
+    # Pattern store snapshot (cumulative)
+    active_pattern_count = 0
+    top_failing_patterns: List[Dict[str, Any]] = []
+    if pattern_store:
+        try:
+            active_patterns = pattern_store.load_active()
+            active_pattern_count = len(active_patterns)
+            sorted_by_failure = sorted(
+                active_patterns, key=lambda p: p.failure_count, reverse=True
+            )
+            top_failing_patterns = [
+                {
+                    "pattern_id": p.pattern_id,
+                    "rule": p.rule,
+                    "failure_count": p.failure_count,
+                }
+                for p in sorted_by_failure[:3]
+                if p.failure_count > 0
+            ]
+        except Exception:
+            logger.debug("finalize: failed to read pattern store for ledger snapshot")
+
+    block: Dict[str, Any] = {
+        "findings_attempted": findings_attempted,
+        "resolved_deterministic_by_stage": dict(resolved_deterministic_by_stage),
+        "resolved_deterministic_total": resolved_deterministic_total,
+        "resolved_llm": resolved_llm,
+        "exhausted": exhausted,
+        "pattern_replay_resolutions": pattern_replay_resolutions,
+        "savings_usd": savings_usd,
+        "cost_total_usd": cost_total_usd,
+        "rates": rates,
+        "active_pattern_count": active_pattern_count,
+        "top_failing_patterns": top_failing_patterns,
+    }
+    return block
 
 
 def run_finalize_phase(*args, **kwargs) -> int:
@@ -52,6 +144,8 @@ def run_finalize_phase(*args, **kwargs) -> int:
         cost_tracker = ctx.cost_tracker
         cost_log_path = ctx.cost_log_path
         gh_repo_slug = ctx.gh_repo_slug
+        ledger_records = ctx.ledger_records
+        pattern_store = ctx.pattern_store
     else:
         state_file = kwargs["state_file"]
         issues_file = kwargs["issues_file"]
@@ -87,6 +181,8 @@ def run_finalize_phase(*args, **kwargs) -> int:
         cost_tracker = kwargs["cost_tracker"]
         cost_log_path = kwargs["cost_log_path"]
         gh_repo_slug = kwargs["gh_repo_slug"]
+        ledger_records = kwargs.get("ledger_records", [])
+        pattern_store = kwargs.get("pattern_store")
 
     save_issues(issues_file, issues_data)
     unresolved_open = len(
@@ -141,6 +237,10 @@ def run_finalize_phase(*args, **kwargs) -> int:
         },
     )
 
+    flywheel_ledger = _build_flywheel_ledger(
+        ledger_records, cost_tracker, pattern_store
+    )
+
     try:
         from bluei.engine.health import enrich_health_with_cost
 
@@ -151,12 +251,22 @@ def run_finalize_phase(*args, **kwargs) -> int:
                 cost_log_path=cost_log_path,
                 total_runs=max(claude_invocations, 1),
             )
+            status_data["flywheel_ledger"] = flywheel_ledger
             status_file.write_text(
                 json.dumps(status_data, indent=2, sort_keys=True) + "\n"
             )
     except (ImportError, OSError, json.JSONDecodeError):
         logger.debug("Failed to save pipeline status")
 
+    det_total = flywheel_ledger["resolved_deterministic_total"]
+    attempted = flywheel_ledger["findings_attempted"]
+    llm = flywheel_ledger["resolved_llm"]
+    replay_hits = flywheel_ledger["pattern_replay_resolutions"]
+    saved = flywheel_ledger["savings_usd"]
+    ledger_suffix = (
+        f" det={det_total}/{attempted} llm={llm}"
+        f" replay_hits={replay_hits} saved=${saved:.4f}"
+    )
     print(
         f"[DONE] {run_mode} findings={len(findings)} issues_created={len(created_issues)} "
         f"fix_attempts={fix_attempts} fixes_verified={fixes_verified} "
@@ -164,7 +274,7 @@ def run_finalize_phase(*args, **kwargs) -> int:
         f"issues_escalated_max_retries={issues_escalated_max_retries} "
         f"merges={merges_succeeded}/{merge_attempts} "
         f"cost: claude={claude_invocations} deterministic={deterministic_invocations} "
-        f"total=${cost_tracker.cycle_total():.4f}"
+        f"total=${cost_tracker.cycle_total():.4f}{ledger_suffix}"
     )
     _append_text(
         log_file,
@@ -174,7 +284,7 @@ def run_finalize_phase(*args, **kwargs) -> int:
         f"issues_escalated_max_retries={issues_escalated_max_retries} "
         f"merges={merges_succeeded}/{merge_attempts} "
         f"cost: claude={claude_invocations} deterministic={deterministic_invocations} "
-        f"total=${cost_tracker.cycle_total():.4f}",
+        f"total=${cost_tracker.cycle_total():.4f}{ledger_suffix}",
     )
 
     if (
