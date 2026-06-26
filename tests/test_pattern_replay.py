@@ -14,6 +14,7 @@ from bluei.engine.pattern_replay import (
 from bluei.engine.pattern_store import (
     FixPattern,
     FixPatternStore,
+    ReplayOutcome,
 )
 
 
@@ -307,7 +308,9 @@ def test_replay_validation_failure_records_failure(
         try_replay(git_repo, finding, store, baseline_checks, log_file)
 
     records = json.loads(store_path.read_text().strip().split("\n")[-1])
-    assert records["skip_count"] >= 1
+    assert records["failure_count"] >= 1
+    assert records["skip_count"] == 0
+    assert records.get("last_failed_at") is not None
 
 
 def test_replay_logs_success(
@@ -792,3 +795,188 @@ def test_resolve_pattern_xrepo_no_shared_library(tmp_path, make_finding):
         with patch("bluei.engine.constants.DETECTOR_CATALOG", {}, create=True):
             result = _resolve_pattern(finding, store, log, shared_library=None)
     assert result is None
+
+
+# ── PROMPT-02 focused tests ──────────────────────────────────────────────────
+
+
+def test_replay_file_not_found_records_miss(
+    store_path, git_repo, log_file, make_finding
+):
+    store = FixPatternStore(store_path)
+    _store_pattern_with_confidence(store, 0.95)
+    finding = make_finding(
+        rule="broad-except", path="src/nonexistent.py", snippet="except:\n    pass"
+    )
+
+    result = try_replay(git_repo, finding, store, {}, log_file)
+
+    assert result == (False, None)
+    records = json.loads(store_path.read_text().strip().split("\n")[-1])
+    assert records["skip_count"] >= 1
+    assert records.get("last_used_at") is not None
+
+
+def test_replay_snippet_not_found_records_miss(
+    store_path,
+    git_repo,
+    log_file,
+    make_finding,
+    git_commit_all,
+):
+    src_dir = git_repo / "src"
+    src_dir.mkdir()
+    target = src_dir / "example.py"
+    target.write_text("def foo():\n    return 42\n")
+    git_commit_all(git_repo)
+
+    store = FixPatternStore(store_path)
+    _store_pattern_with_confidence(store, 0.95)
+
+    finding = make_finding(
+        rule="broad-except", path="src/example.py", snippet="except:\n    pass"
+    )
+
+    with patch("bluei.engine.pattern_replay.run_capture", return_value=(0, "")):
+        result = try_replay(git_repo, finding, store, {}, log_file)
+
+    assert result == (False, None)
+    records = json.loads(store_path.read_text().strip().split("\n")[-1])
+    assert records["skip_count"] >= 1
+    assert records.get("last_used_at") is not None
+
+
+def test_replay_record_outcome_false_suppresses_file_not_found(
+    store_path, git_repo, log_file, make_finding
+):
+    store = FixPatternStore(store_path)
+    _store_pattern_with_confidence(store, 0.95)
+    finding = make_finding(
+        rule="broad-except", path="src/nonexistent.py", snippet="except:\n    pass"
+    )
+
+    try_replay(git_repo, finding, store, {}, log_file, record_outcome=False)
+
+    records = json.loads(store_path.read_text().strip().split("\n")[-1])
+    assert records["skip_count"] == 0
+    assert records.get("last_used_at") is None
+
+
+def test_replay_record_outcome_false_suppresses_snippet_not_found(
+    store_path,
+    git_repo,
+    log_file,
+    make_finding,
+    git_commit_all,
+):
+    src_dir = git_repo / "src"
+    src_dir.mkdir()
+    target = src_dir / "example.py"
+    target.write_text("def foo():\n    return 42\n")
+    git_commit_all(git_repo)
+
+    store = FixPatternStore(store_path)
+    _store_pattern_with_confidence(store, 0.95)
+
+    finding = make_finding(
+        rule="broad-except", path="src/example.py", snippet="except:\n    pass"
+    )
+
+    with patch("bluei.engine.pattern_replay.run_capture", return_value=(0, "")):
+        try_replay(git_repo, finding, store, {}, log_file, record_outcome=False)
+
+    records = json.loads(store_path.read_text().strip().split("\n")[-1])
+    assert records["skip_count"] == 0
+    assert records.get("last_used_at") is None
+
+
+def test_replay_record_outcome_false_suppresses_validation_failure(
+    store_path,
+    git_repo,
+    log_file,
+    baseline_checks,
+    make_finding,
+    git_commit_all,
+):
+    src_dir = git_repo / "src"
+    src_dir.mkdir()
+    target = src_dir / "example.py"
+    target.write_text("try:\n    do_thing()\nexcept:\n    pass\n")
+    git_commit_all(git_repo)
+
+    store = FixPatternStore(store_path)
+    _store_pattern_with_confidence(store, 0.95)
+
+    finding = make_finding(
+        rule="broad-except", path="src/example.py", snippet="except:\n    pass"
+    )
+
+    def mock_run_capture(cmd, cwd=None, timeout=0):
+        if cmd == ["git", "checkout", "--", "src/example.py"]:
+            subprocess.run(cmd, cwd=cwd, capture_output=True, timeout=10)
+            return (0, "")
+        return (1, "check failed")
+
+    with patch(
+        "bluei.engine.pattern_replay.run_capture",
+        side_effect=mock_run_capture,
+    ):
+        try_replay(
+            git_repo, finding, store, baseline_checks, log_file, record_outcome=False
+        )
+
+    records = json.loads(store_path.read_text().strip().split("\n")[-1])
+    assert records["failure_count"] == 0
+    assert records["skip_count"] == 0
+    assert records.get("last_failed_at") is None
+
+
+def test_replay_record_outcome_false_suppresses_validation_success(
+    store_path,
+    git_repo,
+    log_file,
+    baseline_checks,
+    make_finding,
+    git_commit_all,
+):
+    src_dir = git_repo / "src"
+    src_dir.mkdir()
+    target = src_dir / "example.py"
+    target.write_text("try:\n    do_thing()\nexcept:\n    pass\n")
+    git_commit_all(git_repo)
+
+    store = FixPatternStore(store_path)
+    _store_pattern_with_confidence(store, 0.95)
+
+    finding = make_finding(
+        rule="broad-except", path="src/example.py", snippet="except:\n    pass"
+    )
+
+    with patch("bluei.engine.pattern_replay.run_capture", return_value=(0, "")):
+        try_replay(
+            git_repo, finding, store, baseline_checks, log_file, record_outcome=False
+        )
+
+    records = json.loads(store_path.read_text().strip().split("\n")[-1])
+    assert records["success_count"] == 3
+    assert records.get("last_verified_at") is None
+
+
+def test_replay_excluded_paths_enforced_by_target_path(
+    store_path, git_repo, log_file, make_finding
+):
+    store = FixPatternStore(store_path)
+    pattern = make_pattern(confidence=0.95, excluded_paths=["tests/**"])
+    pid = store.append(pattern)
+    store._rebuild_from_disk()
+
+    finding = make_finding(
+        rule="broad-except", path="tests/example.py", snippet="except:\n    pass"
+    )
+
+    result = try_replay(git_repo, finding, store, {}, log_file)
+
+    assert result == (False, None)
+    log_content = log_file.read_text()
+    assert "pattern-replay-miss" in log_content
+    assert "reason=no_matching_pattern" in log_content

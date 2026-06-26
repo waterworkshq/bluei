@@ -11,7 +11,12 @@ from typing import Any, Dict, List, Optional, Tuple
 _logger = logging.getLogger(__name__)
 
 from bluei.engine.models import Finding
-from bluei.engine.pattern_store import FixPattern, FixPatternStore, normalize_snippet
+from bluei.engine.pattern_store import (
+    FixPattern,
+    FixPatternStore,
+    ReplayOutcome,
+    normalize_snippet,
+)
 from bluei.engine.report import infer_language_from_path
 
 
@@ -73,10 +78,17 @@ def try_replay(
     baseline_checks: Dict[str, List[str]],
     log_file: Path,
     shared_library: Any = None,
+    record_outcome: bool = True,
 ) -> Tuple[bool, Optional[str]]:
     try:
         return _try_replay_inner(
-            worktree_path, finding, store, baseline_checks, log_file, shared_library
+            worktree_path,
+            finding,
+            store,
+            baseline_checks,
+            log_file,
+            shared_library,
+            record_outcome,
         )
     except Exception as exc:
         try:
@@ -113,12 +125,14 @@ def _resolve_pattern(
 
     result: Optional[FixPattern] = None
 
-    pattern = store.lookup(finding.rule, normalized)
+    pattern = store.lookup(finding.rule, normalized, target_path=finding.path)
     if pattern is not None:
         result = pattern
 
     if result is None:
-        pattern = store.lookup_structural(finding.rule, normalized, language)
+        pattern = store.lookup_structural(
+            finding.rule, normalized, language, target_path=finding.path
+        )
         if pattern is not None:
             append_log(
                 log_file,
@@ -137,6 +151,7 @@ def _resolve_pattern(
             normalized,
             language,
             catalog=DETECTOR_CATALOG,
+            target_path=finding.path,
         )
         if pattern is not None:
             append_log(
@@ -209,6 +224,7 @@ def _try_replay_inner(
     baseline_checks: Dict[str, List[str]],
     log_file: Path,
     shared_library: Any = None,
+    record_outcome: bool = True,
 ) -> Tuple[bool, Optional[str]]:
     pattern = _resolve_pattern(finding, store, log_file, shared_library)
 
@@ -247,6 +263,8 @@ def _try_replay_inner(
 
     target_file = Path(worktree_path) / finding.path
     if not target_file.exists():
+        if record_outcome:
+            store.record_replay_outcome(pid, ReplayOutcome.MISS)
         append_log(
             log_file,
             (
@@ -262,6 +280,8 @@ def _try_replay_inner(
 
     match_result = _find_snippet_in_file(file_text, before_snippet)
     if match_result is None:
+        if record_outcome:
+            store.record_replay_outcome(pid, ReplayOutcome.MISS)
         append_log(
             log_file,
             (f"pattern-replay-fail: pattern_id={pid} reason=snippet_not_found_in_file"),
@@ -286,14 +306,16 @@ def _try_replay_inner(
             cwd=Path(worktree_path),
             timeout=30,
         )
-        store.record_replay(pid, success=False)
+        if record_outcome:
+            store.record_replay_outcome(pid, ReplayOutcome.FAILURE)
         append_log(
             log_file,
             (f"pattern-replay-fail: pattern_id={pid} reason=validation_failed"),
         )
         return (False, None)
 
-    store.record_replay(pid, success=True)
+    if record_outcome:
+        store.record_replay_outcome(pid, ReplayOutcome.HIT)
     append_log(
         log_file, (f"pattern-replay-success: pattern_id={pid} validation=passed")
     )
