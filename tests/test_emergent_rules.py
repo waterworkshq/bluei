@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,6 +18,11 @@ from bluei.app.emergent_rules import (
 )
 from bluei.engine.models import Finding
 from bluei.engine.pattern_store import FixPattern
+
+
+def _days_ago(n: int) -> str:
+    """ISO-8601 UTC timestamp ``n`` days before now — drift-proof for staleness tests."""
+    return (datetime.now(timezone.utc) - timedelta(days=n)).isoformat()
 
 
 def _rule(
@@ -556,12 +562,12 @@ def test_retire_stale_rules_removes_old_active(tmp_path) -> None:
             _rule(
                 "er-old",
                 status=EmergentRuleStatus.ACTIVE,
-                updated_at="2026-01-01T00:00:00+00:00",
+                updated_at=_days_ago(200),
             ),
             _rule(
                 "er-recent",
                 status=EmergentRuleStatus.ACTIVE,
-                updated_at="2026-05-19T00:00:00+00:00",
+                updated_at=_days_ago(5),
             ),
         ]
     )
@@ -580,7 +586,7 @@ def test_retire_stale_rules_caps_at_max_active(tmp_path) -> None:
         _rule(
             f"er-{i}",
             status=EmergentRuleStatus.ACTIVE,
-            updated_at="2026-05-19T00:00:00+00:00",
+            updated_at=_days_ago(5),
         )
         for i in range(5)
     ]
@@ -598,12 +604,12 @@ def test_retire_stale_proposed_rules(tmp_path) -> None:
             _rule(
                 "er-stale-proposed",
                 status=EmergentRuleStatus.PROPOSED,
-                updated_at="2026-01-01T00:00:00+00:00",
+                updated_at=_days_ago(200),
             ),
             _rule(
                 "er-fresh-proposed",
                 status=EmergentRuleStatus.PROPOSED,
-                updated_at="2026-05-19T00:00:00+00:00",
+                updated_at=_days_ago(5),
             ),
         ]
     )
