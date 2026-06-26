@@ -13,5 +13,6 @@ The per-cycle report card and dashboard card read a **pre-aggregated** `flywheel
 ## Consequences
 
 - `status.json` gains an additive `flywheel_ledger` key per cycle; old readers ignore unknown keys (no schema break).
+- **Per-stage detail crosses the `apply_cascade_fix`→`bool` boundary via an in-memory accumulator** (`CascadeContext.ledger_records: List[Dict]`), not via pr_cycle guessing the stage and not via sink re-read. The cascade's emission point (ADR-0001) appends each resolution record to *both* the durable `cascade_resolutions.jsonl` and the accumulator; standalone-replay HITs append to the same accumulator. `finalize` reads `ctx.ledger_records` (populated during the cycle) for the full per-stage + coarse + replay block. No separate `_LedgerCounters` class.
+- **`run_id` is deferred out of alpha.1.** Since the per-cycle block reads the in-memory accumulator (no cross-file join), no `run_id` is needed this release; sink rows omit it. `run_id` is added when cumulative/cross-cycle features (alpha.2 / `bluei savings`) require sink re-read + join.
 - Legacy `claude_invocations`/`deterministic_invocations` remain in `status.json` for backward compatibility but are **not rendered** in ledger surfaces (they are incomplete — they miss standalone-replay wins and conflate attempts with resolutions); ledger metrics are authoritative to avoid two conflicting "deterministic" numbers.
-- When cumulative aggregation is needed, `cascade_resolutions.jsonl` + `cost_log.jsonl` join by timestamp window or a then-added `run_id`.
