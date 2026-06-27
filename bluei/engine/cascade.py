@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Set
 
 _logger = logging.getLogger(__name__)
 
+from bluei.engine.governance import format_asset_ref, is_governance_active
 from bluei.engine.jsonl import append_jsonl
 from bluei.engine.models import Finding, now_iso
 from bluei.engine.state import _append_text
@@ -428,7 +429,9 @@ class RecipeCascadeStage(CascadeStage):
             recipe = context.recipe_engine.match(
                 finding.rule, context.language, file_text=file_text
             )
-            return recipe is not None
+            return recipe is not None and is_governance_active(
+                format_asset_ref("recipe", recipe.id), context.governance_state
+            )
         except Exception:
             return False
 
@@ -515,16 +518,33 @@ class PatternReplayCascadeStage(CascadeStage):
                 finding.rule, normalized, target_path=target_path
             )
             if pattern is not None and pattern.confidence >= threshold:
-                return True
+                if is_governance_active(
+                    format_asset_ref("pattern", pattern.pattern_id),
+                    context.governance_state,
+                ):
+                    return True
             pattern = context.pattern_store.lookup_structural(
                 finding.rule, normalized, language, target_path=target_path
             )
             if pattern is not None and pattern.confidence >= threshold:
-                return True
+                if is_governance_active(
+                    format_asset_ref("pattern", pattern.pattern_id),
+                    context.governance_state,
+                ):
+                    return True
             pattern = context.pattern_store.lookup_fuzzy(
                 finding.rule, normalized, language, target_path=target_path
             )
-            return pattern is not None and pattern.confidence >= threshold
+            return (
+                pattern is not None
+                and pattern.confidence >= threshold
+                and (
+                    is_governance_active(
+                        format_asset_ref("pattern", pattern.pattern_id),
+                        context.governance_state,
+                    )
+                )
+            )
         except Exception:
             return False
 
@@ -615,7 +635,10 @@ class ASTTransformCascadeStage(CascadeStage):
         if self._transformer is None:
             return False
         transform = self._transformer.get_transform(finding.rule)
-        return transform is not None
+        return transform is not None and is_governance_active(
+            format_asset_ref("transform", f"python-{finding.rule}"),
+            context.governance_state,
+        )
 
     def attempt(
         self, finding: Finding, worktree: Path, context: CascadeContext

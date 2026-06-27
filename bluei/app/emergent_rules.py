@@ -16,6 +16,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from bluei.engine.governance import format_asset_ref, is_governance_active
 from bluei.engine.models import Finding, now_iso
 from bluei.engine.report import _infer_category, infer_language_from_path
 from .state import _atomic_json_write
@@ -683,6 +684,7 @@ def discover_active_rule_findings(
     worktree: Path,
     *,
     repo_name: str,
+    governance_state: Optional[Dict[str, str]] = None,
 ) -> List[Finding]:
     """Convert active emergent rule matches into proper Finding objects.
 
@@ -690,11 +692,20 @@ def discover_active_rule_findings(
         rules: Emergent rules (only ACTIVE ones are considered).
         worktree: Repository root to scan.
         repo_name: Repository identifier for the produced findings.
+        governance_state: Projected Governance State overlay (ADR-0008).
+            Rules whose asset_ref is PAUSED/RETIRED are filtered out.
+            Defaults to empty (all ACTIVE rules pass — no-op).
 
     Returns:
         List of Finding instances, one per active-rule match.
     """
-    active_rules = [rule for rule in rules if rule.status == EmergentRuleStatus.ACTIVE]
+    gs = governance_state or {}
+    active_rules = [
+        rule
+        for rule in rules
+        if rule.status == EmergentRuleStatus.ACTIVE
+        and is_governance_active(format_asset_ref("emergent_rule", rule.rule_id), gs)
+    ]
     findings: List[Finding] = []
     for match in scan_shadow_rules(active_rules, worktree):
         rule = next(
