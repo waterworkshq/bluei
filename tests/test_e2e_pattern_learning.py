@@ -282,6 +282,7 @@ from bluei.engine.shared_pattern_library import (  # noqa: E402
     check_promotion_eligibility,
     promote_pattern_to_recipe,
 )
+from bluei.engine.governance import PromotionResult  # noqa: E402
 from bluei.engine.structural_hash import (  # noqa: E402
     compute_structural_hash,
     normalize_for_sharing,
@@ -498,14 +499,15 @@ class TestIntegratedLifecycle:
         # Eligibility + actual promotion should write a recipe YAML.
         assert check_promotion_eligibility(cross_pat) is True
         recipes_dir = tmp_path / "recipes"
-        recipe_path = promote_pattern_to_recipe(cross_pat, "python", recipes_dir)
-        assert recipe_path is not None
-        assert recipe_path.exists()
-        assert recipe_path.suffix == ".yaml"
+        result = promote_pattern_to_recipe(cross_pat, "python", recipes_dir)
+        assert result == PromotionResult.PROMOTED
+        recipe_files = sorted(recipes_dir.glob("*.yaml"))
+        assert len(recipe_files) == 1
+        assert recipe_files[0].suffix == ".yaml"
 
         # The recipe records the structural lineage — original identifiers
         # must NOT appear (sharing normalizes them out).
-        recipe_text = recipe_path.read_text()
+        recipe_text = recipe_files[0].read_text()
         assert "bluei-auto-promotion" in recipe_text
         assert "rule: S602" in recipe_text
         assert "result" not in recipe_text  # privacy-normalized

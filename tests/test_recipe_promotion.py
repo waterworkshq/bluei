@@ -2,7 +2,9 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
+from bluei.engine.governance import PromotionResult
 from bluei.engine.shared_pattern_library import (
     PROMOTION_MIN_APPLICATIONS,
     PROMOTION_MIN_REPOS,
@@ -13,6 +15,13 @@ from bluei.engine.shared_pattern_library import (
     promote_pattern_to_recipe,
     _now_iso,
 )
+
+
+def _single_recipe_text(out_dir: Path) -> str:
+    """Read the single YAML recipe written by a gate-open promotion."""
+    yamls = sorted(out_dir.glob("*.yaml"))
+    assert len(yamls) == 1, f"expected 1 recipe yaml, found {len(yamls)}"
+    return yamls[0].read_text(encoding="utf-8")
 
 
 def _make_cross_repo_pattern(
@@ -71,9 +80,8 @@ class TestPromotePatternToRecipe:
         pat = _make_cross_repo_pattern()
         out_dir = tmp_path / "staged"
         result = promote_pattern_to_recipe(pat, "python", out_dir)
-        assert result is not None
-        assert result.exists()
-        content = result.read_text()
+        assert result == PromotionResult.PROMOTED
+        content = _single_recipe_text(out_dir)
         assert "auto-ruff-b904-" in content
         assert "rule_exact" in content
         assert "regex_substitute" in content
@@ -81,45 +89,43 @@ class TestPromotePatternToRecipe:
 
     def test_idempotent_safety_for_high_confidence(self, tmp_path):
         pat = _make_cross_repo_pattern(confidence=0.97)
-        result = promote_pattern_to_recipe(pat, "python", tmp_path)
-        content = result.read_text()
-        assert "safety: idempotent" in content
+        promote_pattern_to_recipe(pat, "python", tmp_path)
+        assert "safety: idempotent" in _single_recipe_text(tmp_path)
 
     def test_needs_validation_safety_for_lower_confidence(self, tmp_path):
         pat = _make_cross_repo_pattern(confidence=0.94)
-        result = promote_pattern_to_recipe(pat, "python", tmp_path)
-        content = result.read_text()
-        assert "safety: needs_validation" in content
+        promote_pattern_to_recipe(pat, "python", tmp_path)
+        assert "safety: needs_validation" in _single_recipe_text(tmp_path)
 
     def test_staged_dir_created(self, tmp_path):
         out_dir = tmp_path / "nested" / "staged"
         pat = _make_cross_repo_pattern()
         result = promote_pattern_to_recipe(pat, "python", out_dir)
-        assert result is not None
+        assert result == PromotionResult.PROMOTED
         assert out_dir.is_dir()
 
     def test_ineligible_pattern_returns_none(self, tmp_path):
         pat = _make_cross_repo_pattern(source_repos={"repo-a"})
         result = promote_pattern_to_recipe(pat, "python", tmp_path)
-        assert result is None
+        assert result == PromotionResult.NOT_ELIGIBLE
 
     def test_recipe_metadata(self, tmp_path):
         pat = _make_cross_repo_pattern()
-        result = promote_pattern_to_recipe(pat, "python", tmp_path)
-        content = result.read_text()
+        promote_pattern_to_recipe(pat, "python", tmp_path)
+        content = _single_recipe_text(tmp_path)
         assert f"source_pattern_id: {pat.pattern_id}" in content
         assert "promoted_at:" in content
 
     def test_source_repos_in_metadata(self, tmp_path):
         pat = _make_cross_repo_pattern()
-        result = promote_pattern_to_recipe(pat, "python", tmp_path)
-        content = result.read_text()
-        assert "source_repos:" in content
+        promote_pattern_to_recipe(pat, "python", tmp_path)
+        assert "source_repos:" in _single_recipe_text(tmp_path)
 
 
 class TestRecipeEngineLoadsStaged:
     def test_staged_recipe_dir_exists(self):
         from bluei.engine.recipe_engine import staged_recipe_dir
+
         d = staged_recipe_dir()
         assert d.name == "staged"
         assert d.is_dir()
@@ -127,6 +133,7 @@ class TestRecipeEngineLoadsStaged:
     def test_engine_loads_staged_dir(self, tmp_path):
         from bluei.engine.recipe_engine import RecipeEngine, staged_recipe_dir
         from bluei.engine.recipe_schema import load_recipe
+
         staged = tmp_path / "staged"
         staged.mkdir()
         recipe_yaml = staged / "test-auto.yaml"
@@ -170,10 +177,12 @@ class TestPromotionEndToEnd:
                     break
         assert cross_pat is not None
         result = promote_pattern_to_recipe(
-            cross_pat, "python", tmp_path / "staged",
+            cross_pat,
+            "python",
+            tmp_path / "staged",
         )
-        assert result is not None
-        assert result.exists()
+        assert result == PromotionResult.PROMOTED
+        assert _single_recipe_text(tmp_path / "staged")
 
     def test_publish_ineligible_not_promoted(self, tmp_path):
         lib = SharedPatternLibrary(tmp_path / "shared")
@@ -192,6 +201,8 @@ class TestPromotionEndToEnd:
                 break
         if cross_pat:
             result = promote_pattern_to_recipe(
-                cross_pat, "python", tmp_path / "staged",
+                cross_pat,
+                "python",
+                tmp_path / "staged",
             )
-            assert result is None
+            assert result == PromotionResult.NOT_ELIGIBLE

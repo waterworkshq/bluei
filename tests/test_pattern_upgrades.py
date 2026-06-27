@@ -28,6 +28,7 @@ from bluei.engine.cascade import (
     default_cascade_stages,
 )
 from bluei.engine.models import Finding
+from bluei.engine.governance import PromotionResult
 from bluei.engine.pattern_store import FixPattern, FixPatternStore, normalize_snippet
 from bluei.engine.shared_pattern_library import (
     CrossRepoPattern,
@@ -269,9 +270,9 @@ class TestPromotionIntegration:
         assert cross_pat is not None
         assert check_promotion_eligibility(cross_pat)
         result = promote_pattern_to_recipe(cross_pat, "python", tmp_path / "staged")
-        assert result is not None
-        assert result.exists()
-        content = result.read_text()
+        assert result == PromotionResult.PROMOTED
+        staged_dir = tmp_path / "staged"
+        content = sorted(staged_dir.glob("*.yaml"))[0].read_text()
         assert "rule: promo-test" in content
         assert "regex_substitute" in content
 

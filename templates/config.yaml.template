@@ -44,3 +44,13 @@ cooldowns:
 github:
   live_actions: false
   auto_merge: false
+
+# Learning / promotion governance (ADR-0007). Uncomment to opt in.
+# With the defaults below (commented), promote_pattern_to_recipe uses
+# gate_open_audit — eligible patterns are auto-promoted to staged recipes.
+#
+# learning:
+#   mode: active            # active | audit_only | paused
+#   asset_classes:
+#     pattern:
+#       write_producing: gate_open_audit   # gate_open_audit | gate_closed

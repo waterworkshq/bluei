@@ -176,6 +176,7 @@ def _extract_fix_pattern(
                                 check_promotion_eligibility,
                                 promote_pattern_to_recipe,
                             )
+                            from bluei.engine.governance import PromotionResult
                             from bluei.engine.recipe_engine import staged_recipe_dir
 
                             cross_pat = (
@@ -186,17 +187,24 @@ def _extract_fix_pattern(
                                 else None
                             )
                             if cross_pat and check_promotion_eligibility(cross_pat):
-                                promote_pattern_to_recipe(
+                                result = promote_pattern_to_recipe(
                                     cross_pat,
                                     stored.language,
                                     staged_recipe_dir(),
                                 )
-                                try:
-                                    _get_recipe_engine().reload()
-                                except Exception:
-                                    _logger.debug(
-                                        "Pattern extract hook failed (top-level)"
+                                if result == PromotionResult.PROMOTED:
+                                    try:
+                                        _get_recipe_engine().reload()
+                                    except Exception:
+                                        _logger.debug(
+                                            "Pattern extract hook failed (top-level)"
+                                        )
+                                elif result == PromotionResult.PENDING_APPROVAL:
+                                    _logger.info(
+                                        "Pattern promotion queued for approval: %s",
+                                        cross_pat.pattern_id,
                                     )
+                                # NOT_ELIGIBLE: no action
                         except Exception:
                             _logger.debug("Pattern extract hook failed (outer)")
             except Exception:

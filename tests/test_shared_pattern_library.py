@@ -3,6 +3,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from bluei.engine.governance import PromotionResult
 from bluei.engine.shared_pattern_library import (
     CrossRepoPattern,
     SharedPatternLibrary,
@@ -708,7 +709,7 @@ class TestPromotePatternToRecipe:
     def test_not_eligible(self, tmp_path):
         p = _make_xrepo(success_count=0, failure_count=0)
         result = promote_pattern_to_recipe(p, "python", tmp_path / "recipes")
-        assert result is None
+        assert result == PromotionResult.NOT_ELIGIBLE
 
     def test_eligible_idempotent(self, tmp_path):
         p = _make_xrepo(
@@ -717,10 +718,11 @@ class TestPromotePatternToRecipe:
             confidence=0.96,
             source_repos={"r1", "r2", "r3", "r4", "r5"},
         )
-        result = promote_pattern_to_recipe(p, "python", tmp_path / "recipes")
-        assert result is not None
-        assert result.exists()
-        assert "idempotent" in result.read_text()
+        recipes_dir = tmp_path / "recipes"
+        result = promote_pattern_to_recipe(p, "python", recipes_dir)
+        assert result == PromotionResult.PROMOTED
+        content = sorted(recipes_dir.glob("*.yaml"))[0].read_text()
+        assert "idempotent" in content
 
     def test_eligible_needs_validation(self, tmp_path):
         p = _make_xrepo(
@@ -729,6 +731,8 @@ class TestPromotePatternToRecipe:
             confidence=0.93,
             source_repos={"r1", "r2", "r3", "r4", "r5"},
         )
-        result = promote_pattern_to_recipe(p, "python", tmp_path / "recipes")
-        assert result is not None
-        assert "needs_validation" in result.read_text()
+        recipes_dir = tmp_path / "recipes"
+        result = promote_pattern_to_recipe(p, "python", recipes_dir)
+        assert result == PromotionResult.PROMOTED
+        content = sorted(recipes_dir.glob("*.yaml"))[0].read_text()
+        assert "needs_validation" in content

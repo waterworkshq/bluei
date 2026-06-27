@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 import pytest
 
 from bluei.engine.fix_tiers import FixTier
+from bluei.engine.governance import PromotionResult
 from bluei.engine.lifecycle import (
     ClaudeFixRequest,
     _extract_fix_pattern,
@@ -174,7 +175,8 @@ class TestExtractFixPattern:
                 return_value=True,
             ),
             patch(
-                "bluei.engine.shared_pattern_library.promote_pattern_to_recipe"
+                "bluei.engine.shared_pattern_library.promote_pattern_to_recipe",
+                return_value=PromotionResult.PROMOTED,
             ) as mock_promote,
             patch(
                 "bluei.engine.recipe_engine.staged_recipe_dir",
@@ -331,7 +333,10 @@ class TestExtractFixPattern:
                 "bluei.engine.shared_pattern_library.check_promotion_eligibility",
                 return_value=True,
             ),
-            patch("bluei.engine.shared_pattern_library.promote_pattern_to_recipe"),
+            patch(
+                "bluei.engine.shared_pattern_library.promote_pattern_to_recipe",
+                return_value=PromotionResult.PROMOTED,
+            ),
             patch(
                 "bluei.engine.recipe_engine.staged_recipe_dir",
                 return_value=tmp_path / "staged",

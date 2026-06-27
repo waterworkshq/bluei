@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Set
 
 _logger = logging.getLogger(__name__)
 
+from bluei.engine.governance import PromotionResult
 from bluei.engine.jsonl import read_jsonl
 from bluei.engine.structural_hash import (
     compute_structural_hash,
@@ -340,9 +341,62 @@ def promote_pattern_to_recipe(
     pattern: CrossRepoPattern,
     language: str,
     output_dir: Path,
-) -> Optional[Path]:
+    config: Optional[Dict[str, Any]] = None,
+    repo_state_dir: Optional[Path] = None,
+    approval_records_path: Optional[Path] = None,
+) -> Optional[PromotionResult]:
+    """Promote a cross-repo pattern to a staged recipe YAML.
+
+    Write-producing promotions are routed through the governance gate
+    (ADR-0007):
+
+    * ``gate_closed`` — requires a bundle reference; queues an
+      ``ApprovalRecord`` (``pending_approval``) and returns
+      ``PENDING_APPROVAL`` without writing YAML. No bundle reference →
+      ``NOT_ELIGIBLE``.
+    * ``gate_open_audit`` (default, including ``config={}``) — writes the
+      YAML and appends an ``ApprovalRecord`` (``auto_promote``); returns
+      ``PROMOTED``.
+
+    ``approval_records_path=None`` is safe: no audit record is written but
+    YAML still is (gate-open) or the queue step is skipped (gate-closed).
+    """
+    from bluei.engine.governance import (
+        ApprovalRecord,
+        format_asset_ref,
+        resolve_policy,
+    )
+    from bluei.engine.bundle_loader import has_bundle_reference, load_bundles
+    from bluei.engine.jsonl import append_jsonl
+
+    config = config or {}
+
     if not check_promotion_eligibility(pattern):
-        return None
+        return PromotionResult.NOT_ELIGIBLE
+
+    policy = resolve_policy(config, "pattern", "write_producing")
+    asset_ref = format_asset_ref("pattern", pattern.pattern_id)
+
+    if policy == "gate_closed":
+        bundles = load_bundles(repo_state_dir) if repo_state_dir else []
+        if not has_bundle_reference(asset_ref, bundles):
+            return PromotionResult.NOT_ELIGIBLE
+        if approval_records_path is not None:
+            record = ApprovalRecord(
+                asset_ref=asset_ref,
+                decision="pending_approval",
+                native_state_before="cross-repo-pattern",
+                native_state_after="pending-recipe",
+                reason="Auto-promotion eligible; gate-closed policy requires approval",
+                evidence_snapshot={
+                    "pattern_id": pattern.pattern_id,
+                    "rule": pattern.rule,
+                },
+                actor="system:auto-promote",
+                timestamp=_now_iso(),
+            )
+            append_jsonl(approval_records_path, record.to_dict())
+        return PromotionResult.PENDING_APPROVAL
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -386,4 +440,21 @@ def promote_pattern_to_recipe(
         yaml.safe_dump(recipe_data, default_flow_style=False, sort_keys=False),
         encoding="utf-8",
     )
-    return out_path
+
+    if approval_records_path is not None:
+        record = ApprovalRecord(
+            asset_ref=asset_ref,
+            decision="auto_promote",
+            native_state_before="cross-repo-pattern",
+            native_state_after="staged-recipe",
+            reason="Auto-promotion via gate-open policy",
+            evidence_snapshot={
+                "pattern_id": pattern.pattern_id,
+                "rule": pattern.rule,
+                "recipe_id": recipe_id,
+            },
+            actor="system:auto-promote",
+            timestamp=_now_iso(),
+        )
+        append_jsonl(approval_records_path, record.to_dict())
+    return PromotionResult.PROMOTED
