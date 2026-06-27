@@ -432,6 +432,12 @@ def _cmd_create_plugin(rest: list[str]) -> int:
     return _impl(rest)
 
 
+def _cmd_learn(rest: list[str]) -> int:
+    from bin.cmd_learn import _cmd_learn as _impl
+
+    return _impl(rest)
+
+
 def _cmd_report(name: str, passthrough: list[str]):
     from bin.cmd_report import _cmd_report as _impl
 
@@ -571,6 +577,8 @@ def main():
         return _cmd_notify(rest)
     if cmd == "create-plugin":
         return _cmd_create_plugin(rest)
+    if cmd == "learn":
+        return _cmd_learn(rest)
 
     # ── Path command ──
     if cmd == "secrets":

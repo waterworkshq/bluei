@@ -54,6 +54,7 @@ HELP_TEXT = {
   {GREEN}patterns{RESET}            {DIM}Inspect and manage learned fix patterns{RESET}
   {GREEN}campaign{RESET}            {DIM}Plan multi-finding refactor campaigns{RESET}
   {GREEN}emergent{RESET}            {DIM}Inspect proposed emergent rules{RESET}
+  {GREEN}learn{RESET}               {DIM}Read-only governance inbox, status, audit, bundle{RESET}
   {GREEN}create-plugin{RESET}       {DIM}Scaffold a new discovery plugin{RESET}
 
 {BOLD}Examples:{RESET}
@@ -517,6 +518,36 @@ by `bluei languages` on the next run.{RESET}
   bluei notify config --init --repo my-project {DIM}# Per-repo setup wizard{RESET}
   bluei notify digest --repo my-project   {DIM}# Send digest now{RESET}
   bluei notify digest --all               {DIM}# Send digests for all repos{RESET}
-  bluei notify log --repo my-project      {DIM}# Recent deliveries{RESET}
+   bluei notify log --repo my-project      {DIM}# Recent deliveries{RESET}
+""",
+    "learn": f"""{BOLD}bluei learn{RESET} {CYAN}<subcommand>{RESET} [{YELLOW}options{RESET}]
+
+{DIM}Read-only governance surface and Golden Bundle creation for the
+Operator Control Plane. Per ADR-0015, the read path is unified under
+`learn`; write-verbs (approve, reject, pause, reactivate) stay native.{RESET}
+
+{BOLD}Usage:{RESET}
+  bluei learn inbox [--repo {CYAN}<name>{RESET}]
+  bluei learn status {CYAN}<asset_ref>{RESET} [--repo {CYAN}<name>{RESET}]
+  bluei learn audit {CYAN}<asset_ref>{RESET} [--repo {CYAN}<name>{RESET}]
+  bluei learn bundle {CYAN}<pattern_id>{RESET} --worktree {CYAN}<path>{RESET} --from-finding {CYAN}<id>{RESET} [--repo {CYAN}<name>{RESET}]
+
+{BOLD}Subcommands:{RESET}
+  inbox                   {DIM}List pending governance approvals{RESET}
+  status {CYAN}<asset_ref>{RESET}           {DIM}Show governance + native + recent SPRT evidence{RESET}
+  audit {CYAN}<asset_ref>{RESET}            {DIM}Show full decision history for an asset{RESET}
+  bundle {CYAN}<pattern_id>{RESET}          {DIM}Create a Golden Validation Bundle from a known-good fix{RESET}
+
+{BOLD}Options:{RESET}
+  --repo {CYAN}<name>{RESET}             Repository name (required)
+  --worktree {CYAN}<path>{RESET}         Worktree path containing the target file (required for bundle)
+  --from-finding {CYAN}<id>{RESET}       Source finding id for the bundle (required for bundle)
+  --state-root {CYAN}<dir>{RESET}        Override repos state root for tests/tools
+
+{BOLD}Examples:{RESET}
+  bluei learn inbox --repo my-app
+  bluei learn status pattern:fp-a1b2c3d4 --repo my-app
+  bluei learn audit pattern:fp-a1b2c3d4 --repo my-app
+  bluei learn bundle fp-a1b2c3d4 --worktree ./worktrees/fix --from-finding f-001 --repo my-app
 """,
 }
