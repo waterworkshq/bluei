@@ -98,6 +98,10 @@ fixing, PR management, batch operations, and pattern learning.
 | `clean_prs.py` | Stale PR detection and cleanup. |
 | `cost_tracker.py` | Tracks model API invocation costs per cycle with soft/hard limits. |
 | `escalation.py` | Pattern detection and threshold-based escalation. |
+| `governance.py` | Event-sourced governance substrate: AssetRef, ApprovalRecord, Governance State projection (most-recent-wins over approval_records.jsonl trail), policy resolution (per-asset-class per-transition mode + safe-mode ceiling), SPRT reset boundary finder. No-op with empty trail. |
+| `bundle_loader.py` | Golden Validation Bundle loader: reads product fixtures (`golden_bundles/`) + repo-state bundles with product-first precedence. `has_bundle_reference` for the promotion gate. |
+| `dry_replay.py` | Non-mutating evidence collection for matched-but-not-selected Patterns. File-level checkpoint/restore around the cascade's fix application. Records would-have-applied outcomes to `dry_replay.jsonl`. |
+| `sprt.py` | Two-sided Sequential Probability Ratio Test (Wald): computes LLR from Dry Replay outcomes since most recent reset boundary. Demote when LLR ≤ B (broken); auto-promote when LLR ≥ A (healthy). LLR recomputed from durable stores — no accumulator. |
 
 > **Canonical primitives** (all JSONL/JSON file I/O routes through these):
 > - `state_io.py` — `atomic_json_write` + `rotate_jsonl_if_needed` (extracted per rec-08; closes engine→app layering for atomic writes)

@@ -34,7 +34,7 @@ four invocation patterns:
 
 ## Command Index
 
-All 27 commands sorted alphabetically:
+All 28 commands sorted alphabetically:
 
 | # | Command | Description |
 |---|---------|-------------|
@@ -53,18 +53,19 @@ All 27 commands sorted alphabetically:
 | 13 | `install-cron` | Install host cron schedule for project cycles |
 | 14 | `install-hook` | Install pre-commit hook |
 | 15 | `languages` | List installed language packs and rules |
-| 16 | `lesson` | Inspect and manage per-repo lesson entries |
-| 17 | `onboard` | Headless onboarding for a new project |
-| 18 | `patterns` | Inspect and manage learned fix patterns |
-| 19 | `preflight` | Assess a project before registering |
-| 20 | `report` | Generate a vitality report (PDF by default) |
-| 21 | `run` | Run full orchestrated sweep (scan → clean → verify) |
-| 22 | `scan` | Run discovery/issue-cycle scan on a project |
-| 23 | `secrets` | Scan for hardcoded secrets |
-| 24 | `status` | Show agent or project status |
-| 25 | `update` | Self-update to the latest version |
-| 26 | `upgrade-config` | Upgrade repo configuration to latest schema |
-| 27 | `version` | Print version info (`--version` or `-v` flag) |
+| 16 | `learn` | Inspect governance state, pending approvals, and create Golden Validation Bundles |
+| 17 | `lesson` | Inspect and manage per-repo lesson entries |
+| 18 | `onboard` | Headless onboarding for a new project |
+| 19 | `patterns` | Inspect and manage learned fix patterns |
+| 20 | `preflight` | Assess a project before registering |
+| 21 | `report` | Generate a vitality report (PDF by default) |
+| 22 | `run` | Run full orchestrated sweep (scan → clean → verify) |
+| 23 | `scan` | Run discovery/issue-cycle scan on a project |
+| 24 | `secrets` | Scan for hardcoded secrets |
+| 25 | `status` | Show agent or project status |
+| 26 | `update` | Self-update to the latest version |
+| 27 | `upgrade-config` | Upgrade repo configuration to latest schema |
+| 28 | `version` | Print version info (`--version` or `-v` flag) |
 
 > **Alias:** `setup` is an alias for `install`.
 
@@ -582,7 +583,48 @@ python [python] 23 rule(s)
 
 ---
 
-### 16. `lesson`
+### 16. `learn`
+
+Inspect governance state, pending approvals, decision history, and create Golden Validation Bundles from known-good fixes. The unified read/inbox surface for the Operator Control Plane. Write-verbs (pause, resume, retire) stay in their native namespaces (`patterns`, `emergent`).
+
+**Syntax:**
+
+```
+bluei learn <subcommand> [options]
+```
+
+**Subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `inbox [--repo <name>]` | List pending governance approvals (assets awaiting operator decision) |
+| `status <asset_ref> [--repo <name>]` | Show governance state, native state, and recent SPRT evidence for a Governed Asset |
+| `audit <asset_ref> [--repo <name>]` | Show full decision history (all ApprovalRecords) for a Governed Asset |
+| `bundle <pattern_id> --worktree <path> --from-finding <finding_id> [--repo <name>]` | Create a Golden Validation Bundle from a known-good fix in a worktree |
+
+**Asset Reference format:** `<class>:<id>` — e.g., `pattern:fp-a1b2c3d4`, `recipe:auto-ruff-b904-...`, `transform:python-ruff-F401`, `emergent_rule:er-abc123`.
+
+**Examples:**
+
+```bash
+# Check for pending promotions
+bluei learn inbox --repo my-project
+
+# Inspect a Pattern's governance state + SPRT evidence
+bluei learn status pattern:fp-a1b2c3d4 --repo my-project
+
+# Full audit trail for a Recipe
+bluei learn audit recipe:auto-ruff-b904-a1b2c3d4 --repo my-project
+
+# Create a bundle from a successful fix
+bluei learn bundle fp-a1b2c3d4 --worktree /path/to/worktree --from-finding f-001 --repo my-project
+```
+
+**Exit codes:** 0 success, 1 not found / error, 2 missing required arguments.
+
+---
+
+### 17. `lesson`
 
 Inspect and manage per-repo lesson entries that feed the fix feedback loop.
 Lessons record what broke, what changed, and what worked for cross-finding hints.
@@ -626,7 +668,7 @@ bluei lesson show abc123def --repo my-app
 
 ---
 
-### 17. `onboard`
+### 18. `onboard`
 
 Headless onboarding for an existing local project. Registers the repo with
 custom care level and profile without interactive prompts.
@@ -660,7 +702,7 @@ bluei onboard --repo ~/my-project --mode watch-only --profile conservative
 
 ---
 
-### 18. `patterns`
+### 19. `patterns`
 
 Inspect and manage learned fix patterns. bluei records successful fix patterns
 and can reuse them before spending another LLM call on similar findings.
@@ -699,7 +741,7 @@ bluei patterns reactivate fp-a1b2c3d4e5f6 --repo my-app
 
 ---
 
-### 19. `preflight`
+### 20. `preflight`
 
 Assess whether a project is ready for bluei registration. Runs checks before
 onboarding to surface potential issues.
@@ -720,7 +762,7 @@ bluei preflight --repo /path/to/new-project
 
 ---
 
-### 20. `report`
+### 21. `report`
 
 Generate a comprehensive vitality report for a project. PDF by default. Also
 supports text, JSON, HTML, and WhatsApp formats.
@@ -754,7 +796,7 @@ bluei report my-app --format text --days 7     # Last 7 days
 
 ---
 
-### 21. `run`
+### 22. `run`
 
 Run a full orchestrated sweep (discover, fix, review, merge). Equivalent to
 running `scan → clean → verify` in sequence.
@@ -788,7 +830,7 @@ bluei run my-app --fix-engine claude # Use Claude for fixes
 
 ---
 
-### 22. `scan`
+### 23. `scan`
 
 Run a discovery/issue-cycle scan on a project. Discovers specks and creates
 GitHub issues for them. (Contrast with `clean` which also opens PRs.)
@@ -820,7 +862,7 @@ bluei scan my-app --fix-engine deterministic
 
 ---
 
-### 23. `secrets`
+### 24. `secrets`
 
 Scan a directory for hardcoded secrets (API keys, tokens, passwords, private
 keys, high-entropy strings). Delegates to `bin/bluei_secrets.py`.
@@ -842,7 +884,7 @@ bluei secrets ~/my-project
 
 ---
 
-### 24. `status`
+### 25. `status`
 
 Show agent-wide status or per-project status.
 
@@ -869,7 +911,7 @@ bluei status --repo my-app          # Per-project status
 
 ---
 
-### 25. `update`
+### 26. `update`
 
 Self-update bluei to the latest version. Delegates to the engine's update
 mechanism.
@@ -884,7 +926,7 @@ bluei update
 
 ---
 
-### 26. `upgrade-config`
+### 27. `upgrade-config`
 
 Upgrade a repository's configuration to the latest schema. Uses the
 `OnboardEngine.upgrade_config()` path.
@@ -905,7 +947,7 @@ bluei upgrade-config --repo my-app
 
 ---
 
-### 27. `version`
+### 28. `version`
 
 Print version information for the bluei CLI and the engine backend.
 

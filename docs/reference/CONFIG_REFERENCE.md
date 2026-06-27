@@ -65,6 +65,27 @@ safety:
   mode: observe              # observe, review, fix
   profile: conservative       # conservative, balanced, aggressive
 
+# Learning governance (alpha.2+)
+learning:
+  mode: active                # active | audit_only | paused
+  sprt:
+    alpha: 0.01               # false-demotion rate (lower = more conservative)
+    beta: 0.01                # false-keep rate (lower = more conservative)
+    p_healthy: 0.90           # success rate considered "healthy"
+    p_broken: 0.50            # success rate considered "broken"
+  dry_replay:
+    cap: 20                   # max Dry Replay attempts per cycle
+  asset_classes:
+    pattern:
+      write_producing: gate_closed       # promote_pattern_to_recipe (gate-closed by default)
+      in_place_mutation: gate_open_audit # confidence threshold crossing
+    recipe:
+      activation: gate_closed            # new Recipe YAML staging
+    transform:
+      activation: gate_open_audit        # authored code, lower risk
+    emergent_rule:
+      state_transition: gate_open_audit  # TENTATIVE→ACTIVE
+
 # GitHub integration
 github:
   live_actions: false        # enable live PR/issue creation
@@ -137,6 +158,44 @@ bluei emergent list --repo <repo>
 | `BLUEI_MODE` | (prompt) | Pre-set care level on init |
 | `MNEMO_CLI_PATH` | `mnemo-cli` | Path to Mnemo CLI for memory integration |
 | `BLUEI_SELF_MERGE_REPOS` | empty | Comma-separated repo slugs with self-merge privileges |
+
+## Learning Governance
+
+The learning subsystem (`learning:` config key) controls how bluei governs learned automation — Patterns, Recipes, AST transforms, and Emergent Rules. Added in v0.2.0-alpha.2.
+
+### Safe-Mode (`learning.mode`)
+
+| Mode | Dry Replay | SPRT | Gate-closed promotions | Gate-open transitions |
+|------|-----------|------|----------------------|----------------------|
+| `active` (default) | runs | fires | queued in inbox | proceed + audit |
+| `audit_only` | runs | computes but does NOT fire | queued in inbox | forced gate-closed |
+| `paused` | does NOT run | does NOT run | queued but not processed | frozen |
+
+`audit_only` is the recommended onboarding posture for repos new to the governance substrate.
+
+### Policy Resolution
+
+Each asset class has per-transition policies. The `learning.mode` acts as a **ceiling** — it can only restrict, never loosen.
+
+| Transition | Default | Description |
+|-----------|---------|-------------|
+| `write_producing` | `gate_closed` | Pattern→Recipe promotion; writes new YAML to `recipes/staged/` |
+| `in_place_mutation` | `gate_open_audit` | Pattern confidence threshold crossing; auto-replay eligibility |
+| `activation` | varies by class | Recipe/transform new-asset staging |
+| `state_transition` | `gate_open_audit` | Emergent Rule TENTATIVE→ACTIVE |
+
+### SPRT Parameters
+
+The Sequential Probability Ratio Test (ADR-0012) uses operator-facing risk tolerances, not hardcoded counts:
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `alpha` | 0.01 | Acceptable false-demotion rate |
+| `beta` | 0.01 | Acceptable false-keep rate |
+| `p_healthy` | 0.90 | Success rate considered "healthy" |
+| `p_broken` | 0.50 | Success rate considered "broken" |
+
+HITs push LLR positive (toward promote); FAILs push it negative (toward demote) at ~2.7× the weight. LLR is recomputed from durable stores on every check — no stored accumulator.
 
 ## Cost Tracking
 

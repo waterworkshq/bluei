@@ -229,6 +229,43 @@ bluei emergent gc --repo my-project
 bluei languages    # list installed language packs and their rules
 ```
 
+### Learning governance — safe-mode and approvals
+
+bluei's learning subsystem (Pattern promotion, Dry Replay, SPRT demotion) can be controlled via the `learning.mode` config key and the `bluei learn` CLI.
+
+**Safe-mode levels** (in `repos/<name>/config.yaml` or workspace `config.yaml`):
+
+```yaml
+learning:
+  mode: active  # active | audit_only | paused
+```
+
+| Mode | Behavior |
+|------|----------|
+| `active` | Normal operation: Dry Replay runs, SPRT fires, promotions proceed per policy |
+| `audit_only` | Shadow evaluation: Dry Replay runs, SPRT computes but doesn't fire, all transitions forced gate-closed |
+| `paused` | Full freeze: no Dry Replay, no SPRT, no promotions |
+
+**Recommended onboarding**: start with `audit_only` for the first few cycles, inspect what *would* have happened, then switch to `active`.
+
+**Inspecting governance state:**
+
+```bash
+# List pending approvals (Pattern→Recipe promotions awaiting your decision)
+bluei learn inbox --repo my-project
+
+# Inspect a Pattern's governance state + recent SPRT evidence
+bluei learn status pattern:fp-a1b2c3d4 --repo my-project
+
+# Full audit trail for any governed asset
+bluei learn audit recipe:auto-ruff-b904-a1b2c3d4 --repo my-project
+
+# Create a Golden Validation Bundle from a known-good fix
+bluei learn bundle fp-a1b2c3d4 --worktree /path/to/worktree --from-finding f-001 --repo my-project
+```
+
+**Note:** write-verbs (`pause`, `resume`, `retire`) stay in their native namespaces (`patterns pause`, `emergent approve`). The `learn` namespace is read-only + bundle creation.
+
 ## CI/CD Integration
 
 Generate a GitHub Actions workflow for CI-based scanning:
