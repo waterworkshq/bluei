@@ -110,6 +110,7 @@ def _build_flywheel_ledger(
 
 def run_finalize_phase(*args, **kwargs) -> int:
     """Save state, write status artifact, log lessons, run escalation checks."""
+    ctx = None
     if args:
         ctx = args[0]
         state_file = ctx.state_file
@@ -272,6 +273,18 @@ def run_finalize_phase(*args, **kwargs) -> int:
         f" det={det_total}/{attempted} llm={llm}"
         f" replay_hits={replay_hits} saved=${saved:.4f}"
     )
+
+    # Dry Replay summary (ADR-0011) — only if any Dry Replays were performed
+    # this cycle. ``_dry_replay_performed`` / ``_dry_replay_capped`` are set
+    # on RunContext by the Dry Replay phase in _process_one_issue. Only the
+    # RunContext-style call path surfaces them.
+    _dr_performed = getattr(ctx, "_dry_replay_performed", 0) if ctx else 0
+    _dr_capped = bool(getattr(ctx, "_dry_replay_capped", False)) if ctx else False
+    dry_replay_suffix = ""
+    if _dr_performed:
+        dry_replay_suffix = (
+            f" dry-replay: {_dr_performed} performed{', cap-hit' if _dr_capped else ''}"
+        )
     print(
         f"[DONE] {run_mode} learning={learning_mode} findings={len(findings)} issues_created={len(created_issues)} "
         f"fix_attempts={fix_attempts} fixes_verified={fixes_verified} "
@@ -279,7 +292,7 @@ def run_finalize_phase(*args, **kwargs) -> int:
         f"issues_escalated_max_retries={issues_escalated_max_retries} "
         f"merges={merges_succeeded}/{merge_attempts} "
         f"cost: claude={claude_invocations} deterministic={deterministic_invocations} "
-        f"total=${cost_tracker.cycle_total():.4f}{ledger_suffix}"
+        f"total=${cost_tracker.cycle_total():.4f}{ledger_suffix}{dry_replay_suffix}"
     )
     _append_text(
         log_file,
@@ -289,7 +302,7 @@ def run_finalize_phase(*args, **kwargs) -> int:
         f"issues_escalated_max_retries={issues_escalated_max_retries} "
         f"merges={merges_succeeded}/{merge_attempts} "
         f"cost: claude={claude_invocations} deterministic={deterministic_invocations} "
-        f"total=${cost_tracker.cycle_total():.4f}{ledger_suffix}",
+        f"total=${cost_tracker.cycle_total():.4f}{ledger_suffix}{dry_replay_suffix}",
     )
 
     if (

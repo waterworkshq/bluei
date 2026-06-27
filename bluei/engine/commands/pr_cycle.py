@@ -713,7 +713,23 @@ def _process_one_issue(
 
         target_checks = build_target_checks(finding)
 
+        # File-level checkpoint for Dry Replay (ADR-0011). try_replay below
+        # mutates the worktree file; we need the pre-fix state to replay
+        # alternate Patterns non-destructively after the winner is chosen.
+        _dr_target_file = worktree_path / finding.path if finding.path else None
+        _dr_original_content = None
+        if _dr_target_file and _dr_target_file.exists():
+            try:
+                _dr_original_content = _dr_target_file.read_text(encoding="utf-8")
+            except OSError as _dr_cp_exc:
+                _append_text(
+                    log_file,
+                    f"dry-replay-checkpoint-failed: path={finding.path} error={type(_dr_cp_exc).__name__}",
+                )
+                _dr_original_content = None
+
         replay_succeeded = False
+        replay_pid: Optional[str] = None
         replay_pattern_hint: Optional[str] = None
 
         if pattern_store is not None:
@@ -1001,6 +1017,58 @@ def _process_one_issue(
                             last_error=f"autofix no-op rule={finding.rule}",
                         )
                         return counters.to_deltas()
+
+        # Dry Replay phase (ADR-0011) — counterfactual evidence collection for
+        # matched-but-not-selected Patterns. Restores original → applies each
+        # candidate → validates → records outcome → restores winner. Worktree
+        # state is unchanged after this phase. Guarded so it stays inert when
+        # learning is paused, no pattern store, or no checkpointed content.
+        if (
+            ctx.learning_mode != "paused"
+            and _dr_original_content is not None
+            and pattern_store is not None
+            and finding.path
+        ):
+            _dr_target = worktree_path / finding.path
+            _dr_winner_content = (
+                _dr_target.read_text(encoding="utf-8") if _dr_target.exists() else None
+            )
+
+            if _dr_winner_content is not None:
+                from bluei.engine.dry_replay import (
+                    collect_dry_replay_candidates,
+                    run_dry_replay,
+                )
+
+                _dr_winner_pid = replay_pid if replay_succeeded else None
+                _dr_candidates = collect_dry_replay_candidates(
+                    finding,
+                    pattern_store,
+                    ctx.governance_state,
+                    winner_pattern_id=_dr_winner_pid,
+                )
+
+                _dr_cap = 20  # default; TODO: read from config
+                _dr_path = ctx.state_file.parent / "dry_replay.jsonl"
+
+                _dr_count = run_dry_replay(
+                    finding,
+                    _dr_candidates,
+                    worktree_path,
+                    _dr_original_content,
+                    _dr_winner_content,
+                    PER_REPO_BASELINE_CHECKS,
+                    log_file,
+                    ctx.run_id,
+                    _dr_path,
+                    cap=_dr_cap,
+                )
+
+                # cap-hit tracking surfaced to finalize
+                ctx._dry_replay_performed = (
+                    getattr(ctx, "_dry_replay_performed", 0) + _dr_count
+                )
+                ctx._dry_replay_capped = len(_dr_candidates) > _dr_cap
 
         files_changed, loc_diff = diff_stats(worktree_path)
         _append_text(
