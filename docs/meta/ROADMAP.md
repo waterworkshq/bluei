@@ -13,6 +13,7 @@ What's been built, and what's next.
 | v0.1.0-alpha.1 | Initial pre-release: deterministic fix cascade, pattern learning, review lifecycle, onboarding, 8 language plugins |
 | v0.1.0-beta.1 | Post-alpha hardening: Tier 1 architecture cleanup, god-module decompositions, H5 review→app decoupling, merge-cycle audit closure, JSONL/state reconciliation, E2E test suite |
 | v0.2.0-alpha.1 | "Evidence": Flywheel Ledger (deterministic-vs-LLM resolution metrics, cascade-stage counts, honest three-way HIT/MISS/FAILURE replay outcomes, standalone-Pattern-replay $ savings) + Pattern Court Lite (`last_failed_at`/`excluded_paths` envelopes with lookup-layer enforcement, enriched `patterns show`/`list`, `exclude`/`unexclude` producer). Rendered across the `clean` summary, `report` (markdown + HTML), and dashboard. Observability only — no fix-behavior changes. |
+| v0.2.0-alpha.2 | "Safe Learning": Governance substrate (Operator Control Plane with event-sourced ApprovalRecord trail, per-class policy-driven promotion gate, tri-state safe-mode), Golden Validation Bundles (container + storage + ruff-b904 fixture), Dry Replay (non-mutating evidence collection for matched-but-not-selected Patterns), SPRT demotion (two-sided Wald's Sequential Probability Ratio Test), `bluei learn` CLI namespace. 10 ADRs (0006–0016), 6245 tests. Ships inert — evidence population deferred to alpha.3 self-seeding. |
 
 > Full release notes live in [`CHANGELOG.md`](../CHANGELOG.md).
 
@@ -36,22 +37,6 @@ v0.2.0-alpha.1 "Evidence" has shipped (see Delivered above). These items were sc
 | `bluei savings <repo>` standalone CLI | post-alpha.1 (patch or later) | Redundant with the enriched `clean` summary + `report` section + dashboard card, which fully satisfy seed-01 acceptance. Cumulative ledger JSONL makes a read-only CLI trivial to add once operators ask for it. |
 | Cascade-internal Pattern/composite savings instrumentation (thread `cost_tracker` into `CascadeContext`) | alpha.2 | Broader plumbing change excluded from additive-only alpha.1; revives deferred `bluei savings` completeness and makes cascade-internal Pattern/composite wins contribute real $ instead of counts-only. Captured in ADR-0003 (option C). |
 | `run_id` correlation key on ledger/cost sinks | when cumulative/cross-cycle Ledger features begin (alpha.2 / `bluei savings`) | alpha.1's per-cycle block reads an in-memory accumulator (ADR-0005), so no `run_id` is needed; `cascade_resolutions.jsonl` + `cost_log.jsonl` rows omit it. The first cumulative/cross-cycle view (per-cycle savings CLI, cross-cycle trends, shadow-replay history) requires `run_id` generated in the engine CLI and stamped on both sinks, then read-time join. Add before starting any such feature. |
-
----
-
-### v0.2.0-alpha.2 - "Safe Learning"
-
-Add the safety substrate required before learned fixes can promote themselves.
-
-| Feature | Problem it solves |
-|---------|-------------------|
-| Golden Reef | Gives Patterns, Recipes, transforms, and Emergent Rules Golden Validation Bundles instead of relying only on confidence scores |
-| Operator Control Plane | Lets operators approve, reject, pause, demote, or retire learned automation with an audit trail |
-| Pattern Shadow Replay | Records would-have-applied Pattern outcomes without mutating code |
-
-**Why here:** promotion without negative examples, fixtures, and operator governance is too opaque. This release makes learning safe before making it more powerful.
-
-Planning seeds: `docs/plans/v2/03-golden-reef.md`, `docs/plans/v2/10-operator-control-plane.md`, `docs/plans/v2/02-pattern-court.md`
 
 ---
 

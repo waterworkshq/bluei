@@ -6,6 +6,71 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.2.0-alpha.2] — Safe Learning
+
+The safety substrate for learned automation. Governance, evidence collection, fix validation, and statistical demotion — all shipping inert (proven by synthetic tests, unexercised on real data until alpha.3 self-seeding populates the evidence base).
+
+Still pre-release software. Do not use in production.
+
+### Operator Control Plane
+
+- **Event-sourced governance substrate** — `ApprovalRecord` trail (`approval_records.jsonl`) is the single source of truth; Governance State (ACTIVE/PAUSED/RETIRED) is a read-time projection (most-recent-decision-wins). No separate state file. Crash-safe, auditable, no synchronization issues. (ADR-0006, ADR-0008)
+- **Per-class policy-driven promotion gate** — `promote_pattern_to_recipe` re-routed through approval gate. Write-producing promotions are gate-closed by default (queue ApprovalRecord, no YAML written); in-place mutations are gate-open-with-audit. Policy file schema with per-asset-class per-transition mode field. (ADR-0007)
+- **Cascade-stage consultation layer** — all 4 cascade stages (Pattern, Recipe, AST Transform, Emergent Rule) consult Governance State via per-candidate `is_governance_active` checks. PAUSED/RETIRED assets are skipped. Per-candidate fallthrough for Pattern stage (PAUSED exact match falls through to structural/fuzzy lookup). (ADR-0008)
+- **Safe-mode tri-state flag** — `learning.mode` config key (`active` / `audit_only` / `paused`). Ceilings over per-class policy. Paused freezes everything; audit_only forces gate-closed and disables SPRT firing. (ADR-0013)
+- **`bluei learn` CLI namespace** — unified read/inbox surface: `learn inbox` (pending approvals), `learn status` (governance + native + SPRT evidence), `learn audit` (full decision history), `learn bundle` (create Golden Validation Bundle from known-good fix). Write-verbs stay native. (ADR-0015)
+
+### Golden Validation Bundles
+
+- **Bundle container + storage** — hybrid filesystem-boundaried: product fixtures (`bluei/engine/golden_bundles/`) ship curated and public; repo state (`repos/<name>/state/golden_bundles/`) is operator-private. Privacy enforced by filesystem layout (bundle validation requires original code, can't be privacy-normalized). (ADR-0009)
+- **Minimal forward-compatible schema** — `before`, `after`, `detector_before`, `detector_after`, `validation_command`, metadata. Additive fields (`negative_examples`, `imports_touched`, `validation_commands_passed`, `rule_family` populated) land in alpha.3 without breaking alpha.2 bundles. (ADR-0016)
+- **ruff-b904 proof fixture** — first product fixture shipped, validating the substrate end-to-end.
+- **Bundle-gated promotion** — Patterns with zero bundle references cannot be promoted to Recipes under gate-closed policy.
+
+### Dry Replay
+
+- **Non-mutating evidence collection** — for matched-but-not-selected Patterns (lookup matched but cascade winner was a different stage), Dry Replay records what the Pattern *would have* done without affecting the live worktree. File-level checkpoint before fix flow → restore original → apply Pattern → validate → record outcome → restore winner. (ADR-0011)
+- **Per-cycle cap** — 20 Dry Replay attempts per cycle, oldest-first prioritization. Cap limits attempts (outcome unknown until after expensive validation).
+- **`dry_replay.jsonl` sink** — append-only, carries `run_id`, `pattern_id`, `finding_id`, `would_have_outcome` (HIT/MISS/FAILURE). MISS outcomes don't contribute to SPRT.
+
+### SPRT Demotion
+
+- **Two-sided Sequential Probability Ratio Test** — Wald's SPRT replaces hardcoded demotion thresholds. Operator-facing inputs are risk tolerances (α, β, p₀, p₁), not magic counts/rates. Demote when LLR ≥ A; auto-re-promote when LLR ≤ B. Hysteresis is structural (band between boundaries). (ADR-0012)
+- **LLR recomputed from durable stores** — `dry_replay.jsonl` outcomes since most recent reset boundary (from `approval_records.jsonl`). No stored accumulator; crash-safe.
+- **FAIL is 2.7× more impactful than HIT** — `ln((1-p₁)/(1-p₀))` / `ln(p₁/p₀)` at defaults. No "negative-priority bypass" needed — SPRT weighting handles it.
+
+### Plumbing
+
+- **`run_id` correlation key** — UUID4 per CLI invocation, stamped on `cascade_resolutions.jsonl`, `cost_log.jsonl`, and `dry_replay.jsonl` rows. Enables cross-cycle joins for cumulative features. Additive — old rows lack `run_id`, no backfill. (ADR-0010)
+- **Cascade-internal savings** — Pattern/composite replay wins inside the cascade now contribute real $ savings via `cost_tracker` threaded into `CascadeContext`. Previously counts-only ($ = "—").
+
+### ADRs
+
+- 0006: All 4 asset classes (Pattern, Recipe, AST transform, Emergent Rule) governed through unified substrate
+- 0007: Policy-driven promotion, split default (write-producing gate-closed, in-place gate-open-audit)
+- 0008: Governance State = projection of ApprovalRecord trail (event-sourcing)
+- 0009: Hybrid bundle storage, filesystem-boundaried privacy
+- 0010: run_id correlation key on ledger sinks
+- 0011: Dry Replay scope (matched-but-not-selected, capped) + scratch mechanism (file-level checkpoint)
+- 0012: Two-sided SPRT for demotion/re-promotion; PAUSED-only effect; LLR recomputed
+- 0013: Safe-mode tri-state flag (active/audit_only/paused)
+- 0014: SUPERSEDED (release scoping decision, not architectural)
+- 0015: bluei learn namespace (read unified, write native)
+- 0016: Bundle schema minimal and forward-compatible
+
+### Testing
+
+- 6,245 tests across 210+ files (+128 from alpha.1). All synthetic — no live cycles run during alpha.2 by design.
+- New test files: `test_run_id_plumbing.py`, `test_bundle_loader.py`, `test_governance.py`, `test_cascade_governance.py`, `test_promotion_gate.py`, `test_safe_mode.py`, `test_dry_replay.py`, `test_sprt.py`, `test_learn_cli.py`.
+
+---
+
+## [0.2.0-alpha.1] — Evidence
+
+Flywheel Ledger (deterministic-vs-LLM resolution metrics, cascade-stage counts, honest three-way HIT/MISS/FAILURE replay outcomes, standalone-Pattern-replay $ savings) + Pattern Court Lite (`last_failed_at`/`excluded_paths` envelopes with lookup-layer enforcement, enriched `patterns show`/`list`, `exclude`/`unexclude` producer). Rendered across the `clean` summary, `report` (markdown + HTML), and dashboard. Observability only — no fix-behavior changes.
+
+---
+
 ## [0.1.0-beta.1] — Post-alpha hardening
 
 Alpha to beta transition for the 0.1.0 line. Architecture consolidation,
