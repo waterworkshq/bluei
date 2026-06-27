@@ -1251,11 +1251,17 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
     # Governance State projection (ADR-0008): read-time view of the
     # approval_records.jsonl trail. Empty until the first record is written
     # (substrate no-op — is_governance_active returns True for all refs).
-    from bluei.engine.governance import project_governance_state
+    from bluei.engine.governance import project_governance_state, resolve_learning_mode
     from bluei.engine.jsonl import read_jsonl
 
     _approval_records = read_jsonl(ctx.state_file.parent / "approval_records.jsonl")
     ctx.governance_state = project_governance_state(_approval_records)
+
+    # Learning mode (ADR-0013): resolve the global tri-state ceiling once at
+    # cycle start. Defaults to ``active`` when no config.yaml is present.
+    from bluei.app.config import load_global_config
+
+    ctx.learning_mode = resolve_learning_mode(load_global_config())
 
     queue_candidates, _escalated = _select_candidates(
         repo_path=repo_path,

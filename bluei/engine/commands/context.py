@@ -74,6 +74,11 @@ class RunContext:
     # first ApprovalRecord is written (substrate no-op).
     governance_state: Dict[str, str] = field(default_factory=dict)
 
+    # Learning mode (ADR-0013) — global tri-state kill switch resolved once at
+    # cycle start. ``active`` | ``audit_only`` | ``paused``. Phases 6 (Dry
+    # Replay) and 7 (SPRT) consult this to short-circuit their effects.
+    learning_mode: str = "active"
+
     # Flywheel Ledger accumulator (populated by cascade + standalone replay; read by finalize)
     ledger_records: List[Dict[str, Any]] = field(default_factory=list)
 

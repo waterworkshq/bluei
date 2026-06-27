@@ -148,6 +148,7 @@ def run_finalize_phase(*args, **kwargs) -> int:
         gh_repo_slug = ctx.gh_repo_slug
         ledger_records = ctx.ledger_records
         pattern_store = ctx.pattern_store
+        learning_mode = ctx.learning_mode
     else:
         state_file = kwargs["state_file"]
         issues_file = kwargs["issues_file"]
@@ -185,6 +186,7 @@ def run_finalize_phase(*args, **kwargs) -> int:
         gh_repo_slug = kwargs["gh_repo_slug"]
         ledger_records = kwargs.get("ledger_records", [])
         pattern_store = kwargs.get("pattern_store")
+        learning_mode = kwargs.get("learning_mode", "active")
 
     save_issues(issues_file, issues_data)
     unresolved_open = len(
@@ -236,6 +238,7 @@ def run_finalize_phase(*args, **kwargs) -> int:
             "cost_total_usd": round(cost_tracker.cycle_total(), 6),
             "cost_warned": cost_tracker.warned(),
             "cost_limit_reached": cost_tracker.exceeded_limit(),
+            "learning_mode": learning_mode,
         },
     )
 
@@ -270,7 +273,7 @@ def run_finalize_phase(*args, **kwargs) -> int:
         f" replay_hits={replay_hits} saved=${saved:.4f}"
     )
     print(
-        f"[DONE] {run_mode} findings={len(findings)} issues_created={len(created_issues)} "
+        f"[DONE] {run_mode} learning={learning_mode} findings={len(findings)} issues_created={len(created_issues)} "
         f"fix_attempts={fix_attempts} fixes_verified={fixes_verified} "
         f"fixes_failed_verification={fixes_failed_verification} prs_created={created_prs} "
         f"issues_escalated_max_retries={issues_escalated_max_retries} "
@@ -280,7 +283,7 @@ def run_finalize_phase(*args, **kwargs) -> int:
     )
     _append_text(
         log_file,
-        f"done: mode={run_mode} findings={len(findings)} issues={len(created_issues)} "
+        f"done: mode={run_mode} learning={learning_mode} findings={len(findings)} issues={len(created_issues)} "
         f"fix_attempts={fix_attempts} fixes_verified={fixes_verified} "
         f"fixes_failed_verification={fixes_failed_verification} prs={created_prs} "
         f"issues_escalated_max_retries={issues_escalated_max_retries} "
