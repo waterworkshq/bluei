@@ -76,9 +76,29 @@ _Avoid_: replay result (ambiguous two-way), replay status.
 A repo-local summary of conventions bluei has observed and can use when fixing Findings: preferred libraries, naming style, test style, framework idioms, and recurring exceptions.
 _Avoid_: coding style (too narrow), team preferences (too broad), memory.
 
+**Dry Replay**
+The non-mutating evidence-collection path for learned Patterns: apply a Pattern's fix to a scratch copy, run the Validation Gate, record the would-have-applied outcome (HIT / MISS / FAILURE), discard the scratch. Runs alongside the cascade for matched-but-not-selected Patterns. Feeds promotion and demotion evidence.
+_Avoid_: shadow replay (collides with review's `LiveRolloutMode.SHADOW`, which would-have-published a PR comment — different subsystem), dry run (too generic — `bluei duster` is a dry-run scan), shadow learning.
+
 **Golden Validation Bundle**
 A small regression fixture extracted from a successful fix, used to validate that a Pattern, Recipe, transform, or Emergent Rule still behaves correctly.
 _Avoid_: golden test (ambiguous), fixture only, regression test.
+
+**Governed Asset**
+Any automation artifact that can auto-act on a Finding without per-action human approval, and therefore sits under the Operator Control Plane. Four subtypes in alpha.2: Pattern, Recipe, AST Transform, Emergent Rule. The unifying property is governance, not how the asset was created (Recipes are authored; Patterns are learned; both are Governed Assets).
+_Avoid_: learned asset (misleading — Recipes are authored, not learned), learned automation, governed object.
+
+**Approval Record**
+The Operator Control Plane artifact that captures a single governance decision over a Governed Asset: actor, timestamp, decision (approve / reject / pause / demote / retire), reason, and evidence snapshot at decision time. Persisted once per decision in a single audit trail keyed by `AssetRef`.
+_Avoid_: approval ticket, governance log, decision event.
+
+**Governance State**
+The Operator Control Plane's safety verdict on a Governed Asset, independent of the asset's native lifecycle. Triplet: `ACTIVE` (asset may auto-act), `PAUSED` (operator-suspended, temporarily skipped by cascade stages), `RETIRED` (operator-removed, permanently skipped). "An asset is effective" means `native_eligible AND Governance State == ACTIVE`.
+_Avoid_: asset status (collides with Emergent Rule's native `status` field), promotion state, lifecycle state (reserved for the asset's own native machine).
+
+**Asset Reference (AssetRef)**
+The uniform handle for a Governed Asset across the control plane: `(asset_class, asset_id)`. Lets the approval inbox, audit trail, and Golden Reef bundle back-reference be asset-generic. `asset_class` is one of {pattern, recipe, transform, emergent_rule}.
+_Avoid_: asset id (ambiguous — every asset has its own id shape), asset pointer.
 
 **Escalation**
 A structured event recorded when a cycle fails, merge fails, dedup saturation is detected, or rebase conflict trends increase. Written to `escalation_log.jsonl`.

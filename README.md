@@ -344,10 +344,11 @@ Key design principles:
 | Area | Status | Notes |
 |------|--------|-------|
 | v0.2.0-alpha.1 "Evidence" | Delivered | Flywheel Ledger + Pattern Court Lite: deterministic-vs-LLM metrics, cascade-stage counts, honest three-way replay outcomes, savings, and Pattern Court Lite explainability |
-| v0.2.0-alpha.2 "Safe Learning" | Planned | Golden Validation Bundles, operator controls, and shadow replay before learned fixes can promote themselves |
-| v0.2.0-alpha.3 "Deterministic Assets" | Planned | Recipe Foundry, Rule Hatchery, and Python AST structural replay |
-| v0.2.0-alpha.4 "Repo Native" | Planned | Repo Taste Profile and Campaign Lab for evidence-gathering Campaigns |
-| v0.2.0-alpha.5 "Economics" | Planned | Model Governor and proof harness for model downgrade and cost/reliability evidence |
+| v0.2.0-alpha.2 "Safe Learning" | In Progress | Governance substrate for learned assets: Operator Control Plane, Golden Validation Bundles (container + storage), Dry Replay, SPRT-based demotion. Ships empty evidence — population comes in alpha.3. |
+| v0.2.0-alpha.3 "Evidence Foundation" | Planned | Self-seed the substrate from vetted open-source data + complete evidence enrichment capture infra. Replaces "grow from production fixes" (no production deployment before stable). |
+| v0.2.0-alpha.4 "Deterministic Assets" | Planned | Recipe Foundry, Rule Hatchery, and Python AST structural replay — built on a populated substrate |
+| v0.2.0-alpha.5 "Repo Native" | Planned | Repo Taste Profile and Campaign Lab for evidence-gathering Campaigns |
+| v0.2.0-alpha.6 "Economics" | Planned | Model Governor and proof harness for model downgrade and cost/reliability evidence |
 
 See [Roadmap](docs/meta/ROADMAP.md) for release boundaries and the planning seed map.
 

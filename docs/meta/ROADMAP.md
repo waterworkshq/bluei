@@ -20,7 +20,9 @@ What's been built, and what's next.
 
 ## Upcoming
 
-Each minor release should tell one coherent story. The `0.2.0` line is the deterministic flywheel era: each release increments the alpha counter through the flywheel build-out, aiming for `0.2.0-beta` → `0.2.0-rc` → `0.2.0` stable once the arc is feature-complete and proven on real repos. Release boundaries are risk-management decisions: evidence, promotion, structural replay, repo taste, and model routing should not all ship in one batch.
+Each minor release should tell one coherent story. The `0.2.0` line is the deterministic flywheel era: each release increments the alpha counter through the flywheel build-out, aiming for `0.2.0-beta` → `0.2.0-rc` → `0.2.0` stable once the arc is feature-complete and proven on real repos. Release boundaries are risk-management decisions: substrate, evidence population, structural replay, repo taste, and model routing should not all ship in one batch.
+
+> **Arc restructured 2026-06-27** (alpha.2 grilling). Original plan had alpha.3="Deterministic Assets" absorbing alpha.2 deferrals directly. Two corrections: (1) inserting alpha.3 "Evidence Foundation" between substrate and exploitation prevents scope snowball; (2) the system will not run on any live or simulated repo before 0.2.0 stable, so evidence must be self-seeded from open-source vetted data, not grown from production fixes. Original alpha.3→alpha.4, alpha.4→alpha.5, alpha.5→alpha.6.
 
 ### Carried forward from v0.2.0-alpha.1
 
@@ -53,23 +55,45 @@ Planning seeds: `docs/plans/v2/03-golden-reef.md`, `docs/plans/v2/10-operator-co
 
 ---
 
-### v0.2.0-alpha.3 - "Deterministic Assets"
+### v0.2.0-alpha.3 - "Evidence Foundation" (INSERTED — restructures the arc)
 
-Start turning repeated successful fixes into stronger deterministic assets.
+Populate the empty substrate alpha.2 shipped, using vetted open-source data instead of waiting for production evidence that won't arrive before 0.2.0 stable.
 
 | Feature | Problem it solves |
 |---------|-------------------|
-| Recipe Foundry | Uses LLMs to propose deterministic Recipe YAML from successful fixes, then validates before activation |
-| Rule Hatchery | Hardens repeated local smells into shadow-tested Emergent Rules |
-| Python AST Structural Replay | Replays learned fix shapes across variable/import differences with dry-run and fallback behavior |
+| Self-Seeding Pipeline | Mines, vets, and packages deterministic assets (bundles, patterns, recipes) from open-source repos with CI + lint tooling. Replaces "grow from production fixes" with "seed from proven historical fixes." |
+| Evidence Enrichment Capture | Completes the evidence envelope fields deferred from alpha.2 (`imports_touched`, `validation_commands_passed`, `rule_family` taxonomy, negative-example store). Needed by the self-seeding pipeline to categorize what it mines. |
+| SPRT Default Calibration | Uses self-seeded replay outcomes to set data-driven p₀/p₁ defaults per rule family, replacing the hand-picked alpha.2 defaults. |
 
-**Why here:** by this point the ledger, Pattern evidence, bundles, and governance exist. v0.2.0-alpha.3 can safely make determinism stronger.
+**Why inserted here:** alpha.2 ships the governance substrate empty — no bundles, no patterns, no evidence. The original plan assumed operators would run bluei on real repos and the library would grow. That assumption is false for the entire 0.2.0 arc: the system will not run on any live or simulated repo before stable. Self-seeding from vetted open-source data is both the only viable population path AND the safer approach for an untested system.
 
-Planning seeds: `docs/plans/v2/04-recipe-foundry.md`, `docs/plans/v2/05-rule-hatchery.md`, `docs/plans/v2/06-ast-structural-replay.md`
+**Resolves:** the negative-example store orphan (self-seeding produces negative examples naturally), SPRT calibration (self-seeded outcomes replace "needs production data"), bundle population (self-seeded fixtures replace the single `ruff-b904` cold-start).
+
+Planning seed: `docs/plans/v2/13-self-seeding-pipeline.md`. Evidence enrichment fields tracked in seeds `02-pattern-court.md` and `03-golden-reef.md` "Deferred from alpha.2" sections.
 
 ---
 
-### v0.2.0-alpha.4 - "Repo Native"
+### v0.2.0-alpha.4 - "Deterministic Assets" (was alpha.3)
+
+Start turning repeated successful fixes into stronger deterministic assets. Now built on a *populated* substrate from alpha.3. **First release where the alpha.2 Operator Control Plane has consumers** — Recipe Foundry proposals flow through the approval gate, Rule Hatchery promotions get audit trails, AST replay transforms enter governance.
+
+| Feature | Problem it solves |
+|---------|-------------------|
+| Recipe Foundry | Uses LLMs to propose deterministic Recipe YAML from successful fixes (including self-seeded candidates from alpha.3), then validates before activation |
+| Rule Hatchery | Hardens repeated local smells into shadow-tested Emergent Rules |
+| Python AST Structural Replay | Replays learned fix shapes across variable/import differences with dry-run and fallback behavior |
+
+**Why here:** by this point the ledger, Pattern evidence, bundles, governance, AND a populated library exist. alpha.4 can safely make determinism stronger on top of real evidence.
+
+**Consumes from alpha.3:** self-seeded Recipe candidates, `imports_touched` (for AST replay), `validation_commands_passed` (for Recipe Foundry validation), `rule_family` taxonomy, self-seeded structural shapes.
+
+**Governance consumers activated:** Recipe Foundry promotion gate (first non-empty `bluei learn inbox`), Rule Hatchery lifecycle governance, AST transform activation governance. See seed `14-governance-consumers.md`.
+
+Planning seeds: `docs/plans/v2/04-recipe-foundry.md`, `docs/plans/v2/05-rule-hatchery.md`, `docs/plans/v2/06-ast-structural-replay.md`, `docs/plans/v2/14-governance-consumers.md`
+
+---
+
+### v0.2.0-alpha.5 - "Repo Native" (was alpha.4)
 
 Make bluei learn how each repo prefers code to be fixed.
 
@@ -84,16 +108,16 @@ Planning seeds: `docs/plans/v2/07-taste-atlas.md`, `docs/plans/v2/09-campaign-la
 
 ---
 
-### v0.2.0-alpha.5 - "Economics"
+### v0.2.0-alpha.6 - "Economics" (was alpha.5)
 
 Make the cost and reliability advantage measurable enough to become a buying argument.
 
 | Feature | Problem it solves |
 |---------|-------------------|
-| Model Governor | Routes unresolved Findings to deterministic paths, smaller models, stronger models, frontier models, or humans based on evidence and risk |
-| Benchmark And Proof Harness | Replays historical and synthetic Findings to prove fewer LLM calls, stable validation, and higher deterministic resolution rate |
+| Model Governor | Routes unresolved Findings to deterministic paths, smaller models, stronger models, frontier models, or humans based on evidence and risk. Reads Governance State as a first-class routing input (seed 14). |
+| Benchmark And Proof Harness | Replays historical and synthetic Findings to prove fewer LLM calls, stable validation, and higher deterministic resolution rate. Reports governance lifecycle metrics from ApprovalRecord trail. |
 
-**Why here:** model downgrade decisions need the evidence and promotion history from prior releases. v0.2.0-alpha.5 turns accumulated telemetry into economic proof.
+**Why here:** model downgrade decisions need the evidence and promotion history from prior releases. v0.2.0-alpha.6 turns accumulated telemetry into economic proof.
 
 Planning seeds: `docs/plans/v2/08-model-governor.md`, `docs/plans/v2/11-benchmark-proof-harness.md`
 
@@ -101,7 +125,7 @@ Planning seeds: `docs/plans/v2/08-model-governor.md`, `docs/plans/v2/11-benchmar
 
 ### Toward 0.2.0 stable
 
-After the flywheel arc lands (`alpha.1` through `alpha.5`), stabilization proceeds through the pre-release maturity ladder:
+After the flywheel arc lands (`alpha.1` through `alpha.6`), stabilization proceeds through the pre-release maturity ladder:
 
 | Step | Gate |
 |------|------|
