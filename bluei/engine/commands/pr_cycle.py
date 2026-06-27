@@ -1449,6 +1449,31 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
         except _BreakLoop:
             break
     # end for
+
+    # SPRT check (ADR-0012): batch-evaluate LLR for every Pattern that had
+    # Dry Replays this cycle. Only fires in ``active`` learning mode;
+    # ``audit_only`` lets SPRT compute but skips the integration, ``paused``
+    # skips everything.
+    if ctx.learning_mode == "active":
+        from bluei.engine.sprt import run_sprt_check
+        from bluei.engine.jsonl import append_jsonl as _sprt_append_jsonl
+
+        _dr_path = ctx.state_file.parent / "dry_replay.jsonl"
+        _ar_path = ctx.state_file.parent / "approval_records.jsonl"
+
+        if _dr_path.exists():
+            _dr_records = read_jsonl(_dr_path, skip_errors=True)
+            _pattern_ids = list(
+                set(r.get("pattern_id") for r in _dr_records if r.get("pattern_id"))
+            )
+
+            _new_records = run_sprt_check(
+                _pattern_ids, _dr_path, _ar_path, load_global_config()
+            )
+
+            for _record in _new_records:
+                _sprt_append_jsonl(_ar_path, _record)
+
     return {
         "created_prs": created_prs,
         "open_prs": open_prs,
