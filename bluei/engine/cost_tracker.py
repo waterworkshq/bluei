@@ -74,6 +74,7 @@ class CostTracker:
         log_path: Path,
         soft_warn: float = 2.0,
         hard_limit: float = 10.0,
+        run_id: str = "",
     ) -> None:
         """Initialize the tracker.
 
@@ -81,10 +82,12 @@ class CostTracker:
             log_path: Path to the JSONL log file (created under state directory).
             soft_warn: Float USD threshold at which warned() becomes True.
             hard_limit: Float USD threshold at which exceeded_limit() becomes True.
+            run_id: Optional correlation key (UUID4) stamped on every entry.
         """
         self._log_path = log_path
         self._soft_warn = soft_warn
         self._hard_limit = hard_limit
+        self._run_id = run_id
         self._cycle_cost: float = 0.0
         self._cycle_savings: float = 0.0
         self._warned_flag: bool = False
@@ -134,6 +137,7 @@ class CostTracker:
             "output_tokens": output_tokens,
             "cost": round(invocation_cost, 6),
             "cycle_total_so_far": round(self._cycle_cost, 6),
+            "run_id": self._run_id,
         }
         try:
             append_jsonl(self._log_path, entry)
@@ -184,6 +188,7 @@ class CostTracker:
             "saved_cost": round(saved_cost, 6),
             "pattern_id": pattern_id,
             "rule": rule,
+            "run_id": self._run_id,
         }
         try:
             append_jsonl(self._log_path, entry)

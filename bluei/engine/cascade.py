@@ -80,6 +80,8 @@ class CascadeContext:
     ledger_path: Optional[Path] = None
     cycle: Optional[str] = None
     ledger_records: Optional[List[Dict[str, Any]]] = None
+    run_id: str = ""
+    cost_tracker: Any = None
 
 
 class CascadeStage(ABC):
@@ -259,6 +261,7 @@ class DeterministicCascade:
             "pattern_id": pattern_id,
             "latency_ms": telemetry.total_latency_ms,
             "timestamp": now_iso(),
+            "run_id": context.run_id,
         }
         if context.ledger_records is not None:
             context.ledger_records.append(record)
@@ -538,6 +541,16 @@ class PatternReplayCascadeStage(CascadeStage):
                 context.log_file,
                 shared_library=getattr(context, "shared_library", None),
             )
+            if replayed and context.cost_tracker and pattern_id:
+                saved = context.cost_tracker.estimate_invocation_cost(
+                    "claude-sonnet-4", input_tokens=4000, output_tokens=2000
+                )
+                context.cost_tracker.record_pattern_replay_savings(
+                    model="claude-sonnet-4",
+                    saved_cost=saved,
+                    pattern_id=pattern_id,
+                    rule=finding.rule,
+                )
             latency = int((time.monotonic() - t0) * 1000)
             return CascadeResult(
                 success=replayed,
@@ -769,6 +782,16 @@ class CompositePatternCascadeStage(CascadeStage):
 
                 resolved = verify_fix_closed(worktree, finding, context.log_file)
                 comp_store.record_result(pattern.pattern_id, resolved)
+                if resolved and context.cost_tracker:
+                    saved = context.cost_tracker.estimate_invocation_cost(
+                        "claude-sonnet-4", input_tokens=4000, output_tokens=2000
+                    )
+                    context.cost_tracker.record_pattern_replay_savings(
+                        model="claude-sonnet-4",
+                        saved_cost=saved,
+                        pattern_id=pattern.pattern_id,
+                        rule=finding.rule,
+                    )
                 return CascadeResult(
                     success=resolved,
                     stage_name=self.name,

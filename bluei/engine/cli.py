@@ -8,6 +8,7 @@ Exit codes: 0 success, 1 smoke-test fail, 2 abort, 4 needs-human.
 
 import logging
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -291,10 +292,12 @@ def main() -> int:
     run_merge_cycle = args.run_phase in ("merge-cycle", "orchestrated")
 
     cost_log_path = Path(state_file).parent / "cost_log.jsonl"
+    run_id = str(uuid.uuid4())
     cost_tracker = CostTracker(
         log_path=cost_log_path,
         soft_warn=2.0,
         hard_limit=10.0,
+        run_id=run_id,
     )
 
     issues_data = load_issues(issues_file)
@@ -321,6 +324,7 @@ def main() -> int:
         previous_last_run_at=previous_last_run_at,
         cost_tracker=cost_tracker,
         cost_log_path=cost_log_path,
+        run_id=run_id,
         pattern_store=pattern_store,
         PER_REPO_BASELINE_CHECKS=PER_REPO_BASELINE_CHECKS,
         run_issue_cycle=run_issue_cycle,

@@ -783,6 +783,8 @@ def _process_one_issue(
                     ledger_path=ctx.state_file.parent / "cascade_resolutions.jsonl",
                     cycle=args.run_phase,
                     ledger_records=ctx.ledger_records,
+                    run_id=ctx.run_id,
+                    cost_tracker=ctx.cost_tracker,
                 )
                 if applied:
                     run_status = "fix-applied:cascade"

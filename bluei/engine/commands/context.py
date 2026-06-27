@@ -67,6 +67,7 @@ class RunContext:
     # Cost tracking
     cost_tracker: Optional[CostTracker] = None
     cost_log_path: Optional[Path] = None
+    run_id: str = ""
 
     # Flywheel Ledger accumulator (populated by cascade + standalone replay; read by finalize)
     ledger_records: List[Dict[str, Any]] = field(default_factory=list)

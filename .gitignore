@@ -55,3 +55,4 @@ notifications.yaml
 
 # AI tool configs (developer-specific)
 AGENTS.md
+CLAUDE.md
