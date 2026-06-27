@@ -508,11 +508,11 @@ class TestBundle:
         out = capsys.readouterr().out
         assert "Bundle written" in out
 
-        bundle_path = state_dir / "golden_bundles" / f"{pid}-f-001.yaml"
+        bundle_path = state_dir / "golden_bundles" / f"gb-{pid}-f-001.yaml"
         assert bundle_path.exists()
 
         data = yaml.safe_load(bundle_path.read_text(encoding="utf-8"))
-        assert data["id"] == f"{pid}-f-001"
+        assert data["id"] == f"gb-{pid}-f-001"
         assert data["asset_class"] == "pattern"
         assert data["asset_ref"] == f"pattern:{pid}"
         assert data["rule"] == "ruff-b904"
@@ -532,7 +532,7 @@ class TestBundle:
 
         # The bundle should round-trip through GoldenBundle.from_dict.
         bundle = GoldenBundle.from_dict(data)
-        assert bundle.id == f"{pid}-f-001"
+        assert bundle.id == f"gb-{pid}-f-001"
         assert bundle.asset_ref == f"pattern:{pid}"
 
     def test_bundle_unknown_rule_leaves_detector_empty(
@@ -580,7 +580,7 @@ class TestBundle:
         assert rc == 0
 
         data = yaml.safe_load(
-            (state_dir / "golden_bundles" / f"{pid}-f-002.yaml").read_text(
+            (state_dir / "golden_bundles" / f"gb-{pid}-f-002.yaml").read_text(
                 encoding="utf-8"
             )
         )

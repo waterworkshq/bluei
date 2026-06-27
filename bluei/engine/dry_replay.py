@@ -88,8 +88,9 @@ def collect_dry_replay_candidates(
             continue
         if winner_pattern_id is not None and pid == winner_pattern_id:
             continue
-        if not is_governance_active(format_asset_ref("pattern", pid), governance_state):
-            continue
+        # NOTE: do NOT exclude PAUSED/RETIRED patterns here. ADR-0011 requires
+        # Dry Replay to continue on PAUSED patterns — the evidence stream is
+        # the recovery mechanism for auto-re-promote (ADR-0012).
         seen.add(pid)
         candidates.append(pattern)
 
@@ -125,6 +126,7 @@ def run_dry_replay(
     performed = 0
     for pattern in candidates[:cap]:
         outcome = "MISS"
+        infra_error = False
         try:
             target_file.write_text(original_content, encoding="utf-8")
 
@@ -147,40 +149,40 @@ def run_dry_replay(
                 else:
                     outcome = "FAILURE"
         except Exception as exc:
-            _logger.debug(
+            _logger.warning(
                 "dry-replay candidate failed: pattern_id=%s error=%s",
                 pattern.pattern_id,
                 exc,
             )
-            outcome = "FAILURE"
+            infra_error = True  # don't record infrastructure errors as FAILURE
         finally:
-            try:
-                append_jsonl(
-                    dry_replay_path,
-                    {
-                        "run_id": run_id,
-                        "pattern_id": pattern.pattern_id,
-                        "finding_id": finding.finding_id,
-                        "rule": finding.rule,
-                        "would_have_outcome": outcome,
-                        "validation_commands_passed": [],
-                        "timestamp": now_iso(),
-                    },
-                )
-            except Exception as exc:
-                _logger.debug(
-                    "dry-replay record write failed: pattern_id=%s error=%s",
-                    pattern.pattern_id,
-                    exc,
-                )
-            try:
-                target_file.write_text(winner_content, encoding="utf-8")
-            except Exception as exc:
-                _logger.debug(
-                    "dry-replay winner restore failed: path=%s error=%s",
-                    target_rel,
-                    exc,
-                )
+            # Only record actual pattern-application outcomes (HIT/MISS/FAILURE),
+            # not infrastructure errors (disk full, encoding, etc.) — those would
+            # pollute SPRT with fake demotion evidence (code-review H5).
+            if not infra_error:
+                try:
+                    append_jsonl(
+                        dry_replay_path,
+                        {
+                            "run_id": run_id,
+                            "pattern_id": pattern.pattern_id,
+                            "finding_id": finding.finding_id,
+                            "rule": finding.rule,
+                            "would_have_outcome": outcome,
+                            "validation_commands_passed": [],
+                            "timestamp": now_iso(),
+                        },
+                    )
+                except Exception as exc:
+                    _logger.debug(
+                        "dry-replay record write failed: pattern_id=%s error=%s",
+                        pattern.pattern_id,
+                        exc,
+                    )
+            # Winner restore is critical — if it fails, the worktree has the
+            # candidate's fix instead of the winner's, corrupting downstream
+            # verification and PR creation. Escalate, don't swallow (code-review H4).
+            target_file.write_text(winner_content, encoding="utf-8")
             performed += 1
 
     return performed

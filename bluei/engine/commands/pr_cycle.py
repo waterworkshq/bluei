@@ -1451,10 +1451,10 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
     # end for
 
     # SPRT check (ADR-0012): batch-evaluate LLR for every Pattern that had
-    # Dry Replays this cycle. Only fires in ``active`` learning mode;
-    # ``audit_only`` lets SPRT compute but skips the integration, ``paused``
-    # skips everything.
-    if ctx.learning_mode == "active":
+    # Dry Replays this cycle. Runs in both ``active`` and ``audit_only`` modes;
+    # in ``audit_only`` the decisions are computed but NOT written (no
+    # ApprovalRecords appended). ``paused`` skips everything.
+    if ctx.learning_mode != "paused":
         from bluei.engine.sprt import run_sprt_check
         from bluei.engine.jsonl import append_jsonl as _sprt_append_jsonl
 
@@ -1471,8 +1471,11 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
                 _pattern_ids, _dr_path, _ar_path, load_global_config()
             )
 
-            for _record in _new_records:
-                _sprt_append_jsonl(_ar_path, _record)
+            # Only write decisions in active mode; audit_only computes but
+            # does not fire (ADR-0013).
+            if ctx.learning_mode == "active":
+                for _record in _new_records:
+                    _sprt_append_jsonl(_ar_path, _record)
 
     return {
         "created_prs": created_prs,

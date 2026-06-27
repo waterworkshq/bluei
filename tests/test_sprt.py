@@ -165,16 +165,18 @@ def test_compute_llr_reset_boundary_excludes_earlier_records(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_check_sprt_demote_boundary():
-    # A = ln(0.99/0.01) ≈ 4.595
-    assert check_sprt(5.0) == "auto_demote"
-    assert check_sprt(math.log(0.99 / 0.01)) == "auto_demote"
-
-
 def test_check_sprt_promote_boundary():
+    # Many HITs → positive LLR → crosses +A → auto_promote (healthy pattern).
+    # A = ln(0.99/0.01) ≈ 4.595
+    assert check_sprt(5.0) == "auto_promote"
+    assert check_sprt(math.log(0.99 / 0.01)) == "auto_promote"
+
+
+def test_check_sprt_demote_boundary():
+    # Many FAILs → negative LLR → crosses -B → auto_demote (broken pattern).
     # B = ln(0.01/0.99) ≈ -4.595
-    assert check_sprt(-5.0) == "auto_promote"
-    assert check_sprt(math.log(0.01 / 0.99)) == "auto_promote"
+    assert check_sprt(-5.0) == "auto_demote"
+    assert check_sprt(math.log(0.01 / 0.99)) == "auto_demote"
 
 
 def test_check_sprt_no_boundary():
@@ -185,10 +187,11 @@ def test_check_sprt_no_boundary():
 
 def test_check_sprt_custom_alpha_beta():
     # alpha=0.05, beta=0.10 -> A=ln(0.90/0.05)=2.890, B=ln(0.10/0.95)=-2.251
+    # High LLR (>=A) → auto_promote (healthy); low LLR (<=B) → auto_demote (broken).
     A = math.log(0.90 / 0.05)
     B = math.log(0.10 / 0.95)
-    assert check_sprt(A + 0.5, alpha=0.05, beta=0.10) == "auto_demote"
-    assert check_sprt(B - 0.5, alpha=0.05, beta=0.10) == "auto_promote"
+    assert check_sprt(A + 0.5, alpha=0.05, beta=0.10) == "auto_promote"
+    assert check_sprt(B - 0.5, alpha=0.05, beta=0.10) == "auto_demote"
     assert check_sprt(0.0, alpha=0.05, beta=0.10) is None
 
 
@@ -204,8 +207,8 @@ def test_run_sprt_check_only_crossing_patterns_produce_records(tmp_path: Path):
     ar = tmp_path / "approval_records.jsonl"
     _write_jsonl(ar, [])
 
-    # 20 hits → llr ≈ 20*ln(0.9/0.5) ≈ 11.76 → demote
-    # 20 fails → llr ≈ 20*ln(0.1/0.5) ≈ -32.19 → promote
+    # 20 hits → llr ≈ 20*ln(0.9/0.5) ≈ 11.76 → crosses +A → auto_promote
+    # 20 fails → llr ≈ 20*ln(0.1/0.5) ≈ -32.19 → crosses -B → auto_demote
     # 1 hit + 1 fail → llr ≈ 0.588-1.609 = -1.02 → no boundary
     recs = []
     for i in range(20):
@@ -238,8 +241,8 @@ def test_run_sprt_check_only_crossing_patterns_produce_records(tmp_path: Path):
 
     assert len(result) == 2
     by_pattern = {r["asset_ref"]: r for r in result}
-    assert by_pattern["pattern:all_hits"]["decision"] == "auto_demote"
-    assert by_pattern["pattern:all_fails"]["decision"] == "auto_promote"
+    assert by_pattern["pattern:all_hits"]["decision"] == "auto_promote"
+    assert by_pattern["pattern:all_fails"]["decision"] == "auto_demote"
     assert "pattern:mixed" not in by_pattern
 
 
@@ -262,9 +265,9 @@ def test_run_sprt_check_record_format(tmp_path: Path):
     [record] = run_sprt_check(["p1"], dr, ar, config={})
 
     assert record["asset_ref"] == "pattern:p1"
-    assert record["decision"] == "auto_demote"
-    assert record["native_state_before"] == "active"
-    assert record["native_state_after"] == "paused"
+    assert record["decision"] == "auto_promote"
+    assert record["native_state_before"] == "paused"
+    assert record["native_state_after"] == "active"
     assert record["actor"] == "system:sprt"
     assert record["timestamp"]
     assert record["reason"].startswith("SPRT: LLR=")
@@ -298,8 +301,8 @@ def test_run_sprt_check_custom_params(tmp_path: Path):
     ar = tmp_path / "approval_records.jsonl"
     _write_jsonl(ar, [])
     # With alpha=0.5, beta=0.5: A = ln(0.5/0.5)=0, B = ln(0.5/0.5)=0
-    # Any LLR >= 0 demotes; any LLR <= 0 promotes. Edge case: llr=0 hits both,
-    # but >= is checked first so 0 → demote.
+    # Any LLR >= 0 promotes; any LLR <= 0 demotes. Edge case: llr=0 hits both,
+    # but >= is checked first so 0 → promote.
     _write_jsonl(
         dr,
         [_dr_record(pattern_id="p1", outcome="HIT", timestamp="2024-01-01T00:00:00Z")],

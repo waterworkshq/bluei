@@ -5,9 +5,15 @@ rule: ruff-b904
 rule_family: ""
 language: python
 before: |
-    raise ValueError("oops")
+    try:
+        do_something()
+    except Exception:
+        raise ValueError("oops")
 after: |
-    raise ValueError("oops") from None
+    try:
+        do_something()
+    except Exception:
+        raise ValueError("oops") from None
 detector_before: |
     example.py:3:9: B904 Within an `except` clause, raise statements should use `raise ... from err`
 detector_after: ""

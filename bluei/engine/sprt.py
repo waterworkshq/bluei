@@ -10,14 +10,16 @@ log-likelihood ratio between two hypotheses
 
 and, if the LLR crosses a boundary, writes an ``ApprovalRecord``:
 
-* LLR >= A (``log((1-beta)/alpha)``) → ``auto_demote``  (H1 wins over H0,
-  meaning the pattern reliably produces FAIL outcomes — it's broken).
-* LLR <= B (``log(beta/(1-alpha))``)  → ``auto_promote`` (H0 wins over H1,
-  meaning the pattern reliably produces HIT outcomes — re-promote).
+* LLR >= A (``log((1-beta)/alpha)``) → ``auto_promote`` (H1 wins: the pattern
+  reliably produces HIT outcomes — it's healthy, promote to ACTIVE).
+* LLR <= B (``log(beta/(1-alpha))``)  → ``auto_demote``  (H0 wins: the pattern
+  reliably produces FAIL outcomes — it's broken, demote to PAUSED).
 
-MISS outcomes do not contribute to the LLR. The LLR is recomputed from
-durable stores (``dry_replay.jsonl`` + ``approval_records.jsonl``) on every
-call — there is no stored accumulator.
+HITs contribute ``ln(p_healthy/p_broken)`` (positive, pushes toward promote).
+FAILs contribute ``ln((1-p_healthy)/(1-p_broken))`` (negative, pushes toward
+demote). MISS outcomes do not contribute to the LLR. The LLR is recomputed
+from durable stores (``dry_replay.jsonl`` + ``approval_records.jsonl``) on
+every call — there is no stored accumulator.
 
 This module is inert during alpha: no cycles run, so no Dry Replay records
 exist for SPRT to consume.
@@ -94,15 +96,20 @@ def compute_llr(
 def check_sprt(llr: float, alpha: float = 0.01, beta: float = 0.01) -> Optional[str]:
     """Map an LLR value to an SPRT decision.
 
-    Returns ``"auto_demote"`` if ``llr >= A``, ``"auto_promote"`` if
-    ``llr <= B``, otherwise ``None`` (no boundary crossed).
+    LLR formula: hits * ln(p_healthy/p_broken) + fails * ln((1-p_healthy)/(1-p_broken)).
+    HITs push LLR positive (evidence favors healthy); FAILs push it negative
+    (evidence favors broken).
+
+    Returns ``"auto_demote"`` if ``llr <= B`` (evidence strongly favors broken),
+    ``"auto_promote"`` if ``llr >= A`` (evidence strongly favors healthy),
+    otherwise ``None`` (no boundary crossed).
     """
     A = math.log((1 - beta) / alpha)
     B = math.log(beta / (1 - alpha))
     if llr >= A:
-        return "auto_demote"
-    if llr <= B:
         return "auto_promote"
+    if llr <= B:
+        return "auto_demote"
     return None
 
 

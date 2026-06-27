@@ -411,7 +411,7 @@ def _learn_bundle(
 
     rule_family = pattern.rule.split("-", 1)[0] if "-" in pattern.rule else pattern.rule
     bundle = GoldenBundle(
-        id=f"{pattern_id}-{finding_id}",
+        id=f"gb-{pattern_id}-{finding_id}",
         asset_class="pattern",
         asset_ref=format_asset_ref("pattern", pattern_id),
         rule=pattern.rule,
@@ -428,7 +428,7 @@ def _learn_bundle(
 
     bundles_dir = state_dir / "golden_bundles"
     bundles_dir.mkdir(parents=True, exist_ok=True)
-    out_path = bundles_dir / f"{pattern_id}-{finding_id}.yaml"
+    out_path = bundles_dir / f"gb-{pattern_id}-{finding_id}.yaml"
 
     data = {
         "id": bundle.id,

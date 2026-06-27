@@ -23,7 +23,11 @@ LLR ≤ B → keep;   reset LLR to 0
 B < LLR < A → continue observing
 ```
 
-Re-promote uses the **same test, two-sided**: after demotion, Dry Replay continues (ADR-0011 — Dry Replay does not consult Governance State), LLR keeps updating, and the next crossing of `B` re-promotes. The band between `B` and `A` (~9.2 LLR units at defaults) is **structural hysteresis** — no separate re-promote rule or its own magic numbers.
+Re-promote uses the **same test, two-sided**: after demotion, Dry Replay continues (ADR-0011 — Dry Replay does not consult Governance State), LLR keeps updating, and the next crossing of `A` re-promotes. The band between `B` and `A` (~9.2 LLR units at defaults) is **structural hysteresis** — no separate re-promote rule or its own magic numbers.
+
+**Boundary semantics** (corrected 2026-06-28 code-review C2):
+- `LLR ≥ A` → **auto_promote** (evidence strongly favors H₁ "healthy" — many HITs, positive LLR)
+- `LLR ≤ B` → **auto_demote** (evidence strongly favors H₀ "broken" — many FAILs, negative LLR)
 
 ## Operator-facing inputs (the only knobs)
 

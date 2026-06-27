@@ -187,10 +187,27 @@ def _extract_fix_pattern(
                                 else None
                             )
                             if cross_pat and check_promotion_eligibility(cross_pat):
+                                from bluei.app.config import load_global_config
+
+                                _promote_config = load_global_config()
+                                _state_dir = (
+                                    pattern_store_path.parent
+                                    if pattern_store_path
+                                    else None
+                                )
+                                _ar_path = (
+                                    _state_dir / "approval_records.jsonl"
+                                    if _state_dir
+                                    else None
+                                )
+
                                 result = promote_pattern_to_recipe(
                                     cross_pat,
                                     stored.language,
                                     staged_recipe_dir(),
+                                    config=_promote_config,
+                                    repo_state_dir=_state_dir,
+                                    approval_records_path=_ar_path,
                                 )
                                 if result == PromotionResult.PROMOTED:
                                     try:

@@ -77,14 +77,17 @@ def test_collect_returns_matched_pattern_excluding_winner(tmp_path, make_finding
     assert "fp-alt" in pids
 
 
-def test_collect_excludes_paused_governance(tmp_path, make_finding):
+def test_collect_includes_paused_for_evidence_recovery(tmp_path, make_finding):
+    """ADR-0011: Dry Replay does NOT exclude PAUSED patterns — evidence
+    collection is the recovery mechanism for auto-re-promote (ADR-0012)."""
     p = _make_pattern("fp-paused")
     store = _store_from_jsonl(tmp_path, p)
     finding = make_finding(rule="trailing-whitespace", snippet="x = 1   ")
 
     governance = {"pattern:fp-paused": "paused"}
     cands = collect_dry_replay_candidates(finding, store, governance)
-    assert cands == []
+    assert len(cands) == 1  # PAUSED pattern IS included for evidence recovery
+    assert cands[0].pattern_id == "fp-paused"
 
 
 def test_collect_dedupes_same_pattern_across_lookups(tmp_path, make_finding):
