@@ -785,6 +785,7 @@ def _process_one_issue(
                     ledger_records=ctx.ledger_records,
                     run_id=ctx.run_id,
                     cost_tracker=ctx.cost_tracker,
+                    governance_state=ctx.governance_state,
                 )
                 if applied:
                     run_status = "fix-applied:cascade"
@@ -1246,6 +1247,15 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
     claude_invocations = ctx.claude_invocations
     deterministic_invocations = ctx.deterministic_invocations
     blocked_reasons = ctx.blocked_reasons
+
+    # Governance State projection (ADR-0008): read-time view of the
+    # approval_records.jsonl trail. Empty until the first record is written
+    # (substrate no-op — is_governance_active returns True for all refs).
+    from bluei.engine.governance import project_governance_state
+    from bluei.engine.jsonl import read_jsonl
+
+    _approval_records = read_jsonl(ctx.state_file.parent / "approval_records.jsonl")
+    ctx.governance_state = project_governance_state(_approval_records)
 
     queue_candidates, _escalated = _select_candidates(
         repo_path=repo_path,

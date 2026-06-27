@@ -82,6 +82,9 @@ class CascadeContext:
     ledger_records: Optional[List[Dict[str, Any]]] = None
     run_id: str = ""
     cost_tracker: Any = None
+    # Governance State projection (ADR-0008) — consulted by cascade stages to
+    # skip PAUSED/RETIRED assets. Empty dict ⇒ all assets ACTIVE (no-op).
+    governance_state: Dict[str, str] = field(default_factory=dict)
 
 
 class CascadeStage(ABC):

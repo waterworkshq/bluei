@@ -69,6 +69,11 @@ class RunContext:
     cost_log_path: Optional[Path] = None
     run_id: str = ""
 
+    # Governance State (ADR-0008) — read-time projection of the
+    # approval_records.jsonl trail; populated at cycle start. Empty until the
+    # first ApprovalRecord is written (substrate no-op).
+    governance_state: Dict[str, str] = field(default_factory=dict)
+
     # Flywheel Ledger accumulator (populated by cascade + standalone replay; read by finalize)
     ledger_records: List[Dict[str, Any]] = field(default_factory=list)
 

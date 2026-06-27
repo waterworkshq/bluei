@@ -718,6 +718,7 @@ def apply_cascade_fix(
     ledger_records: Optional[List[Dict[str, Any]]] = None,
     run_id: str = "",
     cost_tracker: Any = None,
+    governance_state: Optional[Dict[str, str]] = None,
 ) -> bool:
     """Apply the deterministic cascade to fix a finding."""
     from bluei.engine.cascade import (
@@ -775,6 +776,7 @@ def apply_cascade_fix(
         ledger_records=ledger_records,
         run_id=run_id,
         cost_tracker=cost_tracker,
+        governance_state=governance_state or {},
     )
 
     cascade = DeterministicCascade(default_cascade_stages())
