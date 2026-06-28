@@ -1,6 +1,6 @@
 # ADR-0012: Demotion and re-promotion use two-sided SPRT; demote sets Governance State → PAUSED only
 
-**Status:** accepted (defaults theoretically grounded; empirically refinable from self-seeded data per seed 13)
+**Status:** accepted (defaults theoretically grounded; per-family empirical calibration harness shipped in alpha.3 — degenerate families fall back to these defaults per grilling Q4)
 
 Demotion and re-promotion of Governed Assets are decided by **Wald's Sequential Probability Ratio Test (SPRT)** on the Dry Replay outcome stream, replacing hardcoded count/rate thresholds. Demotion sets Governance State → PAUSED for all asset classes — no native lifecycle mutation, no confidence cap. Recovery is automatic.
 

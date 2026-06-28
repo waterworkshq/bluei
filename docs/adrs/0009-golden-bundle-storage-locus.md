@@ -4,7 +4,7 @@
 
 Golden Validation Bundles live in **two filesystem roots** with a hard privacy boundary between them:
 
-- **Product fixtures** at `bluei/engine/golden_bundles/` — ship with bluei, curated, public. **Primary population mechanism** (populated by the alpha.3 self-seeding pipeline from vetted open-source data; see seed `13-self-seeding-pipeline.md`). Candidates for future cross-repo sharing.
+- **Product fixtures** at `bluei/engine/golden_bundles/` — ship with bluei, curated, public. **Primary population mechanism** (populated by the alpha.3 synthesize-then-validate pipeline per ADR-0018). Candidates for future cross-repo sharing.
 - **Repo state** at `repos/<name>/state/golden_bundles/` — operator-local, never exported, as private as the `findings.jsonl` they were extracted from. Starts empty; grows only when operators create bundles via `bluei learn bundle` from known-good fixes.
 
 ## Why hybrid, and why filesystem-boundaried
@@ -23,4 +23,4 @@ A filesystem split enforces the privacy boundary structurally rather than by pol
 
 - Two lookup paths: bundle consultation checks product fixtures first (canonical), then repo state (operator-local). Product fixtures win on conflict.
 - Cross-repo sharing of repo bundles is structurally prevented. A future feature that wants to share must migrate a bundle from repo state to product fixtures via explicit operator action.
-- Product fixtures are populated by the self-seeding pipeline (alpha.3), not by manual curation alone. The `ruff-b904` fixture is the first proof-of-concept shipped in alpha.2; the full library lands in alpha.3.
+- Product fixtures are populated by the synthesize-then-validate pipeline (alpha.3, ADR-0018), not by manual curation alone. The `ruff-b904` fixture is the first proof-of-concept shipped in alpha.2; alpha.3 shipped the packaging infrastructure. The synthesize-then-validate source pipeline is planned but not yet built.

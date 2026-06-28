@@ -11,7 +11,7 @@ id: gb-ruff-b904-raise-with-from      # globally unique
 asset_class: pattern                   # pattern | recipe | transform | emergent_rule
 asset_ref: pattern:fp-a1b2c3d4e5f6     # AssetRef this bundle validates (null for product fixtures)
 rule: ruff-b904
-rule_family: ""                        # placeholder; populated by alpha.3 self-seeding
+rule_family: "ruff-b"                    # populated by the alpha.3 ingestion pipeline (derive_rule_family)
 language: python
 before: |
     raise ValueError("oops")
@@ -27,7 +27,7 @@ extracted_at: "2026-06-27T00:00:00Z"
 
 ## Why minimal
 
-The schema captures exactly what a regression fixture needs: the code before, the code after, what the detector said before, what it says after, and the command to verify. Everything else (`negative_examples`, `imports_touched`, `validation_commands_passed`, `rule_family` populated) is enrichment that lands later without breaking bundles written against this minimal shape.
+The schema captures exactly what a regression fixture needs: the code before, the code after, what the detector said before, what it says after, and the command to verify. The enrichment fields (`negative_examples`, `imports_touched`, `validation_commands_passed`, `rule_family` populated) shipped in alpha.3 as additive fields — older bundles written against the minimal shape load unchanged with defaults.
 
 ## Consequences
 

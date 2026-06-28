@@ -6,6 +6,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.2.0-alpha.3] — Evidence Foundation
+
+Populates the empty alpha.2 substrate with provenance-aware infrastructure, authoritative guidelines, and envelope field completion. The synthesize-then-validate Seed Library pipeline (ADR-0018) is planned; the infrastructure it depends on is shipped.
+
+Still pre-release software. Do not use in production.
+
+### Provenance-Aware Mining Infrastructure
+
+- **`open_pattern_store()` factory** — canonical production construction path. Loads product-fixture seeded patterns into the store's in-memory index after construction. Migrated 4 runtime construction sites (cli, emergent, feedback, cascade lookup).
+- **`register_asset()` producer interface** — centralized runtime insertion path (dedup + source stamp). Pattern extraction routes through it; establishes the interface for alpha.4's Recipe Foundry and Rule Hatchery.
+- **Provenance by storage locus** — product dirs = `authoritative-seed` (ACTIVE bypass); repo-local = `mined` (governance gate). Open vocabulary, additive.
+
+### Envelope Field Completion
+
+- **`imports_touched`** — new import-name visitor (`extract_imports_touched`) preserves real module names (Python + TS/JS). Wired into `pattern_extractor.extract()` and the packaging layer.
+- **`validation_commands_passed`** — `_run_baseline_validation` returns `Tuple[bool, List[str]]`; Dry Replay records now carry which checks passed instead of hardcoded `[]`.
+- **`rule_family` taxonomy** — `derive_rule_family` helper (ruff-b904 → `ruff-b`; eslint-no-unused-vars → `eslint-no-unused`). Preserves ruff's B/E/F/S/C4 groups as distinct families for per-family calibration.
+- **GoldenBundle enrichment** — `imports_touched` + `negative_examples` additive fields.
+
+### Authoritative Guidelines (ADR-0017)
+
+- **Prompt-context guidelines** — PEP 8 naming, OWASP input validation, TypeScript conventions shipped as YAML files under `bluei/engine/authoritative_guidelines/`. Loaded by rule family + language into LLM fix prompts via Directive Seeding. NOT governed assets.
+- **`guideline_loader.py`** — runtime loader wired into `render_claude_fix_prompt` via `ClaudeFixRequest.authoritative_guidelines`. Appears in both pr-cycle and refactor-queue LLM prompts.
+
+### SPRT Per-Family Calibration
+
+- **Synthetic calibration harness** — `variations.py` generates structurally-diverse code variations per rule family; `calibrate.py` measures structural-match rates and derives per-family `p_healthy`/`p_broken`. Degenerate distributions fall back to ADR-0012's hand-picked defaults.
+- **`_sprt_params` per-family override** — reads `calibration.yaml` inline (no engine→tools import) and overrides `p_healthy`/`p_broken` for non-degenerate families.
+
+### Seed Library Infrastructure (planned: ADR-0018)
+
+- **`ParsedRule` + `package.py`** — source-agnostic packaging layer. Converts structured rule tuples into Golden Bundles + seeded Patterns with provenance `authoritative-seed`. Language-agnostic; accepts tuples from any source.
+- **`seeded_pattern_loader.py`** — runtime loader for product-fixture seeded patterns. Called by `open_pattern_store()` factory. Product wins on structural-hash conflict with repo-local patterns.
+- **Synthesize-then-validate pipeline** — planned (ADR-0018). An LLM synthesizes original canonical rules; a linter validates them as an oracle (before triggers, after is clean). The linter is the oracle, not the source. Not yet built — the infrastructure it feeds is complete.
+
+2 new ADRs (0017, 0018). Test suite: 6245 → 6290 (+45 tests, all additive).
+
+---
+
 ## [0.2.0-alpha.2] — Safe Learning
 
 The safety substrate for learned automation. Governance, evidence collection, fix validation, and statistical demotion — all shipping inert (proven by synthetic tests, unexercised on real data until alpha.3 self-seeding populates the evidence base).

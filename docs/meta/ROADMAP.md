@@ -14,6 +14,7 @@ What's been built, and what's next.
 | v0.1.0-beta.1 | Post-alpha hardening: Tier 1 architecture cleanup, god-module decompositions, H5 review→app decoupling, merge-cycle audit closure, JSONL/state reconciliation, E2E test suite |
 | v0.2.0-alpha.1 | "Evidence": Flywheel Ledger (deterministic-vs-LLM resolution metrics, cascade-stage counts, honest three-way HIT/MISS/FAILURE replay outcomes, standalone-Pattern-replay $ savings) + Pattern Court Lite (`last_failed_at`/`excluded_paths` envelopes with lookup-layer enforcement, enriched `patterns show`/`list`, `exclude`/`unexclude` producer). Rendered across the `clean` summary, `report` (markdown + HTML), and dashboard. Observability only — no fix-behavior changes. |
 | v0.2.0-alpha.2 | "Safe Learning": Governance substrate (Operator Control Plane with event-sourced ApprovalRecord trail, per-class policy-driven promotion gate, tri-state safe-mode), Golden Validation Bundles (container + storage + ruff-b904 fixture), Dry Replay (non-mutating evidence collection for matched-but-not-selected Patterns), SPRT demotion (two-sided Wald's Sequential Probability Ratio Test), `bluei learn` CLI namespace. 10 ADRs (0006–0016), 6245 tests. Ships inert — evidence population deferred to alpha.3 self-seeding. |
+| v0.2.0-alpha.3 | "Evidence Foundation": Provenance-aware mining infrastructure (`open_pattern_store` factory, `register_asset` producer interface, provenance-by-storage-locus), envelope field completion (`imports_touched`/`validation_commands_passed`/`rule_family`), authoritative guidelines as prompt-context (ADR-0017), SPRT per-family calibration harness with hand-picked fallback. Seed Library packaging infrastructure (`ParsedRule` + `package.py` + `seeded_pattern_loader`) shipped; synthesize-then-validate source pipeline planned (ADR-0018). 6290 tests. |
 
 > Full release notes live in [`CHANGELOG.md`](../CHANGELOG.md).
 
@@ -37,24 +38,6 @@ v0.2.0-alpha.1 "Evidence" has shipped (see Delivered above). These items were sc
 | `bluei savings <repo>` standalone CLI | post-alpha.1 (patch or later) | Redundant with the enriched `clean` summary + `report` section + dashboard card, which fully satisfy seed-01 acceptance. Cumulative ledger JSONL makes a read-only CLI trivial to add once operators ask for it. |
 | Cascade-internal Pattern/composite savings instrumentation (thread `cost_tracker` into `CascadeContext`) | alpha.2 | Broader plumbing change excluded from additive-only alpha.1; revives deferred `bluei savings` completeness and makes cascade-internal Pattern/composite wins contribute real $ instead of counts-only. Captured in ADR-0003 (option C). |
 | `run_id` correlation key on ledger/cost sinks | when cumulative/cross-cycle Ledger features begin (alpha.2 / `bluei savings`) | alpha.1's per-cycle block reads an in-memory accumulator (ADR-0005), so no `run_id` is needed; `cascade_resolutions.jsonl` + `cost_log.jsonl` rows omit it. The first cumulative/cross-cycle view (per-cycle savings CLI, cross-cycle trends, shadow-replay history) requires `run_id` generated in the engine CLI and stamped on both sinks, then read-time join. Add before starting any such feature. |
-
----
-
-### v0.2.0-alpha.3 - "Evidence Foundation" (INSERTED — restructures the arc)
-
-Populate the empty substrate alpha.2 shipped, using vetted open-source data instead of waiting for production evidence that won't arrive before 0.2.0 stable.
-
-| Feature | Problem it solves |
-|---------|-------------------|
-| Self-Seeding Pipeline | Mines, vets, and packages deterministic assets (bundles, patterns, recipes) from open-source repos with CI + lint tooling. Replaces "grow from production fixes" with "seed from proven historical fixes." |
-| Evidence Enrichment Capture | Completes the evidence envelope fields deferred from alpha.2 (`imports_touched`, `validation_commands_passed`, `rule_family` taxonomy, negative-example store). Needed by the self-seeding pipeline to categorize what it mines. |
-| SPRT Default Calibration | Uses self-seeded replay outcomes to set data-driven p₀/p₁ defaults per rule family, replacing the hand-picked alpha.2 defaults. |
-
-**Why inserted here:** alpha.2 ships the governance substrate empty — no bundles, no patterns, no evidence. The original plan assumed operators would run bluei on real repos and the library would grow. That assumption is false for the entire 0.2.0 arc: the system will not run on any live or simulated repo before stable. Self-seeding from vetted open-source data is both the only viable population path AND the safer approach for an untested system.
-
-**Resolves:** the negative-example store orphan (self-seeding produces negative examples naturally), SPRT calibration (self-seeded outcomes replace "needs production data"), bundle population (self-seeded fixtures replace the single `ruff-b904` cold-start).
-
-Planning seed: `docs/plans/v2/13-self-seeding-pipeline.md`. Evidence enrichment fields tracked in seeds `02-pattern-court.md` and `03-golden-reef.md` "Deferred from alpha.2" sections.
 
 ---
 

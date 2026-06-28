@@ -85,9 +85,13 @@ fixing, PR management, batch operations, and pattern learning.
 | `structural_hash/` | AST-based structural hashing package (split per S4: `__init__.py`, `python.py`, `text.py`). |
 | `recipe_engine.py` | Declarative YAML fix recipe system. See [RULES_REFERENCE.md](../reference/RULES_REFERENCE.md#recipes) for all built-in recipes. |
 | `recipe_handlers.py` | Text, regex, and command-based recipe handlers. |
-| `pattern_store.py` | Persistent store for learned fix patterns. |
-| `pattern_extractor.py` | Learns fix patterns from successful git diffs. |
+| `pattern_store.py` | Persistent store for learned fix patterns. `open_pattern_store()` factory is the canonical production construction path — loads product-fixture seeded patterns into the in-memory index after construction. |
+| `pattern_extractor.py` | Learns fix patterns from successful git diffs. Routes through `register_asset()` (the producer interface). |
 | `pattern_replay.py` | Matches findings to stored patterns and applies deterministically. |
+| `asset_registry.py` | `register_asset()` — centralized runtime insertion path (dedup + source stamp). The producer interface for pattern extraction and future alpha.4 Recipe Foundry / Rule Hatchery. |
+| `seeded_pattern_loader.py` | Loads product-fixture seeded patterns from `seeded_patterns/` into the store index (called by `open_pattern_store`). Product wins on structural-hash conflict. |
+| `guideline_loader.py` | Loads authoritative guidelines (PEP 8, OWASP, TS conventions) from `authoritative_guidelines/` into LLM fix prompts by rule family. NOT governed (ADR-0017). |
+| `rule_family.py` | `derive_rule_family()` — derives a rule family from a linter rule name (ruff-b904 → ruff-b) for envelope tagging + per-family SPRT calibration. |
 | `shared_pattern_library.py` | Thread-safe cross-repo pattern cache with confidence merging. |
 | `composite_pattern.py` | Multi-step fixes that modify multiple files atomically. |
 | `reforge.py` | Identifies refactor-class findings and routes them to the refactor queue. See [RULES_REFERENCE.md](../reference/RULES_REFERENCE.md) for routing precedence and context rules. |
@@ -101,7 +105,7 @@ fixing, PR management, batch operations, and pattern learning.
 | `governance.py` | Event-sourced governance substrate: AssetRef, ApprovalRecord, Governance State projection (most-recent-wins over approval_records.jsonl trail), policy resolution (per-asset-class per-transition mode + safe-mode ceiling), SPRT reset boundary finder. No-op with empty trail. |
 | `bundle_loader.py` | Golden Validation Bundle loader: reads product fixtures (`golden_bundles/`) + repo-state bundles with product-first precedence. `has_bundle_reference` for the promotion gate. |
 | `dry_replay.py` | Non-mutating evidence collection for matched-but-not-selected Patterns. File-level checkpoint/restore around the cascade's fix application. Records would-have-applied outcomes to `dry_replay.jsonl`. |
-| `sprt.py` | Two-sided Sequential Probability Ratio Test (Wald): computes LLR from Dry Replay outcomes since most recent reset boundary. Demote when LLR ≤ B (broken); auto-promote when LLR ≥ A (healthy). LLR recomputed from durable stores — no accumulator. |
+| `sprt.py` | Two-sided Sequential Probability Ratio Test (Wald): computes LLR from Dry Replay outcomes since most recent reset boundary. Demote when LLR ≤ B (broken); auto-promote when LLR ≥ A (healthy). LLR recomputed from durable stores — no accumulator. Per-family `p_healthy`/`p_broken` override from `calibration.yaml` (alpha.3); degenerate families fall back to ADR-0012 defaults. |
 
 > **Canonical primitives** (all JSONL/JSON file I/O routes through these):
 > - `state_io.py` — `atomic_json_write` + `rotate_jsonl_if_needed` (extracted per rec-08; closes engine→app layering for atomic writes)
