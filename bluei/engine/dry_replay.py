@@ -126,6 +126,7 @@ def run_dry_replay(
     performed = 0
     for pattern in candidates[:cap]:
         outcome = "MISS"
+        passing_checks: List[str] = []
         infra_error = False
         try:
             target_file.write_text(original_content, encoding="utf-8")
@@ -144,7 +145,10 @@ def run_dry_replay(
                 )
                 target_file.write_text(new_text, encoding="utf-8")
 
-                if _run_baseline_validation(worktree_path, baseline_checks, log_file):
+                all_passed, passing_checks = _run_baseline_validation(
+                    worktree_path, baseline_checks, log_file
+                )
+                if all_passed:
                     outcome = "HIT"
                 else:
                     outcome = "FAILURE"
@@ -169,7 +173,7 @@ def run_dry_replay(
                             "finding_id": finding.finding_id,
                             "rule": finding.rule,
                             "would_have_outcome": outcome,
-                            "validation_commands_passed": [],
+                            "validation_commands_passed": passing_checks,
                             "timestamp": now_iso(),
                         },
                     )

@@ -31,6 +31,8 @@ import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import yaml
+
 from bluei.engine.governance import find_sprt_reset_boundary
 from bluei.engine.jsonl import read_jsonl
 from bluei.engine.models import now_iso
@@ -42,11 +44,70 @@ _DEFAULTS: Dict[str, float] = {
     "p_broken": 0.50,
 }
 
+# Location of the per-family calibration table. Read inline here (NOT via
+# bluei.tools.seed) to preserve the engine→tools layering direction —
+# bluei.tools.seed is build-time tooling and must not become a runtime
+# dependency of engine/. See ADR on layering + T4.3 layering correction.
+_CALIBRATION_PATH = (
+    Path(__file__).resolve().parent / "seeded_patterns" / "calibration.yaml"
+)
+_CALIBRATION_CACHE: Optional[Dict[str, Dict]] = None
+_CALIBRATION_MTIME: Optional[float] = None
 
-def _sprt_params(config: Dict[str, Any]) -> Dict[str, float]:
-    """Read SPRT params from ``learning.sprt`` in config with defaults."""
+
+def _load_calibration() -> Dict[str, Dict]:
+    """Read calibration.yaml inline. Returns {family: entry} or {}.
+
+    Re-reads when the file mtime changes; otherwise serves the cached dict.
+    Returns {} on any parse error or missing file (fail-safe to defaults).
+    """
+    global _CALIBRATION_CACHE, _CALIBRATION_MTIME
+    if not _CALIBRATION_PATH.is_file():
+        _CALIBRATION_CACHE = {}
+        _CALIBRATION_MTIME = None
+        return {}
+    try:
+        mtime = _CALIBRATION_PATH.stat().st_mtime
+    except OSError:
+        return _CALIBRATION_CACHE or {}
+    if _CALIBRATION_CACHE is not None and _CALIBRATION_MTIME == mtime:
+        return _CALIBRATION_CACHE
+    try:
+        with _CALIBRATION_PATH.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except Exception:
+        return _CALIBRATION_CACHE or {}
+    families = data.get("families", {}) if isinstance(data, dict) else {}
+    if not isinstance(families, dict):
+        families = {}
+    _CALIBRATION_CACHE = families
+    _CALIBRATION_MTIME = mtime
+    return families
+
+
+def _sprt_params(
+    config: Dict[str, Any], rule_family: Optional[str] = None
+) -> Dict[str, float]:
+    """Read SPRT params from ``learning.sprt`` in config with defaults.
+
+    Order of precedence (highest first):
+      1. Per-family calibrated p_healthy/p_broken from calibration.yaml
+         (only when non-degenerate).
+      2. learning.sprt config overrides.
+      3. _DEFAULTS (ADR-0012 hand-picked).
+
+    alpha/beta always come from config/defaults (risk tolerances, not
+    empirical). Only p_healthy/p_broken are calibrated per-family.
+    """
     section = config.get("learning", {}).get("sprt", {})
-    return {k: float(section.get(k, d)) for k, d in _DEFAULTS.items()}
+    params = {k: float(section.get(k, d)) for k, d in _DEFAULTS.items()}
+
+    if rule_family:
+        entry = _load_calibration().get(rule_family)
+        if entry and not entry.get("degenerate"):
+            params["p_healthy"] = float(entry.get("p_healthy", params["p_healthy"]))
+            params["p_broken"] = float(entry.get("p_broken", params["p_broken"]))
+    return params
 
 
 def compute_llr(
@@ -118,6 +179,7 @@ def run_sprt_check(
     dry_replay_path: Path,
     approval_records_path: Path,
     config: Dict[str, Any],
+    rule_family: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Check SPRT for each Pattern. Returns ApprovalRecord dicts to append.
 
@@ -125,8 +187,13 @@ def run_sprt_check(
     each pattern, recomputes the LLR from durable stores and, if a boundary
     is crossed, returns an ApprovalRecord dict with the full evidence
     snapshot. Patterns that don't cross a boundary are skipped.
+
+    ``rule_family`` (optional) threads the Pattern's family through to
+    ``_sprt_params`` so a non-degenerate calibration entry can override
+    p_healthy/p_broken. When None (or the family is degenerate/absent),
+    falls back to config/defaults.
     """
-    params = _sprt_params(config)
+    params = _sprt_params(config, rule_family)
     alpha = params["alpha"]
     beta = params["beta"]
     p_healthy = params["p_healthy"]

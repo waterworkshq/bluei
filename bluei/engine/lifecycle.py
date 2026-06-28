@@ -11,7 +11,10 @@ import shlex
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Any, Optional, Tuple
+
+if TYPE_CHECKING:
+    from bluei.engine.pattern_store import FixPatternStore
 
 from bluei.engine.jsonl import append_jsonl
 from bluei.engine.models import Finding, now_iso
@@ -267,6 +270,7 @@ class ClaudeFixRequest:
     pattern_store_path: Optional[Path] = None
     learned_patterns: Optional[str] = None
     detected_frameworks: Optional[List[str]] = None
+    authoritative_guidelines: Optional[str] = None
 
 
 def apply_claude_fix(req: ClaudeFixRequest) -> Tuple[int, str, str]:
@@ -301,6 +305,7 @@ def apply_claude_fix(req: ClaudeFixRequest) -> Tuple[int, str, str]:
         learned_patterns=req.learned_patterns,
         rule_history=rule_history,
         failure_clusters=failure_clusters,
+        authoritative_guidelines=req.authoritative_guidelines,
     )
     prompt_path.write_text(prompt_text, encoding="utf-8")
 
@@ -711,9 +716,9 @@ def _get_or_create_store(pattern_store_path: Path) -> Optional["FixPatternStore"
     cached = _cached_stores.get(key)
     if cached is not None:
         return cached
-    from bluei.engine.pattern_store import FixPatternStore
+    from bluei.engine.pattern_store import open_pattern_store
 
-    store = FixPatternStore(pattern_store_path)
+    store = open_pattern_store(pattern_store_path)
     _cached_stores[key] = store
     return store
 
@@ -762,7 +767,7 @@ def apply_cascade_fix(
         elif ext == ".rs":
             language = "rust"
 
-    pattern_store: Optional[FixPatternStore] = None
+    pattern_store: Optional["FixPatternStore"] = None
     if pattern_store_path is not None:
         try:
             pattern_store = _get_or_create_store(pattern_store_path)

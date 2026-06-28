@@ -1,0 +1,13 @@
+topic: PEP 8 Naming Conventions
+language: python
+rule_families:
+    - general
+    - ruff-n
+directives:
+    - "Functions and variables use snake_case."
+    - "Classes use PascalCase."
+    - "Constants use UPPER_SNAKE_CASE."
+    - "Private members start with a single underscore."
+    - "Avoid single-letter names except for loop counters or math notation."
+sources:
+    - "PEP 8 § Naming Conventions"

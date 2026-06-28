@@ -51,6 +51,8 @@ class GoldenBundle:
     validation_command: str
     source_finding_id: Optional[str]
     extracted_at: str
+    imports_touched: List[str] = field(default_factory=list)
+    negative_examples: List[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "GoldenBundle":
@@ -74,6 +76,8 @@ class GoldenBundle:
             validation_command=str(data.get("validation_command", "") or ""),
             source_finding_id=data.get("source_finding_id"),
             extracted_at=str(data.get("extracted_at", "") or ""),
+            imports_touched=list(data.get("imports_touched") or []),
+            negative_examples=list(data.get("negative_examples") or []),
         )
 
 

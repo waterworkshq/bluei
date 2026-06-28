@@ -1,0 +1,13 @@
+topic: TypeScript Conventions
+language: typescript
+rule_families:
+    - general
+    - eslint
+directives:
+    - "Prefer interfaces over type aliases for object shapes."
+    - "Enable strict mode; avoid `any` — use `unknown` for uncertain types."
+    - "Use `const` by default; `let` only when reassignment is needed."
+    - "Prefer optional chaining (?.) and nullish coalescing (??) over manual null checks."
+sources:
+    - "TypeScript ESLint recommended rules"
+    - "TypeScript Deep Dive"

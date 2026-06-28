@@ -51,6 +51,8 @@ from bluei.engine.reforge import RefactorClass
 from bluei.engine.git_utils import get_branch
 from bluei.engine.pattern_replay import try_replay
 from bluei.engine.pattern_store import ReplayOutcome
+from bluei.engine.guideline_loader import load_authoritative_guidelines
+from bluei.engine.report import infer_language_from_path
 from bluei.engine.constants import (
     BASELINE_VALIDATION_CHECKS,
     CLAUDE_REQUIRED_RULES,
@@ -844,6 +846,12 @@ def _process_one_issue(
                     else None
                 )
                 learned_patterns = replay_pattern_hint
+                guideline_lang = getattr(finding, "language", None) or (
+                    infer_language_from_path(finding.path, fallback="all")
+                )
+                authoritative_guidelines = load_authoritative_guidelines(
+                    finding.rule, guideline_lang
+                )
 
                 if use_claude_engine and cost_tracker.exceeded_limit():
                     _append_text(
@@ -874,6 +882,7 @@ def _process_one_issue(
                             if args.pattern_store_path
                             else None,
                             learned_patterns=learned_patterns,
+                            authoritative_guidelines=authoritative_guidelines,
                         ),
                     )
                     model_name = "claude-sonnet-4"

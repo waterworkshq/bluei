@@ -1,0 +1,13 @@
+topic: OWASP Input Validation Practices
+language: "*"
+rule_families:
+    - general
+directives:
+    - "Validate all external input at trust boundaries."
+    - "Use parameterized queries for SQL — never string concatenation."
+    - "Escape output appropriate to the destination context (HTML, JS, URL, shell)."
+    - "Prefer allowlists over blocklists for input validation."
+    - "Validate type, length, range, and format for every input field."
+sources:
+    - "OWASP Top 10 A03:2021 Injection"
+    - "OWASP Input Validation Cheat Sheet"

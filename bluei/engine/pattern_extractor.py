@@ -15,9 +15,12 @@ from typing import Dict, List, Optional, Tuple
 
 _logger = logging.getLogger(__name__)
 
+from bluei.engine.asset_registry import register_asset
 from bluei.engine.models import Finding
 from bluei.engine.pattern_store import FixPattern, FixPatternStore, normalize_snippet
+from bluei.engine.rule_family import derive_rule_family
 from bluei.engine.state import append_log
+from bluei.engine.structural_hash import extract_imports_touched
 from bluei.engine.utils import run_capture
 
 
@@ -111,10 +114,15 @@ def extract(
             )
             return None
 
+        language = infer_language(finding.path)
+        imports = extract_imports_touched(
+            before_snippet, language
+        ) + extract_imports_touched(after_snippet, language)
+
         pattern = FixPattern(
             pattern_id="",
             rule=finding.rule,
-            language=infer_language(finding.path),
+            language=language,
             file_path=finding.path,
             before_snippet=before_snippet,
             after_snippet=after_snippet,
@@ -123,8 +131,10 @@ def extract(
             source_finding_ids=[finding.finding_id] if finding.finding_id else [],
             framework_constraint=_detect_framework(worktree_path, detected_frameworks),
             file_pattern=_compute_file_pattern(finding.path),
+            imports_touched=sorted(set(imports)),
+            rule_family=derive_rule_family(finding.rule),
         )
-        pattern_id = store.append(pattern)
+        pattern_id = register_asset(pattern, source, store)
         append_log(
             log_file,
             f"pattern-extract: rule={finding.rule} pattern_id={pattern_id} source={source}",

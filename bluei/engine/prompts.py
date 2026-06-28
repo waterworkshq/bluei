@@ -298,6 +298,7 @@ def render_claude_fix_prompt(
     extra_prompt: Optional[str] = None,
     rule_history: Optional[List[Dict[str, Any]]] = None,
     failure_clusters: Optional[str] = None,
+    authoritative_guidelines: Optional[str] = None,
 ) -> str:
     # Use specialized prompt for max-lines refactoring
     if finding.rule == 'xo-max-lines':
@@ -461,6 +462,15 @@ def render_claude_fix_prompt(
             '## Failure patterns for this rule',
             '',
             failure_clusters,
+            '',
+        ])
+
+    # Section 6e: Authoritative guidelines (ADR-0017 — prompt-context only)
+    if authoritative_guidelines:
+        sections.extend([
+            '## Authoritative guidelines',
+            '',
+            authoritative_guidelines,
             '',
         ])
 

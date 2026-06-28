@@ -298,7 +298,7 @@ def _try_replay_inner(
         worktree_path,
         baseline_checks,
         log_file,
-    )
+    )[0]
 
     if not validation_passed:
         run_capture(
@@ -361,13 +361,15 @@ def _run_baseline_validation(
     worktree_path: Path,
     baseline_checks: Dict[str, List[str]],
     log_file: Path,
-) -> bool:
-    """Run baseline validation checks from the worktree. Returns True if all pass."""
+) -> Tuple[bool, List[str]]:
+    """Run baseline validation checks. Returns (all_passed, names_of_passing_checks)."""
     if not baseline_checks:
-        return True
+        return True, []
 
+    passing: List[str] = []
     for name, cmd in baseline_checks.items():
         rc, out = run_capture(cmd, cwd=Path(worktree_path), timeout=120)
         if rc != 0:
-            return False
-    return True
+            return False, passing
+        passing.append(name)
+    return True, passing

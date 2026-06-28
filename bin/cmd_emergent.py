@@ -71,10 +71,10 @@ def _cmd_emergent(rest: list[str]) -> int:
     if subcmd == "propose":
         run_id = _parse_option(sub_rest, "--run-id") or "manual"
         if _has_flag(sub_rest, "--from-patterns"):
-            from bluei.engine.pattern_store import FixPatternStore
+            from bluei.engine.pattern_store import open_pattern_store
 
             patterns_file = state.get_fix_patterns_file(repo)
-            patterns = FixPatternStore(patterns_file).load_active()
+            patterns = open_pattern_store(patterns_file).load_active()
             result = store.observe_fix_patterns(
                 patterns,
                 run_id=run_id,

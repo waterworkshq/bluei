@@ -82,6 +82,9 @@ def test_append_new_pattern_writes_jsonl_with_correct_fields(store_path):
         "file_pattern",
         "structural_hash",
         "excluded_paths",
+        "imports_touched",
+        "validation_commands_passed",
+        "rule_family",
     }
 
 

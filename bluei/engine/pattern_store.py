@@ -153,6 +153,9 @@ class FixPattern:
     file_pattern: str = "**/*"
     structural_hash: Optional[str] = None
     excluded_paths: List[str] = field(default_factory=list)
+    imports_touched: List[str] = field(default_factory=list)
+    validation_commands_passed: List[str] = field(default_factory=list)
+    rule_family: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -177,6 +180,9 @@ class FixPattern:
             "file_pattern": self.file_pattern,
             "structural_hash": self.structural_hash,
             "excluded_paths": list(self.excluded_paths),
+            "imports_touched": list(self.imports_touched),
+            "validation_commands_passed": list(self.validation_commands_passed),
+            "rule_family": self.rule_family,
         }
 
     @classmethod
@@ -203,6 +209,11 @@ class FixPattern:
             file_pattern=data.get("file_pattern", "**/*"),
             structural_hash=data.get("structural_hash"),
             excluded_paths=list(data.get("excluded_paths") or []),
+            imports_touched=list(data.get("imports_touched") or []),
+            validation_commands_passed=list(
+                data.get("validation_commands_passed") or []
+            ),
+            rule_family=str(data.get("rule_family", "") or ""),
         )
 
 
@@ -585,6 +596,9 @@ class FixPatternStore:
                 normalized_before, pattern.language
             ),
             excluded_paths=list(pattern.excluded_paths),
+            imports_touched=list(pattern.imports_touched),
+            validation_commands_passed=list(pattern.validation_commands_passed),
+            rule_family=pattern.rule_family,
         )
 
     def _rebuild_from_disk(self) -> None:
@@ -593,25 +607,29 @@ class FixPatternStore:
             self._write_index_unlocked()
 
     def _rebuild_from_disk_unlocked(self) -> None:
-        from bluei.engine.structural_hash import compute_structural_hash
-
         self._patterns = {}
         self._index = {}
         self._structural_index = {}
         for record in self._load_records_unlocked():
             pattern = FixPattern.from_dict(record)
-            self._patterns[pattern.pattern_id] = pattern
-            if pattern.confidence < DEACTIVATION_THRESHOLD:
-                continue
-            before_hash = snippet_hash(pattern.before_snippet)
-            self._index.setdefault(pattern.rule, {})[before_hash] = pattern.pattern_id
-            s_hash = pattern.structural_hash or compute_structural_hash(
-                pattern.before_snippet, pattern.language
+            self._index_pattern(pattern)
+
+    def _index_pattern(self, pattern: FixPattern) -> None:
+        """Add a pattern to the in-memory index without writing to disk."""
+        from bluei.engine.structural_hash import compute_structural_hash
+
+        self._patterns[pattern.pattern_id] = pattern
+        if pattern.confidence < DEACTIVATION_THRESHOLD:
+            return
+        before_hash = snippet_hash(pattern.before_snippet)
+        self._index.setdefault(pattern.rule, {})[before_hash] = pattern.pattern_id
+        s_hash = pattern.structural_hash or compute_structural_hash(
+            pattern.before_snippet, pattern.language
+        )
+        if s_hash:
+            self._structural_index.setdefault(pattern.rule, {})[s_hash] = (
+                pattern.pattern_id
             )
-            if s_hash:
-                self._structural_index.setdefault(pattern.rule, {})[s_hash] = (
-                    pattern.pattern_id
-                )
 
     def _write_index_unlocked(self) -> None:
         payload = {
@@ -740,3 +758,26 @@ class FixPatternStore:
         lock = _Lock(self.lock_path)
         lock.outer_lock = self._thread_lock
         return lock
+
+
+def open_pattern_store(store_path: Path, load_seeded: bool = True) -> FixPatternStore:
+    """Canonical factory for production pattern stores.
+
+    Constructs a FixPatternStore and optionally loads product-fixture seeded
+    patterns into the in-memory index. Raw FixPatternStore(path) construction
+    is for tests and write-only paths that don't need seeded patterns.
+
+    Seeded patterns are loaded by bluei.engine.seeded_pattern_loader (created
+    in a later slice). The import is deferred so this slice doesn't depend on
+    a module that doesn't exist yet — if load_seeded is True and the loader
+    module is absent, the factory silently skips loading (no error).
+    """
+    store = FixPatternStore(store_path)
+    if load_seeded:
+        try:
+            from bluei.engine.seeded_pattern_loader import load_seeded_patterns
+
+            load_seeded_patterns(store)
+        except ImportError:
+            pass  # seeded_pattern_loader doesn't exist yet (lands in Slice 2)
+    return store

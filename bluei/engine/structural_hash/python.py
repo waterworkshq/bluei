@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import re
 from typing import Dict, List
 
 
@@ -59,6 +60,62 @@ def _python_normalize_for_sharing(code: str) -> str:
     normalizer = _SharingNormalizer()
     normalizer.visit(tree)
     return ast.unparse(tree)
+
+
+def extract_imports_touched(code: str, language: str = "python") -> List[str]:
+    """Extract actual module names from import statements.
+
+    Unlike _PythonStructuralNormalizer.visit_Import which tokenizes as <mod>,
+    this preserves real module names for the imports_touched envelope field.
+
+    Returns sorted list of unique module names. Empty list on SyntaxError
+    or unsupported language.
+
+    Supports Python (via AST) and TypeScript/JavaScript (via regex):
+    ESM `import`/`from`, side-effect imports, and CommonJS `require()`.
+    """
+    if language in ("typescript", "javascript", "tsx", "jsx"):
+        return _extract_ts_imports(code)
+    if language != "python":
+        return []
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+    extractor = _ImportNameExtractor()
+    extractor.visit(tree)
+    return sorted(set(extractor.modules))
+
+
+# Matches:
+#   import x from 'mod'
+#   import { a } from "mod"
+#   import * as ns from 'mod'
+#   import 'mod'                          (side-effect)
+#   const x = require('mod')              (CommonJS)
+#   const { a } = require("mod")          (CommonJS destructure)
+_TS_IMPORT_RE = re.compile(
+    r"""(?:import\s+(?:[^'"]+\s+from\s+)?|const\s+[^=]+=\s*require\(\s*)['"]([^'"]+)['"]""",
+    re.MULTILINE,
+)
+
+
+def _extract_ts_imports(code: str) -> List[str]:
+    """Extract TypeScript/JavaScript module names via regex (no AST dependency)."""
+    return sorted(set(_TS_IMPORT_RE.findall(code)))
+
+
+class _ImportNameExtractor(ast.NodeVisitor):
+    def __init__(self):
+        self.modules: List[str] = []
+
+    def visit_Import(self, node):
+        for alias in node.names:
+            self.modules.append(alias.name)
+
+    def visit_ImportFrom(self, node):
+        if node.module:
+            self.modules.append(node.module)
 
 
 class _PythonStructuralNormalizer(ast.NodeVisitor):

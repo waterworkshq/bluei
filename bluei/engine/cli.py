@@ -36,7 +36,7 @@ from bluei.engine.gh import (
 from bluei.engine.review_helpers import classify_review_feedback, review_loop_allowed
 from bluei.engine.startup import run_startup_self_healing
 from bluei.engine.mnemo_client import is_mnemo_available
-from bluei.engine.pattern_store import FixPatternStore
+from bluei.engine.pattern_store import FixPatternStore, open_pattern_store
 from bluei.engine.git_utils import refresh_docs_index
 from bluei.engine.constants import (
     DEFAULT_FINDINGS,
@@ -119,7 +119,7 @@ def main() -> int:
     pattern_store: Optional[FixPatternStore] = None
     if args.pattern_store_path is not None:
         try:
-            pattern_store = FixPatternStore(Path(args.pattern_store_path))
+            pattern_store = open_pattern_store(Path(args.pattern_store_path))
         except Exception as exc:
             _append_text(log_file, f"pattern-store: init error {exc}")
 

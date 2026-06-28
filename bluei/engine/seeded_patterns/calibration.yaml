@@ -1,0 +1,16 @@
+calibrated_at: '2026-06-28T15:06:16.779624+00:00'
+calibration_version: 1
+families:
+  synthetic-generic:
+    degenerate: true
+    distinct_hashes: 1
+    fallback_reason: insufficient structural variance in synthetic variations
+    p_broken: 0.5
+    p_healthy: 0.9
+    variations_tested: 3
+  synthetic-raise:
+    degenerate: false
+    distinct_hashes: 8
+    p_broken: 0.5
+    p_healthy: 0.5
+    variations_tested: 10

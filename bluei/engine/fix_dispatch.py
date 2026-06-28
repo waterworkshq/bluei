@@ -122,6 +122,7 @@ def _try_claude_fix(
     findings_file: Optional[Path] = None,
     extra_prompt: Optional[str] = None,
     learned_patterns: Optional[str] = None,
+    authoritative_guidelines: Optional[str] = None,
 ) -> tuple[int, str, Optional[str]]:
     """Try Claude fix. Returns (rc, output, prompt_file)."""
     from bluei.engine.lifecycle import ClaudeFixRequest, apply_claude_fix
@@ -141,6 +142,7 @@ def _try_claude_fix(
             findings_file=findings_file,
             extra_prompt=extra_prompt,
             learned_patterns=learned_patterns,
+            authoritative_guidelines=authoritative_guidelines,
         ),
     )
     return rc, output, prompt_file
@@ -215,6 +217,7 @@ def dispatch_fix(
     findings_file: Optional[Path] = None,
     extra_prompt: Optional[str] = None,
     learned_patterns: Optional[str] = None,
+    authoritative_guidelines: Optional[str] = None,
 ) -> FixDispatchResult:
     """Dispatch a fix attempt using the specified strategy.
 
@@ -237,6 +240,8 @@ def dispatch_fix(
         findings_file: Optional path to findings file.
         extra_prompt: Optional extra prompt for Claude.
         learned_patterns: Optional learned pattern hints for Claude.
+        authoritative_guidelines: Optional authoritative guidelines (ADR-0017)
+            injected as prompt-context into the Claude fix prompt.
 
     Returns:
         FixDispatchResult with success status and method used.
@@ -305,6 +310,7 @@ def dispatch_fix(
                 findings_file=findings_file,
                 extra_prompt=extra_prompt,
                 learned_patterns=learned_patterns,
+                authoritative_guidelines=authoritative_guidelines,
             )
             if rc == 0:
                 return FixDispatchResult(success=True, method_used="claude")
@@ -338,6 +344,7 @@ def dispatch_fix(
                 findings_file=findings_file,
                 extra_prompt=extra_prompt,
                 learned_patterns=learned_patterns,
+                authoritative_guidelines=authoritative_guidelines,
             )
             if rc == 0:
                 return FixDispatchResult(success=True, method_used="claude")
@@ -407,6 +414,7 @@ def dispatch_fix(
                 findings_file=findings_file,
                 extra_prompt=extra_prompt,
                 learned_patterns=learned_patterns,
+                authoritative_guidelines=authoritative_guidelines,
             )
             if rc == 0:
                 return FixDispatchResult(success=True, method_used="claude")

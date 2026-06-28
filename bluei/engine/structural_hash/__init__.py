@@ -30,6 +30,7 @@ from bluei.engine.structural_hash.python import (
     _python_node_sequence,
     _python_operator_sequence,
     _python_structural_hash,
+    extract_imports_touched,
 )
 from bluei.engine.structural_hash.text import (
     _levenshtein_distance,
@@ -135,6 +136,7 @@ __all__ = [
     "fuzzy_structural_match",
     "get_fuzzy_threshold",
     "normalize_for_sharing",
+    "extract_imports_touched",
     "FUZZY_THRESHOLDS",
     "DEFAULT_FUZZY_THRESHOLD",
     # Backward-compat private re-exports (used by tests + patch sites)

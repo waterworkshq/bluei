@@ -326,11 +326,11 @@ def record_feedback(
     if sentiment_enum in (FeedbackSentiment.POSITIVE, FeedbackSentiment.NEGATIVE):
         if confidence_adjuster is not None:
             try:
-                from bluei.engine.pattern_store import FixPatternStore
+                from bluei.engine.pattern_store import open_pattern_store
 
                 patterns_file = state.get_fix_patterns_file(repo_name)
                 if patterns_file.exists():
-                    _store = FixPatternStore(patterns_file)
+                    _store = open_pattern_store(patterns_file)
                     new_conf = confidence_adjuster(
                         normalized["finding_id"],
                         sentiment_enum,
