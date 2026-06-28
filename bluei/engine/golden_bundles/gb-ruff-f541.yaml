@@ -1,0 +1,18 @@
+id: gb-ruff-f541
+asset_class: pattern
+asset_ref: null
+rule: ruff-f541
+rule_family: ruff-f
+language: python
+before: msg = f"hello world"
+after: msg = "hello world"
+detector_before: F541 f-string without any placeholders
+detector_after: ''
+validation_command: ruff check --select F541
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.043276+00:00'
+imports_touched: []
+negative_examples:
+- 'name = "world"
+
+  msg = f"hello {name}"'

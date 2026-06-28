@@ -1,0 +1,22 @@
+id: gb-ruff-c400
+asset_class: pattern
+asset_ref: null
+rule: ruff-c400
+rule_family: ruff-c
+language: python
+before: 'items = [1, 2, 3]
+
+  x = list(i for i in items)'
+after: 'items = [1, 2, 3]
+
+  x = [i for i in items]'
+detector_before: C400 Unnecessary generator (rewrite using `list()`)
+detector_after: ''
+validation_command: ruff check --select C400
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.120502+00:00'
+imports_touched: []
+negative_examples:
+- 'items = [1, 2, 3]
+
+  x = [i * 2 for i in items]'

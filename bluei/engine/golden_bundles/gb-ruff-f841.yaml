@@ -1,0 +1,16 @@
+id: gb-ruff-f841
+asset_class: pattern
+asset_ref: null
+rule: ruff-f841
+rule_family: ruff-f
+language: python
+before: "def foo():\n    x = 5\n    return 10"
+after: "def foo():\n    return 10"
+detector_before: F841 Local variable `x` is assigned to but never used
+detector_after: ''
+validation_command: ruff check --select F841
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.050213+00:00'
+imports_touched: []
+negative_examples:
+- "def foo():\n    x = 5\n    return x"

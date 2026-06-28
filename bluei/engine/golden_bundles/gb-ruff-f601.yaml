@@ -1,0 +1,16 @@
+id: gb-ruff-f601
+asset_class: pattern
+asset_ref: null
+rule: ruff-f601
+rule_family: ruff-f
+language: python
+before: 'd = {"a": 1, "b": 2, "a": 3}'
+after: 'd = {"a": 3, "b": 2}'
+detector_before: F601 Dictionary key literal `"a"` repeated
+detector_after: ''
+validation_command: ruff check --select F601
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.057107+00:00'
+imports_touched: []
+negative_examples:
+- 'd = {"a": 1, "b": 2, "c": 3}'

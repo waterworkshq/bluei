@@ -1,0 +1,16 @@
+id: gb-ruff-s105
+asset_class: pattern
+asset_ref: null
+rule: ruff-s105
+rule_family: ruff-s
+language: python
+before: password = "hunter2"
+after: password = get_credential()
+detector_before: 'S105 Possible hardcoded password assigned to: "password"'
+detector_after: ''
+validation_command: ruff check --select S105
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.135557+00:00'
+imports_touched: []
+negative_examples:
+- label = "password field"

@@ -1,0 +1,17 @@
+id: gb-ruff-b006
+asset_class: pattern
+asset_ref: null
+rule: ruff-b006
+rule_family: ruff-b
+language: python
+before: "def add_item(item, items=[]):\n    items.append(item)\n    return items"
+after: "def add_item(item, items=None):\n    if items is None:\n        items = []\n\
+  \    items.append(item)\n    return items"
+detector_before: B006 Do not use mutable data structures for argument defaults
+detector_after: ''
+validation_command: ruff check --select B006
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.012932+00:00'
+imports_touched: []
+negative_examples:
+- "def add_item(item, items=(1, 2)):\n    return items + (item,)"

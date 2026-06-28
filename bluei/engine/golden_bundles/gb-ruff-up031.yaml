@@ -1,0 +1,22 @@
+id: gb-ruff-up031
+asset_class: pattern
+asset_ref: null
+rule: ruff-up031
+rule_family: ruff
+language: python
+before: 'name = "world"
+
+  msg = "hello %s" % name'
+after: 'name = "world"
+
+  msg = f"hello {name}"'
+detector_before: UP031 Use format specifiers instead of percent format
+detector_after: ''
+validation_command: ruff check --select UP031
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.112700+00:00'
+imports_touched: []
+negative_examples:
+- 'name = "world"
+
+  msg = f"hello {name}"'

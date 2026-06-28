@@ -1,0 +1,23 @@
+id: gb-ruff-f401
+asset_class: pattern
+asset_ref: null
+rule: ruff-f401
+rule_family: ruff-f
+language: python
+before: 'import os
+
+
+  x = 1'
+after: x = 1
+detector_before: F401 `os` imported but unused
+detector_after: ''
+validation_command: ruff check --select F401
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.035373+00:00'
+imports_touched:
+- os
+negative_examples:
+- 'import os
+
+
+  x = os.getcwd()'

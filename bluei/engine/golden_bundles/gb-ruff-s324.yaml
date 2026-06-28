@@ -1,0 +1,26 @@
+id: gb-ruff-s324
+asset_class: pattern
+asset_ref: null
+rule: ruff-s324
+rule_family: ruff-s
+language: python
+before: 'import hashlib
+
+
+  h = hashlib.md5(b"data")'
+after: 'import hashlib
+
+
+  h = hashlib.sha256(b"data")'
+detector_before: 'S324 Probable use of insecure hash functions in `hashlib`: `md5`'
+detector_after: ''
+validation_command: ruff check --select S324
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.143603+00:00'
+imports_touched:
+- hashlib
+negative_examples:
+- 'import hashlib
+
+
+  h = hashlib.sha256(b"data")'

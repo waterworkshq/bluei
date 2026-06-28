@@ -1,0 +1,16 @@
+id: gb-ruff-e712
+asset_class: pattern
+asset_ref: null
+rule: ruff-e712
+rule_family: ruff-e
+language: python
+before: "x = True\nif x == True:\n    pass"
+after: "x = True\nif x:\n    pass"
+detector_before: E712 Avoid equality comparisons to `True`; use `x:` for truth checks
+detector_after: ''
+validation_command: ruff check --select E712
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.073414+00:00'
+imports_touched: []
+negative_examples:
+- "x = 5\nif x == 5:\n    pass"

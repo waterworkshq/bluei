@@ -1,0 +1,16 @@
+id: gb-ruff-sim201
+asset_class: pattern
+asset_ref: null
+rule: ruff-sim201
+rule_family: ruff
+language: python
+before: "a = 1\nb = 2\nif not a == b:\n    pass"
+after: "a = 1\nb = 2\nif a != b:\n    pass"
+detector_before: SIM201 Use `a != b` instead of `not a == b`
+detector_after: ''
+validation_command: ruff check --select SIM201
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.104756+00:00'
+imports_touched: []
+negative_examples:
+- "a = [1]\nif 1 not in a:\n    pass"

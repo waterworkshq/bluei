@@ -1,0 +1,16 @@
+id: gb-ruff-e711
+asset_class: pattern
+asset_ref: null
+rule: ruff-e711
+rule_family: ruff-e
+language: python
+before: "x = 5\nif x == None:\n    pass"
+after: "x = 5\nif x is None:\n    pass"
+detector_before: E711 Comparison to `None` should be `cond is None`
+detector_after: ''
+validation_command: ruff check --select E711
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.065459+00:00'
+imports_touched: []
+negative_examples:
+- "x = 5\nif x == 10:\n    pass"

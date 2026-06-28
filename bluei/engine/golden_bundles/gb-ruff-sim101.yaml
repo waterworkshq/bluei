@@ -1,0 +1,16 @@
+id: gb-ruff-sim101
+asset_class: pattern
+asset_ref: null
+rule: ruff-sim101
+rule_family: ruff
+language: python
+before: ok = isinstance(x, int) or isinstance(x, str)
+after: ok = isinstance(x, (int, str))
+detector_before: SIM101 Multiple `isinstance` calls for `x`, merge into a single call
+detector_after: ''
+validation_command: ruff check --select SIM101
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.089398+00:00'
+imports_touched: []
+negative_examples:
+- ok = isinstance(x, int) or issubclass(y, str)

@@ -1,0 +1,16 @@
+id: gb-ruff-e722
+asset_class: pattern
+asset_ref: null
+rule: ruff-e722
+rule_family: ruff-e
+language: python
+before: "try:\n    x = 1 / 0\nexcept:\n    pass"
+after: "try:\n    x = 1 / 0\nexcept Exception:\n    pass"
+detector_before: E722 Do not use bare `except`
+detector_after: ''
+validation_command: ruff check --select E722
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.081451+00:00'
+imports_touched: []
+negative_examples:
+- "try:\n    x = 1 / 0\nexcept ZeroDivisionError:\n    pass"

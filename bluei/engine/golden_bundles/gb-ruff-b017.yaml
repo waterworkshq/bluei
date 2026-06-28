@@ -1,0 +1,22 @@
+id: gb-ruff-b017
+asset_class: pattern
+asset_ref: null
+rule: ruff-b017
+rule_family: ruff-b
+language: python
+before: "import unittest\n\n\nclass TestFoo(unittest.TestCase):\n    def test_bar(self):\n\
+  \        with self.assertRaises(Exception):\n            raise ValueError(\"x\")"
+after: "import unittest\n\n\nclass TestFoo(unittest.TestCase):\n    def test_bar(self):\n\
+  \        with self.assertRaises(ValueError):\n            raise ValueError(\"x\"\
+  )"
+detector_before: 'B017 Do not assert blind exception: `Exception`'
+detector_after: ''
+validation_command: ruff check --select B017
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.027109+00:00'
+imports_touched:
+- unittest
+negative_examples:
+- "import unittest\n\nclass TestFoo(unittest.TestCase):\n    def test_bar(self):\n\
+  \        with self.assertRaises(ValueError):\n            raise ValueError(\"x\"\
+  )"

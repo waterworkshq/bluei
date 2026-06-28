@@ -1,0 +1,20 @@
+id: gb-ruff-b904
+asset_class: pattern
+asset_ref: null
+rule: ruff-b904
+rule_family: ruff-b
+language: python
+before: "try:\n    x = 1 / 0\nexcept ZeroDivisionError:\n    raise ValueError(\"bad\"\
+  )"
+after: "try:\n    x = 1 / 0\nexcept ZeroDivisionError as err:\n    raise ValueError(\"\
+  bad\") from err"
+detector_before: B904 Within an `except` clause, raise exceptions with `raise ...
+  from err` or `raise ... from None` to distinguish them from errors in exception
+  handling
+detector_after: ''
+validation_command: ruff check --select B904
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.005238+00:00'
+imports_touched: []
+negative_examples:
+- "try:\n    x = 1 / 0\nexcept ZeroDivisionError:\n    raise"

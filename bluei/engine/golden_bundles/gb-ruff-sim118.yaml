@@ -1,0 +1,16 @@
+id: gb-ruff-sim118
+asset_class: pattern
+asset_ref: null
+rule: ruff-sim118
+rule_family: ruff
+language: python
+before: "d = {\"a\": 1}\nif \"a\" in d.keys():\n    pass"
+after: "d = {\"a\": 1}\nif \"a\" in d:\n    pass"
+detector_before: SIM118 Use `key in dict` instead of `key in dict.keys()`
+detector_after: ''
+validation_command: ruff check --select SIM118
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.098059+00:00'
+imports_touched: []
+negative_examples:
+- "d = {\"a\": 1}\nif \"a\" in d.values():\n    pass"

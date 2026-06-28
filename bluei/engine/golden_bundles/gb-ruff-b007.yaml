@@ -1,0 +1,16 @@
+id: gb-ruff-b007
+asset_class: pattern
+asset_ref: null
+rule: ruff-b007
+rule_family: ruff-b
+language: python
+before: "for i, x in enumerate(items):\n    print(x)"
+after: "for _, x in enumerate(items):\n    print(x)"
+detector_before: B007 Loop control variable `i` not used within loop body
+detector_after: ''
+validation_command: ruff check --select B007
+source_finding_id: null
+extracted_at: '2026-06-28T18:08:24.020009+00:00'
+imports_touched: []
+negative_examples:
+- "for i, x in enumerate(items):\n    print(i, x)"
