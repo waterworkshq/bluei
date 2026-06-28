@@ -1,0 +1,16 @@
+id: gb-ruff-ruf005
+asset_class: pattern
+asset_ref: null
+rule: ruff-ruf005
+rule_family: ruff
+language: python
+before: items = [1, 2] + [3, 4]
+after: items = [1, 2, *([3, 4])]
+detector_before: RUF005 Consider `[1, 2, 3, 4]` instead of concatenation
+detector_after: ''
+validation_command: ruff check --select RUF005
+source_finding_id: null
+extracted_at: '2026-06-28T18:27:10.720244+00:00'
+imports_touched: []
+negative_examples:
+- items = [1, 2, 3, 4]

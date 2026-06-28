@@ -1,0 +1,19 @@
+id: gb-ruff-ruf013
+asset_class: pattern
+asset_ref: null
+rule: ruff-ruf013
+rule_family: ruff
+language: python
+before: "from typing import Optional\n\ndef greet(name: str = None) -> str:\n    return\
+  \ f'hi {name}'"
+after: "from typing import Optional\n\ndef greet(name: Optional[str] = None) -> str:\n\
+  \    return f'hi {name}'"
+detector_before: RUF013 PEP 484 prohibits implicit `Optional`
+detector_after: ''
+validation_command: ruff check --select RUF013
+source_finding_id: null
+extracted_at: '2026-06-28T18:27:10.728686+00:00'
+imports_touched:
+- typing
+negative_examples:
+- "def greet(name: str = 'world') -> str:\n    return f'hi {name}'"

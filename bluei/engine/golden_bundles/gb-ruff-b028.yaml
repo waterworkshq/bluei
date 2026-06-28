@@ -1,0 +1,26 @@
+id: gb-ruff-b028
+asset_class: pattern
+asset_ref: null
+rule: ruff-b028
+rule_family: ruff-b
+language: python
+before: 'import warnings
+
+
+  warnings.warn(''deprecated'')'
+after: 'import warnings
+
+
+  warnings.warn(''deprecated'', stacklevel=2)'
+detector_before: B028 No explicit `stacklevel` keyword argument found
+detector_after: ''
+validation_command: ruff check --select B028
+source_finding_id: null
+extracted_at: '2026-06-28T18:27:10.679625+00:00'
+imports_touched:
+- warnings
+negative_examples:
+- 'import warnings
+
+
+  warnings.warn(''deprecated'', stacklevel=2)'

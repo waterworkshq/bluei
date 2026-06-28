@@ -1,0 +1,17 @@
+id: gb-ruff-b015
+asset_class: pattern
+asset_ref: null
+rule: ruff-b015
+rule_family: ruff-b
+language: python
+before: "def check(x):\n    x == x\n    return x"
+after: "def check(x):\n    return x"
+detector_before: B015 Pointless comparison. Did you mean to assign a value? Otherwise,
+  prepend `assert` or remove it.
+detector_after: ''
+validation_command: ruff check --select B015
+source_finding_id: null
+extracted_at: '2026-06-28T18:27:10.663308+00:00'
+imports_touched: []
+negative_examples:
+- "def check(x, y):\n    if x == y:\n        return x\n    return y"

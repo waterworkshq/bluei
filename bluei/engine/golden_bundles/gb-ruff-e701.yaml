@@ -1,0 +1,19 @@
+id: gb-ruff-e701
+asset_class: pattern
+asset_ref: null
+rule: ruff-e701
+rule_family: ruff-e
+language: python
+before: 'if ready: fire()
+
+
+  ready = True'
+after: "if ready:\n    fire()\n\nready = True"
+detector_before: E701 Multiple statements on one line (colon)
+detector_after: ''
+validation_command: ruff check --select E701
+source_finding_id: null
+extracted_at: '2026-06-28T18:27:10.687734+00:00'
+imports_touched: []
+negative_examples:
+- "if ready:\n    fire()\n\nready = True"

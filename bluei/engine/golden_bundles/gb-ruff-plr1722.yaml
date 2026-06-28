@@ -1,0 +1,23 @@
+id: gb-ruff-plr1722
+asset_class: pattern
+asset_ref: null
+rule: ruff-plr1722
+rule_family: ruff
+language: python
+before: exit(1)
+after: 'import sys
+
+
+  sys.exit(1)'
+detector_before: PLR1722 Use `sys.exit()` instead of `exit`
+detector_after: ''
+validation_command: ruff check --select PLR1722
+source_finding_id: null
+extracted_at: '2026-06-28T18:27:10.713306+00:00'
+imports_touched:
+- sys
+negative_examples:
+- 'import sys
+
+
+  sys.exit(1)'

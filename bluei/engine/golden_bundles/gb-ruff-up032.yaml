@@ -1,0 +1,22 @@
+id: gb-ruff-up032
+asset_class: pattern
+asset_ref: null
+rule: ruff-up032
+rule_family: ruff
+language: python
+before: 'name = ''Ada''
+
+  msg = ''Hello {}''.format(name)'
+after: 'name = ''Ada''
+
+  msg = f''Hello {name}'''
+detector_before: UP032 Use f-string instead of `format` call
+detector_after: ''
+validation_command: ruff check --select UP032
+source_finding_id: null
+extracted_at: '2026-06-28T18:27:10.745049+00:00'
+imports_touched: []
+negative_examples:
+- 'name = ''Ada''
+
+  msg = f''Hello {name}'''

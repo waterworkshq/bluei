@@ -1,0 +1,17 @@
+id: gb-ruff-b018
+asset_class: pattern
+asset_ref: null
+rule: ruff-b018
+rule_family: ruff-b
+language: python
+before: "def handler():\n    42\n    'hello'\n    return None"
+after: "def handler():\n    return None"
+detector_before: B018 Found useless expression. Either assign it to a variable or
+  remove it.
+detector_after: ''
+validation_command: ruff check --select B018
+source_finding_id: null
+extracted_at: '2026-06-28T18:27:10.671370+00:00'
+imports_touched: []
+negative_examples:
+- "def handler():\n    value = 42\n    return value"
