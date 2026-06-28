@@ -8,7 +8,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.2.0-alpha.3] — Evidence Foundation
 
-Populates the empty alpha.2 substrate with provenance-aware infrastructure, authoritative guidelines, and envelope field completion. The synthesize-then-validate Seed Library pipeline (ADR-0018) is planned; the infrastructure it depends on is shipped.
+Populates the empty alpha.2 substrate with provenance-aware infrastructure, authoritative guidelines, envelope field completion, and a synthesize-then-validate Seed Library pipeline (ADR-0018) shipping 38 validated canonical bundles across Python (ruff) and JavaScript (eslint).
 
 Still pre-release software. Do not use in production.
 
@@ -35,13 +35,16 @@ Still pre-release software. Do not use in production.
 - **Synthetic calibration harness** — `variations.py` generates structurally-diverse code variations per rule family; `calibrate.py` measures structural-match rates and derives per-family `p_healthy`/`p_broken`. Degenerate distributions fall back to ADR-0012's hand-picked defaults.
 - **`_sprt_params` per-family override** — reads `calibration.yaml` inline (no engine→tools import) and overrides `p_healthy`/`p_broken` for non-degenerate families.
 
-### Seed Library Infrastructure (planned: ADR-0018)
+### Seed Library — Synthesize-then-Validate (ADR-0018)
 
 - **`ParsedRule` + `package.py`** — source-agnostic packaging layer. Converts structured rule tuples into Golden Bundles + seeded Patterns with provenance `authoritative-seed`. Language-agnostic; accepts tuples from any source.
-- **`seeded_pattern_loader.py`** — runtime loader for product-fixture seeded patterns. Called by `open_pattern_store()` factory. Product wins on structural-hash conflict with repo-local patterns.
-- **Synthesize-then-validate pipeline** — planned (ADR-0018). An LLM synthesizes original canonical rules; a linter validates them as an oracle (before triggers, after is clean). The linter is the oracle, not the source. Not yet built — the infrastructure it feeds is complete.
+- **`seeded_pattern_loader.py`** — runtime loader for product-fixture seeded patterns. Called by `open_pattern_store()` factory.
+- **`synthesizer.py`** — LLM synthesizer. Takes a Topic (rule code, description, language), generates a canonical before/after/negative candidate via an injectable `llm_callback`. Output is original bluei-owned content.
+- **`validator.py`** — linter oracle. Runs ruff/eslint on the candidate's before (must trigger the rule) and after (must be clean). The linter is the oracle, not the source. Auto-captures diagnostic messages and auto-detects `has_autofix` from the linter's fix field.
+- **`pipeline.py`** — driver with topic lists for Python (20 ruff topics) and JavaScript (10 eslint topics). Orchestrates synthesize → validate → package.
+- **38 validated canonical bundles shipped** — 30 Python (ruff-validated) + 7 JavaScript (eslint-validated) + 1 hand-authored original. All synthesized as original content, verified by the linter oracle (before triggers, after is clean). 5/43 candidates rejected by the oracle — the quality gate working as designed.
 
-2 new ADRs (0017, 0018). Test suite: 6245 → 6290 (+45 tests, all additive).
+2 new ADRs (0017, 0018). Test suite: 6245 → 6295 (+50 tests, all additive).
 
 ---
 

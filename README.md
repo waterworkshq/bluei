@@ -345,7 +345,7 @@ Key design principles:
 |------|--------|-------|
 | v0.2.0-alpha.1 "Evidence" | Delivered | Flywheel Ledger + Pattern Court Lite: deterministic-vs-LLM metrics, cascade-stage counts, honest three-way replay outcomes, savings, and Pattern Court Lite explainability |
 | v0.2.0-alpha.2 "Safe Learning" | Delivered | Governance substrate (Operator Control Plane, Golden Validation Bundles, Dry Replay, SPRT demotion, bluei learn CLI). Ships inert — evidence population in alpha.3. |
-| v0.2.0-alpha.3 "Evidence Foundation" | Delivered | Provenance-aware mining infrastructure (`open_pattern_store` + `register_asset`), envelope field completion, authoritative guidelines (ADR-0017), SPRT per-family calibration harness. Seed Library packaging infrastructure shipped; synthesize-then-validate source pipeline planned (ADR-0018). |
+| v0.2.0-alpha.3 "Evidence Foundation" | Delivered | Provenance-aware mining infrastructure (`open_pattern_store` + `register_asset`), envelope field completion, authoritative guidelines (ADR-0017), SPRT per-family calibration harness. Synthesize-then-validate Seed Library pipeline (ADR-0018) with 38 validated bundles (Python + JS). |
 | v0.2.0-alpha.4 "Deterministic Assets" | Planned | Recipe Foundry, Rule Hatchery, and Python AST structural replay — built on a populated substrate |
 | v0.2.0-alpha.5 "Repo Native" | Planned | Repo Taste Profile and Campaign Lab for evidence-gathering Campaigns |
 | v0.2.0-alpha.6 "Economics" | Planned | Model Governor and proof harness for model downgrade and cost/reliability evidence |

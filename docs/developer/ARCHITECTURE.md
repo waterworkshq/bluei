@@ -104,6 +104,9 @@ fixing, PR management, batch operations, and pattern learning.
 | `escalation.py` | Pattern detection and threshold-based escalation. |
 | `governance.py` | Event-sourced governance substrate: AssetRef, ApprovalRecord, Governance State projection (most-recent-wins over approval_records.jsonl trail), policy resolution (per-asset-class per-transition mode + safe-mode ceiling), SPRT reset boundary finder. No-op with empty trail. |
 | `bundle_loader.py` | Golden Validation Bundle loader: reads product fixtures (`golden_bundles/`) + repo-state bundles with product-first precedence. `has_bundle_reference` for the promotion gate. |
+| `synthesizer.py` | LLM synthesizer (build-time): generates canonical before/after/negative code examples per rule topic. Injectable `llm_callback`. (ADR-0018) |
+| `validator.py` | Linter oracle (build-time): runs ruff/eslint on candidate before (must trigger) + after (must be clean). Auto-captures diagnostics + has_autofix. (ADR-0018) |
+| `pipeline.py` | Synthesize-then-validate driver (build-time): orchestrates topic → synthesize → validate → package. Includes Python + JS topic lists. (ADR-0018) |
 | `dry_replay.py` | Non-mutating evidence collection for matched-but-not-selected Patterns. File-level checkpoint/restore around the cascade's fix application. Records would-have-applied outcomes to `dry_replay.jsonl`. |
 | `sprt.py` | Two-sided Sequential Probability Ratio Test (Wald): computes LLR from Dry Replay outcomes since most recent reset boundary. Demote when LLR ≤ B (broken); auto-promote when LLR ≥ A (healthy). LLR recomputed from durable stores — no accumulator. Per-family `p_healthy`/`p_broken` override from `calibration.yaml` (alpha.3); degenerate families fall back to ADR-0012 defaults. |
 
