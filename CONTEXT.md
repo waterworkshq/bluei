@@ -37,8 +37,16 @@ A new detection rule proposed from repeated Finding patterns. Lifecycle: PROPOSE
 _Avoid_: custom rule, dynamic rule.
 
 **Directive Seeding**
-The feedback loop that injects prior fix attempts, lessons, and failure patterns into LLM prompts so the engine avoids repeating failed fixes.
+The feedback loop that injects prior fix attempts, lessons, failure patterns, and authoritative guidelines into LLM prompts so the engine avoids repeating failed fixes and follows industry-standard practice.
 _Avoid_: context injection (too generic), prompt stuffing, lesson loop.
+
+**Authoritative Guideline**
+An industry-standard rule or convention that no linter enforces but the community treats as canon (PEP 8 prose, OWASP practices, style-guide conventions, framework idioms). Shipped as prompt-context files (not governed assets); loaded into LLM fix prompts by rule family via Directive Seeding. Distinct from a Recipe (which is a deterministic fix) and a Pattern (which is a learned fix).
+_Avoid_: directive (reserved for the Directive Seeding mechanism), style rule (too generic), convention (reserved for Repo Taste Profile's repo-local conventions).
+
+**Seed Library**
+The collection of authoritative assets shipped with bluei itself: Golden Validation Bundles, seeded Patterns, built-in Recipes, and Authoritative Guidelines. Populated by the build-time ingestion pipeline from linter rules and industry guidelines. Ships ACTIVE (pre-vetted, bypasses governance). Distinct from mined assets (extracted from bluei's own work on consumer repos, governed through the Operator Control Plane). Plugin-extractable as a unit for future modular distribution.
+_Avoid:_ built-in library (too generic), default patterns (too narrow — it includes bundles, recipes, and guidelines too).
 
 **Reforge**
 The routing step that classifies Findings as refactor candidates and sends them to the refactor queue for human-gated processing.
