@@ -132,6 +132,10 @@ def validate_with_eslint(
         candidate.detector_before = "\n".join(messages)
     candidate.detector_after = ""
 
+    # Auto-detect has_autofix from the fix field in diagnostics
+    if before_diags:
+        candidate.has_autofix = any("fix" in d for d in before_diags)
+
     valid = before_triggered and after_clean
     reason = ""
     if not before_triggered:
