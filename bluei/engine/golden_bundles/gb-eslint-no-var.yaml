@@ -1,0 +1,22 @@
+id: gb-eslint-no-var
+asset_class: pattern
+asset_ref: null
+rule: eslint-no-var
+rule_family: eslint-no
+language: javascript
+before: 'var count = 0;
+
+  var name = "bluei";'
+after: 'const count = 0;
+
+  const name = "bluei";'
+detector_before: 'no-var Unexpected var, use let or const instead.
+
+  no-var Unexpected var, use let or const instead.'
+detector_after: ''
+validation_command: eslint --rule no-var
+source_finding_id: null
+extracted_at: '2026-06-28T18:35:07.381116+00:00'
+imports_touched: []
+negative_examples:
+- "let i = 0;\nfor (i = 0; i < 3; i++) {\n  console.log(i);\n}"

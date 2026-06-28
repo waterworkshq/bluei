@@ -186,3 +186,66 @@ PYTHON_TOPICS: List[Topic] = [
         "ruff",
     ),
 ]
+
+JAVASCRIPT_TOPICS: List[Topic] = [
+    Topic(
+        "eslint-no-var",
+        "javascript",
+        "Use let or const instead of var",
+        "no-var",
+        "eslint",
+    ),
+    Topic("eslint-eqeqeq", "javascript", "Use === instead of ==", "eqeqeq", "eslint"),
+    Topic(
+        "eslint-no-console",
+        "javascript",
+        "Unexpected console statement (use logging)",
+        "no-console",
+        "eslint",
+    ),
+    Topic(
+        "eslint-no-unused-vars",
+        "javascript",
+        "Variable declared but never used",
+        "no-unused-vars",
+        "eslint",
+    ),
+    Topic(
+        "eslint-no-unreachable",
+        "javascript",
+        "Code after return/throw/break is unreachable",
+        "no-unreachable",
+        "eslint",
+    ),
+    Topic(
+        "eslint-no-debugger",
+        "javascript",
+        "Debugger statement found",
+        "no-debugger",
+        "eslint",
+    ),
+    Topic(
+        "eslint-prefer-const",
+        "javascript",
+        "let variable never reassigned, use const",
+        "prefer-const",
+        "eslint",
+    ),
+    Topic(
+        "eslint-no-dupe-keys",
+        "javascript",
+        "Duplicate keys in object literal",
+        "no-dupe-keys",
+        "eslint",
+    ),
+    Topic(
+        "eslint-no-empty", "javascript", "Empty block statement", "no-empty", "eslint"
+    ),
+    Topic(
+        "eslint-no-constant-condition",
+        "javascript",
+        "Constant condition in if/while/for",
+        "no-constant-condition",
+        "eslint",
+    ),
+]

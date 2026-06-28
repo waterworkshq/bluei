@@ -106,7 +106,8 @@ def validate_with_eslint(
     candidate: ParsedRule,
     eslint_executable: str = "eslint",
 ) -> ValidationResult:
-    """Validate against eslint: before must trigger, after must be clean."""
+    """Validate against eslint: before must trigger, after must be clean.
+    Captures diagnostic messages and uses flat config (eslint v9+ compatible)."""
     rule_name = candidate.rule.replace("eslint-", "")
     before_diags = _run_eslint(
         eslint_executable, candidate.before, rule_name, candidate.language
@@ -121,8 +122,17 @@ def validate_with_eslint(
 
     before_triggered = len(before_diags) > 0
     after_clean = len(after_diags) == 0
-    valid = before_triggered and after_clean
 
+    # Capture diagnostic messages
+    if before_diags:
+        messages = [
+            f"{d.get('ruleId', rule_name)} {d.get('message', '')}"
+            for d in before_diags[:5]
+        ]
+        candidate.detector_before = "\n".join(messages)
+    candidate.detector_after = ""
+
+    valid = before_triggered and after_clean
     reason = ""
     if not before_triggered:
         reason = f"before did not trigger eslint rule {rule_name}"
@@ -169,36 +179,39 @@ def _run_ruff(ruff: str, code_text: str, rule_code: str) -> list:
 
 
 def _run_eslint(eslint: str, code_text: str, rule_name: str, language: str) -> list:
-    """Run eslint on code text with a specific rule enabled, return diagnostics list."""
+    """Run eslint on code text with a specific rule enabled via flat config.
+
+    Uses a temp flat config file (eslint v9+ compatible) instead of
+    --no-eslintrc/--rule which were removed in eslint v10.
+    """
     ext = ".ts" if "typescript" in language else ".js"
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=ext, delete=False, encoding="utf-8"
-    ) as f:
-        f.write(code_text)
-        path = f.name
-    try:
-        # Use --rule to enable just this rule; --no-eslintrc to avoid project config
-        cmd = [
-            eslint,
-            "--no-eslintrc",
-            "--rule",
-            f'{{"{rule_name}": "error"}}',
-            "--format",
-            "json",
-            path,
-        ]
-        if "typescript" in language:
-            cmd.extend(["--parser", "@typescript-eslint/parser"])
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        if proc.stdout.strip():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        code_path = Path(tmpdir) / f"test{ext}"
+        code_path.write_text(code_text, encoding="utf-8")
+
+        config_path = Path(tmpdir) / "eslint.config.mjs"
+        config_path.write_text(
+            f'export default [{{ rules: {{ "{rule_name}": "error" }} }}];\n',
+            encoding="utf-8",
+        )
+
+        cmd = [eslint, "--config", str(config_path), "--format", "json", str(code_path)]
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=15, cwd=tmpdir
+            )
+        except Exception:
+            return []
+
+        if not proc.stdout.strip():
+            return []
+        try:
             data = json.loads(proc.stdout)
             if data and isinstance(data, list):
                 return data[0].get("messages", [])
-        return []
-    except Exception:
-        return []
-    finally:
-        Path(path).unlink(missing_ok=True)
+        except json.JSONDecodeError:
+            return []
+    return []
 
 
 def _ruff_code_from_rule(rule: str) -> str:

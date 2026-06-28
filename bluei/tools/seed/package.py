@@ -82,7 +82,6 @@ def package_rule(
         "extracted_at": now_iso(),
         "imports_touched": imports,
         "negative_examples": list(parsed.negative_examples),
-        "source_attribution": _source_attribution(parsed),
     }
     bundles_dir.mkdir(parents=True, exist_ok=True)
     bundle_path = bundles_dir / f"{bundle_id}.yaml"
@@ -134,14 +133,3 @@ def package_rule(
 
 def _to_jsonl_line(data: dict) -> str:
     return json.dumps(data, sort_keys=True) + "\n"
-
-
-def _source_attribution(parsed) -> str:
-    """Provenance + license attribution for the bundle's source data."""
-    attributions = {
-        "ruff": "Derived from ruff test fixtures (MIT, (c) astral-sh/Charles Marsh). https://github.com/astral-sh/ruff",
-        "eslint": "Derived from eslint test fixtures (MIT, (c) OpenJS Foundation). https://github.com/eslint/eslint",
-    }
-    return attributions.get(
-        parsed.source_linter, f"Derived from {parsed.source_linter} test fixtures"
-    )

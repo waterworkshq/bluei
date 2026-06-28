@@ -1,0 +1,18 @@
+id: gb-eslint-no-console
+asset_class: pattern
+asset_ref: null
+rule: eslint-no-console
+rule_family: eslint-no
+language: javascript
+before: "function loadConfig() {\n  console.log(\"loading config\");\n  return readConfig();\n\
+  }"
+after: "function loadConfig() {\n  logger.info(\"loading config\");\n  return readConfig();\n\
+  }"
+detector_before: no-console Unexpected console statement.
+detector_after: ''
+validation_command: eslint --rule no-console
+source_finding_id: null
+extracted_at: '2026-06-28T18:35:07.625197+00:00'
+imports_touched: []
+negative_examples:
+- "function loadConfig() {\n  return readConfig();\n}"

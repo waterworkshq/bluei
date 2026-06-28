@@ -1,0 +1,17 @@
+id: gb-eslint-no-debugger
+asset_class: pattern
+asset_ref: null
+rule: eslint-no-debugger
+rule_family: eslint-no
+language: javascript
+before: "function findIssue(node) {\n  debugger;\n  return inspect(node);\n}"
+after: "function findIssue(node) {\n  return inspect(node);\n}"
+detector_before: no-debugger Unexpected 'debugger' statement.
+detector_after: ''
+validation_command: eslint --rule no-debugger
+source_finding_id: null
+extracted_at: '2026-06-28T18:35:07.994818+00:00'
+imports_touched: []
+negative_examples:
+- "function findIssue(node) {\n  const label = \"debugger\";\n  return inspect(node,\
+  \ label);\n}"

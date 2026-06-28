@@ -1,0 +1,17 @@
+id: gb-eslint-no-empty
+asset_class: pattern
+asset_ref: null
+rule: eslint-no-empty
+rule_family: eslint-no
+language: javascript
+before: "try {\n  writeReport(report);\n} catch (err) {\n}"
+after: "try {\n  writeReport(report);\n} catch (err) {\n  logger.error(\"report write\
+  \ failed\", err);\n}"
+detector_before: no-empty Empty block statement.
+detector_after: ''
+validation_command: eslint --rule no-empty
+source_finding_id: null
+extracted_at: '2026-06-28T18:35:08.368162+00:00'
+imports_touched: []
+negative_examples:
+- "try {\n  writeReport(report);\n} catch (err) {\n  // retried by caller\n}"

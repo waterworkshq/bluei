@@ -1,0 +1,19 @@
+id: gb-eslint-no-dupe-keys
+asset_class: pattern
+asset_ref: null
+rule: eslint-no-dupe-keys
+rule_family: eslint-no-dupe
+language: javascript
+before: "const finding = {\n  rule: \"no-var\",\n  severity: \"error\",\n  rule: \"\
+  eqeqeq\"\n};"
+after: "const finding = {\n  rule: \"no-var\",\n  severity: \"error\",\n  next: \"\
+  eqeqeq\"\n};"
+detector_before: no-dupe-keys Duplicate key 'rule'.
+detector_after: ''
+validation_command: eslint --rule no-dupe-keys
+source_finding_id: null
+extracted_at: '2026-06-28T18:35:08.240727+00:00'
+imports_touched: []
+negative_examples:
+- "const finding = {\n  rule: \"no-var\",\n  severity: \"error\",\n  fix: \"replace\"\
+  \n};"

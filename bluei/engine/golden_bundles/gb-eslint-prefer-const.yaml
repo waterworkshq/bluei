@@ -1,0 +1,18 @@
+id: gb-eslint-prefer-const
+asset_class: pattern
+asset_ref: null
+rule: eslint-prefer-const
+rule_family: eslint-prefer
+language: javascript
+before: "function baseUrl() {\n  let host = \"bluei.dev\";\n  return `https://${host}`;\n\
+  }"
+after: "function baseUrl() {\n  const host = \"bluei.dev\";\n  return `https://${host}`;\n\
+  }"
+detector_before: prefer-const 'host' is never reassigned. Use 'const' instead.
+detector_after: ''
+validation_command: eslint --rule prefer-const
+source_finding_id: null
+extracted_at: '2026-06-28T18:35:08.121032+00:00'
+imports_touched: []
+negative_examples:
+- "function counter() {\n  let count = 0;\n  count += 1;\n  return count;\n}"

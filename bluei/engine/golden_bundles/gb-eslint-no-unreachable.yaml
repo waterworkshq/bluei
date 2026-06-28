@@ -1,0 +1,17 @@
+id: gb-eslint-no-unreachable
+asset_class: pattern
+asset_ref: null
+rule: eslint-no-unreachable
+rule_family: eslint-no
+language: javascript
+before: "function resolve(report) {\n  return report;\n  emit(report);\n}"
+after: "function resolve(report) {\n  emit(report);\n  return report;\n}"
+detector_before: no-unreachable Unreachable code.
+detector_after: ''
+validation_command: eslint --rule no-unreachable
+source_finding_id: null
+extracted_at: '2026-06-28T18:35:07.875884+00:00'
+imports_touched: []
+negative_examples:
+- "function resolve(report) {\n  if (!report) {\n    return null;\n  }\n  return report;\n\
+  }"
