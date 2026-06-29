@@ -293,6 +293,17 @@ class TestRecipeEngine:
         assert engine.has_recipe("ruff-C408")
         assert not engine.has_recipe("nonexistent")
 
+    def test_eslint_autofix_wildcard_loaded(self):
+        """AC-P2-7: eslint-autofix.yaml covers autofixable eslint rules."""
+        engine = RecipeEngine([builtin_recipe_dir()])
+        assert engine.has_recipe("eslint-no-unused-vars", language="typescript")
+        assert engine.has_recipe("eslint-no-unused-vars", language="javascript")
+        assert engine.has_recipe("eslint-no-unused-vars", language="python")
+        recipe = engine.match("eslint-no-unused-vars", "typescript")
+        assert recipe is not None
+        assert recipe.id == "eslint-autofix"
+        assert recipe.language == "*"
+
     def test_empty_dirs(self):
         engine = RecipeEngine([])
         assert engine.recipe_count == 0

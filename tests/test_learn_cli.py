@@ -21,9 +21,14 @@ from bin.bluei import _cmd_learn  # noqa: E402
 from bin.cmd_learn import (  # noqa: E402
     _apply_before_after,
     _derive_detector_command,
+    _learn_approve,
     _learn_audit,
     _learn_bundle,
     _learn_inbox,
+    _learn_pause,
+    _learn_reject,
+    _learn_resume,
+    _learn_retire,
     _learn_status,
 )
 from bluei.engine.bundle_loader import GoldenBundle, load_bundles  # noqa: E402
@@ -755,3 +760,259 @@ class TestCmdLearnDispatch:
         out = capsys.readouterr().out
         assert "operator:dispatch" in out
         assert "dispatch test" in out
+
+
+# ---------------------------------------------------------------------------
+# governance decision verbs (AC-P2-5, AC-P2-4)
+# ---------------------------------------------------------------------------
+
+
+class TestGovernanceVerbsDispatch:
+    """AC-P2-5: each verb dispatches + appends the right decision record."""
+
+    @pytest.mark.parametrize(
+        "verb,expected_decision,expected_state",
+        [
+            ("approve", "approve", "active"),
+            ("reject", "reject", "retired"),
+            ("pause", "pause", "paused"),
+            ("resume", "resume", "active"),
+            ("retire", "retire", "retired"),
+        ],
+    )
+    def test_each_verb_appends_decision_record(
+        self, verb, expected_decision, expected_state, tmp_path, capsys
+    ):
+        repo_name = "myrepo"
+        repos_dir = tmp_path / "repos"
+        state_dir = repos_dir / repo_name / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        approvals = state_dir / "approval_records.jsonl"
+        _write_jsonl(
+            approvals,
+            [
+                _approval_record(
+                    asset_ref="pattern:fp-aaa",
+                    decision="pending_approval",
+                    timestamp="2026-06-27T10:00:00Z",
+                    reason="needs review",
+                ),
+            ],
+        )
+
+        rc = _cmd_learn(
+            [
+                verb,
+                "pattern:fp-aaa",
+                "--repo",
+                repo_name,
+                "--state-root",
+                str(repos_dir),
+            ]
+        )
+        assert rc == 0
+
+        records = json.loads(approvals.read_text(encoding="utf-8").splitlines()[0])
+        assert records["asset_ref"] == "pattern:fp-aaa"
+        assert records["decision"] == "pending_approval"
+
+        new_record = json.loads(approvals.read_text(encoding="utf-8").splitlines()[1])
+        assert new_record["asset_ref"] == "pattern:fp-aaa"
+        assert new_record["decision"] == expected_decision
+        assert new_record["native_state_after"] == expected_state
+        assert new_record["actor"] == "operator:cli"
+        assert new_record["timestamp"]
+
+    def test_governance_verb_requires_asset_ref(self, capsys):
+        for verb in ("approve", "reject", "pause", "resume", "retire"):
+            rc = _cmd_learn([verb, "--repo", "r"])
+            assert rc == 1
+            err = capsys.readouterr().err
+            assert "asset_ref" in err
+
+    def test_governance_verb_appends_after_pending(self, tmp_path):
+        """AC-P2-5: pending + approve both present in the trail."""
+        repo_name = "myrepo"
+        repos_dir = tmp_path / "repos"
+        state_dir = repos_dir / repo_name / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        approvals = state_dir / "approval_records.jsonl"
+        _write_jsonl(
+            approvals,
+            [
+                _approval_record(
+                    asset_ref="recipe:test-1",
+                    decision="pending_approval",
+                    timestamp="2026-06-27T10:00:00Z",
+                ),
+            ],
+        )
+        # recipe: with no cached YAML → resume_pending_promotion returns
+        # NOT_ELIGIBLE but the approve record is still written.
+        rc = _cmd_learn(
+            [
+                "approve",
+                "recipe:test-1",
+                "--repo",
+                repo_name,
+                "--state-root",
+                str(repos_dir),
+            ]
+        )
+        assert rc == 0
+        lines = approvals.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 2
+        first = json.loads(lines[0])
+        second = json.loads(lines[1])
+        assert first["decision"] == "pending_approval"
+        assert second["decision"] == "approve"
+
+
+class TestApproveWritesCachedRecipeYaml:
+    """AC-P2-4: under gate_closed, learn approve writes the cached YAML."""
+
+    def test_approve_calls_resume_pending_promotion_for_recipe_ref(
+        self, tmp_path, capsys
+    ):
+        repo_name = "myrepo"
+        repos_dir = tmp_path / "repos"
+        state_dir = repos_dir / repo_name / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        approvals = state_dir / "approval_records.jsonl"
+
+        cached_yaml = (
+            "id: foundry-ruff-b904\n"
+            "rule: ruff-b904\n"
+            "language: python\n"
+            "safety: idempotent\n"
+            "description: cached\n"
+            "match:\n"
+            "  type: rule_exact\n"
+            "  rule: ruff-b904\n"
+            "replacement:\n"
+            "  type: text\n"
+            "  value: old\n"
+            "  replacement: new\n"
+        )
+        _write_jsonl(
+            approvals,
+            [
+                _approval_record(
+                    asset_ref="recipe:foundry-ruff-b904",
+                    decision="pending_approval",
+                    timestamp="2026-06-27T10:00:00Z",
+                    native_state_before="seeded-pattern",
+                    native_state_after="pending-recipe",
+                    evidence_snapshot={
+                        "recipe_id": "foundry-ruff-b904",
+                        "proposed_recipe_yaml": cached_yaml,
+                        "source_pattern_id": "seed-ruff-b904",
+                        "source_bundle_id": "gb-ruff-b904",
+                    },
+                    actor="system:recipe-foundry",
+                ),
+            ],
+        )
+
+        staged_dir = tmp_path / "staged"
+        staged_dir.mkdir(parents=True, exist_ok=True)
+
+        with patch(
+            "bluei.engine.recipe_engine.staged_recipe_dir",
+            return_value=staged_dir,
+        ):
+            rc = _cmd_learn(
+                [
+                    "approve",
+                    "recipe:foundry-ruff-b904",
+                    "--repo",
+                    repo_name,
+                    "--state-root",
+                    str(repos_dir),
+                ]
+            )
+        assert rc == 0
+
+        out = capsys.readouterr().out
+        assert "resume_pending_promotion" in out
+        assert "promoted" in out
+
+        written_yaml = staged_dir / "foundry-ruff-b904.yaml"
+        assert written_yaml.exists()
+        assert "id: foundry-ruff-b904" in written_yaml.read_text(encoding="utf-8")
+
+        # An auto_promote record was appended by resume_pending_promotion.
+        lines = approvals.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 3
+        decisions = [json.loads(line)["decision"] for line in lines]
+        assert decisions == ["pending_approval", "approve", "auto_promote"]
+
+    def test_approve_skips_resume_for_non_recipe_ref(self, tmp_path, capsys):
+        """pattern: refs only write the approve record — no resume call."""
+        repo_name = "myrepo"
+        repos_dir = tmp_path / "repos"
+        state_dir = repos_dir / repo_name / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        approvals = state_dir / "approval_records.jsonl"
+        _write_jsonl(
+            approvals,
+            [
+                _approval_record(
+                    asset_ref="pattern:fp-aaa",
+                    decision="pending_approval",
+                    timestamp="2026-06-27T10:00:00Z",
+                ),
+            ],
+        )
+
+        with patch(
+            "bluei.engine.shared_pattern_library.resume_pending_promotion"
+        ) as mock_resume:
+            rc = _cmd_learn(
+                [
+                    "approve",
+                    "pattern:fp-aaa",
+                    "--repo",
+                    repo_name,
+                    "--state-root",
+                    str(repos_dir),
+                ]
+            )
+        assert rc == 0
+        mock_resume.assert_not_called()
+        out = capsys.readouterr().out
+        assert "resume_pending_promotion" not in out
+
+    def test_unit_learn_approve_writes_record(self, state_env, capsys):
+        state_dir, _repos_dir, _repo = state_env
+        rc = _learn_approve("pattern:fp-xyz", "myrepo", state_dir, state=None)
+        assert rc == 0
+        records_path = state_dir / "approval_records.jsonl"
+        lines = records_path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        rec = json.loads(lines[0])
+        assert rec["decision"] == "approve"
+        assert rec["native_state_after"] == "active"
+
+    def test_unit_learn_reject_pause_resume_retire_write_records(
+        self, state_env, capsys
+    ):
+        state_dir, _repos_dir, _repo = state_env
+        for fn, expected in (
+            (_learn_reject, "reject"),
+            (_learn_pause, "pause"),
+            (_learn_resume, "resume"),
+            (_learn_retire, "retire"),
+        ):
+            rc = fn(f"pattern:fp-{expected}", "myrepo", state_dir, state=None)
+            assert rc == 0
+        records = [
+            json.loads(line)
+            for line in (state_dir / "approval_records.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        decisions = [r["decision"] for r in records]
+        assert decisions == ["reject", "pause", "resume", "retire"]
+        states = [r["native_state_after"] for r in records]
+        assert states == ["retired", "paused", "active", "retired"]

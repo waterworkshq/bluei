@@ -54,7 +54,7 @@ HELP_TEXT = {
   {GREEN}patterns{RESET}            {DIM}Inspect and manage learned fix patterns{RESET}
   {GREEN}campaign{RESET}            {DIM}Plan multi-finding refactor campaigns{RESET}
   {GREEN}emergent{RESET}            {DIM}Inspect proposed emergent rules{RESET}
-  {GREEN}learn{RESET}               {DIM}Read-only governance inbox, status, audit, bundle{RESET}
+  {GREEN}learn{RESET}               {DIM}Governance inbox, status, audit, bundle, and decision verbs{RESET}
   {GREEN}create-plugin{RESET}       {DIM}Scaffold a new discovery plugin{RESET}
 
 {BOLD}Examples:{RESET}
@@ -522,21 +522,33 @@ by `bluei languages` on the next run.{RESET}
 """,
     "learn": f"""{BOLD}bluei learn{RESET} {CYAN}<subcommand>{RESET} [{YELLOW}options{RESET}]
 
-{DIM}Read-only governance surface and Golden Bundle creation for the
-Operator Control Plane. Per ADR-0015, the read path is unified under
-`learn`; write-verbs (approve, reject, pause, reactivate) stay native.{RESET}
+{DIM}Governance surface for the Operator Control Plane. Per ADR-0015
+(revised), the read path (inbox, status, audit) and the governance
+decision verbs (approve, reject, pause, resume, retire) live under
+`learn`; asset-content writes stay native. Golden Bundle creation
+also lives here.{RESET}
 
 {BOLD}Usage:{RESET}
   bluei learn inbox [--repo {CYAN}<name>{RESET}]
   bluei learn status {CYAN}<asset_ref>{RESET} [--repo {CYAN}<name>{RESET}]
   bluei learn audit {CYAN}<asset_ref>{RESET} [--repo {CYAN}<name>{RESET}]
   bluei learn bundle {CYAN}<pattern_id>{RESET} --worktree {CYAN}<path>{RESET} --from-finding {CYAN}<id>{RESET} [--repo {CYAN}<name>{RESET}]
+  bluei learn {CYAN}{BOLD}approve{RESET}{RESET} {CYAN}<asset_ref>{RESET} [--repo {CYAN}<name>{RESET}]
+  bluei learn {CYAN}{BOLD}reject{RESET}{RESET}  {CYAN}<asset_ref>{RESET} [--repo {CYAN}<name>{RESET}]
+  bluei learn {CYAN}{BOLD}pause{RESET}{RESET}   {CYAN}<asset_ref>{RESET} [--repo {CYAN}<name>{RESET}]
+  bluei learn {CYAN}{BOLD}resume{RESET}{RESET}  {CYAN}<asset_ref>{RESET} [--repo {CYAN}<name>{RESET}]
+  bluei learn {CYAN}{BOLD}retire{RESET}{RESET}  {CYAN}<asset_ref>{RESET} [--repo {CYAN}<name>{RESET}]
 
 {BOLD}Subcommands:{RESET}
   inbox                   {DIM}List pending governance approvals{RESET}
   status {CYAN}<asset_ref>{RESET}           {DIM}Show governance + native + recent SPRT evidence{RESET}
   audit {CYAN}<asset_ref>{RESET}            {DIM}Show full decision history for an asset{RESET}
   bundle {CYAN}<pattern_id>{RESET}          {DIM}Create a Golden Validation Bundle from a known-good fix{RESET}
+  approve {CYAN}<asset_ref>{RESET}          {DIM}Record an approve decision (writes cached recipe YAML for recipe: refs){RESET}
+  reject {CYAN}<asset_ref>{RESET}           {DIM}Record a reject decision (retires the asset){RESET}
+  pause {CYAN}<asset_ref>{RESET}            {DIM}Record a pause decision (pauses the asset){RESET}
+  resume {CYAN}<asset_ref>{RESET}           {DIM}Record a resume decision (reactivates the asset){RESET}
+  retire {CYAN}<asset_ref>{RESET}           {DIM}Record a retire decision (retires the asset){RESET}
 
 {BOLD}Options:{RESET}
   --repo {CYAN}<name>{RESET}             Repository name (required)
@@ -548,6 +560,8 @@ Operator Control Plane. Per ADR-0015, the read path is unified under
   bluei learn inbox --repo my-app
   bluei learn status pattern:fp-a1b2c3d4 --repo my-app
   bluei learn audit pattern:fp-a1b2c3d4 --repo my-app
+  bluei learn approve recipe:auto-ruff-b904 --repo my-app
+  bluei learn pause pattern:fp-a1b2c3d4 --repo my-app
   bluei learn bundle fp-a1b2c3d4 --worktree ./worktrees/fix --from-finding f-001 --repo my-app
 """,
 }

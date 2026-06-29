@@ -132,7 +132,17 @@ def _cmd_learn(rest: list[str]) -> int:
     subcmd = rest[0]
     sub_rest = rest[1:]
 
-    if subcmd not in {"inbox", "status", "audit", "bundle"}:
+    if subcmd not in {
+        "inbox",
+        "status",
+        "audit",
+        "bundle",
+        "approve",
+        "reject",
+        "pause",
+        "resume",
+        "retire",
+    }:
         print(
             f"bluei: unknown learn subcommand '{subcmd}'. Try 'bluei help learn'.",
             file=sys.stderr,
@@ -177,6 +187,25 @@ def _cmd_learn(rest: list[str]) -> int:
             )
             return 1
         return _learn_audit(asset_ref, state_dir)
+
+    if subcmd in {"approve", "reject", "pause", "resume", "retire"}:
+        asset_ref = _first_positional(sub_rest)
+        if not asset_ref:
+            print(
+                f"bluei: learn {subcmd} requires an <asset_ref>. "
+                "Try 'bluei help learn'.",
+                file=sys.stderr,
+            )
+            return 1
+        if subcmd == "approve":
+            return _learn_approve(asset_ref, repo, state_dir, state)
+        if subcmd == "reject":
+            return _learn_reject(asset_ref, repo, state_dir, state)
+        if subcmd == "pause":
+            return _learn_pause(asset_ref, repo, state_dir, state)
+        if subcmd == "resume":
+            return _learn_resume(asset_ref, repo, state_dir, state)
+        return _learn_retire(asset_ref, repo, state_dir, state)
 
     # bundle
     pattern_id = _first_positional(sub_rest)
@@ -336,6 +365,105 @@ def _learn_audit(asset_ref: str, state_dir: Path) -> int:
         if reason:
             print(f"    reason:   {reason}")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# governance decision verbs (ADR-0015 revised, ADR-0020)
+# ---------------------------------------------------------------------------
+
+
+_VERB_TO_DECISION = {
+    "approve": ("approve", "active"),
+    "reject": ("reject", "retired"),
+    "pause": ("pause", "paused"),
+    "resume": ("resume", "active"),
+    "retire": ("retire", "retired"),
+}
+
+
+def _write_governance_decision(
+    state_dir: Path,
+    asset_ref: str,
+    decision: str,
+    native_state_after: str,
+    reason: str = "",
+) -> int:
+    """Construct + append an ApprovalRecord for *asset_ref*.
+
+    Shared by ``learn {approve,reject,pause,resume,retire}``. The record is
+    appended to ``<state_dir>/approval_records.jsonl`` (ADR-0008 append-only
+    trail). Returns 0 on success.
+    """
+    from bluei.engine.governance import ApprovalRecord
+    from bluei.engine.jsonl import append_jsonl
+    from bluei.engine.models import now_iso
+
+    record = ApprovalRecord(
+        asset_ref=asset_ref,
+        decision=decision,
+        native_state_before="",
+        native_state_after=native_state_after,
+        reason=reason,
+        evidence_snapshot={},
+        actor="operator:cli",
+        timestamp=now_iso(),
+    )
+    append_jsonl(state_dir / "approval_records.jsonl", record.to_dict())
+    print(f"Recorded '{decision}' for {asset_ref}.")
+    return 0
+
+
+def _learn_approve(asset_ref: str, repo: str, state_dir: Path, state) -> int:
+    """Append an ``approve`` ApprovalRecord.
+
+    For ``recipe:`` asset_refs, additionally calls
+    :func:`resume_pending_promotion` to write a Foundry-cached YAML to the
+    staged recipe directory (ADR-0020 approval-loop closer).
+    """
+    decision, native_state_after = _VERB_TO_DECISION["approve"]
+    rc = _write_governance_decision(state_dir, asset_ref, decision, native_state_after)
+    if rc != 0:
+        return rc
+
+    if asset_ref.startswith("recipe:"):
+        from bluei.engine.recipe_engine import staged_recipe_dir
+        from bluei.engine.shared_pattern_library import resume_pending_promotion
+
+        result = resume_pending_promotion(
+            asset_ref,
+            state_dir / "approval_records.jsonl",
+            staged_recipe_dir(),
+        )
+        print(f"resume_pending_promotion: {result.value}")
+    return 0
+
+
+def _learn_reject(asset_ref: str, repo: str, state_dir: Path, state) -> int:
+    decision, native_state_after = _VERB_TO_DECISION["reject"]
+    return _write_governance_decision(
+        state_dir, asset_ref, decision, native_state_after
+    )
+
+
+def _learn_pause(asset_ref: str, repo: str, state_dir: Path, state) -> int:
+    decision, native_state_after = _VERB_TO_DECISION["pause"]
+    return _write_governance_decision(
+        state_dir, asset_ref, decision, native_state_after
+    )
+
+
+def _learn_resume(asset_ref: str, repo: str, state_dir: Path, state) -> int:
+    decision, native_state_after = _VERB_TO_DECISION["resume"]
+    return _write_governance_decision(
+        state_dir, asset_ref, decision, native_state_after
+    )
+
+
+def _learn_retire(asset_ref: str, repo: str, state_dir: Path, state) -> int:
+    decision, native_state_after = _VERB_TO_DECISION["retire"]
+    return _write_governance_decision(
+        state_dir, asset_ref, decision, native_state_after
+    )
 
 
 # ---------------------------------------------------------------------------

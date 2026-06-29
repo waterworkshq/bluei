@@ -1,0 +1,22 @@
+id: eslint-autofix
+rule: "eslint-*"
+language: "*"
+safety: needs_validation
+description: "Apply eslint auto-fix for supported rules"
+
+match:
+  type: rule_prefix
+  prefix: "eslint-"
+
+replacement:
+  type: command
+  command: ["eslint", "--fix", "{file}"]
+
+validation:
+  run_baseline: true
+  run_target: false
+
+metadata:
+  version: 1
+  author: bluei-core
+  wildcard: true
