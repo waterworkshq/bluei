@@ -458,3 +458,66 @@ def promote_pattern_to_recipe(
         )
         append_jsonl(approval_records_path, record.to_dict())
     return PromotionResult.PROMOTED
+
+
+def resume_pending_promotion(
+    asset_ref: str,
+    approval_records_path: Path,
+    output_dir: Path,
+) -> PromotionResult:
+    """Write a Recipe YAML that was cached as ``pending_approval``.
+
+    Reads the most-recent ``pending_approval`` record for ``asset_ref`` from
+    the JSONL trail, extracts ``recipe_id`` + ``proposed_recipe_yaml`` from
+    its ``evidence_snapshot``, writes the YAML to
+    ``output_dir/<recipe_id>.yaml``, and appends an ``auto_promote``
+    ``ApprovalRecord`` (ADR-0020 approval-loop closer).
+
+    Returns:
+        ``PROMOTED`` on success, ``NOT_ELIGIBLE`` if no pending record exists
+        for ``asset_ref`` or the cached YAML is missing.
+    """
+    from bluei.engine.governance import ApprovalRecord
+    from bluei.engine.jsonl import append_jsonl, read_jsonl
+
+    records = list(read_jsonl(approval_records_path))
+    pending: Optional[Dict[str, Any]] = None
+    for rec in reversed(records):
+        if (
+            rec.get("asset_ref") == asset_ref
+            and rec.get("decision") == "pending_approval"
+        ):
+            pending = rec
+            break
+
+    if pending is None:
+        return PromotionResult.NOT_ELIGIBLE
+
+    evidence = pending.get("evidence_snapshot", {}) or {}
+    recipe_id = evidence.get("recipe_id")
+    cached_yaml = evidence.get("proposed_recipe_yaml")
+    if not recipe_id or not cached_yaml:
+        return PromotionResult.NOT_ELIGIBLE
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / f"{recipe_id}.yaml"
+    out_path.write_text(cached_yaml, encoding="utf-8")
+
+    append_jsonl(
+        approval_records_path,
+        ApprovalRecord(
+            asset_ref=asset_ref,
+            decision="auto_promote",
+            native_state_before="pending-recipe",
+            native_state_after="staged-recipe",
+            reason="Resumed promotion of Foundry-cached recipe",
+            evidence_snapshot={
+                "recipe_id": recipe_id,
+                "source_pattern_id": evidence.get("source_pattern_id"),
+                "source_bundle_id": evidence.get("source_bundle_id"),
+            },
+            actor="system:resume-pending-promotion",
+            timestamp=_now_iso(),
+        ).to_dict(),
+    )
+    return PromotionResult.PROMOTED

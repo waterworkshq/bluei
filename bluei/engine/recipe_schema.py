@@ -24,6 +24,7 @@ class RecipeMatch:
         scope: Granularity of the match ("line" or "file").
         context_guard: Dict with "excludes_pattern" to skip files matching a regex.
     """
+
     type: str
     pattern: Optional[str] = None
     rule: Optional[str] = None
@@ -48,6 +49,7 @@ class RecipeReplacement:
         condition: Guard string — presence/absence controls whether the fix runs.
         count: Max number of substitutions to perform.
     """
+
     type: str
     value: Optional[str] = None
     command: Optional[List[str]] = None
@@ -68,6 +70,7 @@ class RecipeValidation:
         run_baseline: Run the baseline check suite after applying the fix.
         run_target: Run the target check suite after applying the fix.
     """
+
     run_baseline: bool = True
     run_target: bool = True
 
@@ -88,38 +91,43 @@ class Recipe:
         metadata: Arbitrary key-value metadata consumed by specific handlers.
         priority: Numeric priority; higher values win during recipe selection.
     """
+
     id: str
     rule: str
     language: str = "*"
     safety: str = "needs_validation"
     description: str = ""
     match: RecipeMatch = field(default_factory=lambda: RecipeMatch(type="rule_exact"))
-    replacement: RecipeReplacement = field(default_factory=lambda: RecipeReplacement(type="text"))
+    replacement: RecipeReplacement = field(
+        default_factory=lambda: RecipeReplacement(type="text")
+    )
     validation: RecipeValidation = field(default_factory=RecipeValidation)
     metadata: Dict[str, Any] = field(default_factory=dict)
     priority: int = 1
 
 
-def load_recipe(path: Path) -> Recipe:
-    """Parse a YAML recipe file into a validated Recipe instance.
+def parse_recipe(text: str) -> Recipe:
+    """Parse YAML text into a validated Recipe instance.
+
+    Used by the Foundry (LLM-emitted YAML) and by :func:`load_recipe`.
 
     Args:
-        path: Path to the .yaml recipe file.
+        text: YAML recipe text.
 
     Returns:
         Fully-populated Recipe with nested Match, Replacement, and Validation.
 
     Raises:
-        ValueError: If the file is not a YAML mapping or lacks required fields.
+        ValueError: If the text is not a YAML mapping or lacks required fields.
     """
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw = yaml.safe_load(text)
     if not isinstance(raw, dict):
-        raise ValueError(f"Recipe file {path} does not contain a YAML mapping")
+        raise ValueError("Recipe text does not contain a YAML mapping")
 
     required = ("id", "rule")
     for key in required:
         if key not in raw:
-            raise ValueError(f"Recipe file {path} missing required field: {key}")
+            raise ValueError(f"Recipe text missing required field: {key}")
 
     match_raw = raw.get("match", {})
     match = RecipeMatch(
@@ -163,3 +171,20 @@ def load_recipe(path: Path) -> Recipe:
         metadata=raw.get("metadata", {}),
         priority=raw.get("priority", 1),
     )
+
+
+def load_recipe(path: Path) -> Recipe:
+    """Parse a YAML recipe FILE into a validated Recipe instance.
+
+    Thin wrapper over :func:`parse_recipe`.
+
+    Args:
+        path: Path to the .yaml recipe file.
+
+    Returns:
+        Fully-populated Recipe with nested Match, Replacement, and Validation.
+
+    Raises:
+        ValueError: If the file is not a YAML mapping or lacks required fields.
+    """
+    return parse_recipe(path.read_text(encoding="utf-8"))
