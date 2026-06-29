@@ -89,8 +89,12 @@ def package_rule(
         yaml.safe_dump(bundle_data, f, sort_keys=False)
     written["bundle"] = str(bundle_path)
 
-    # 2. Detection-only rules -> seeded Pattern (prompt-hint confidence, bypass cross-repo cap)
-    if not parsed.has_autofix and parsed.after:
+    # 2. Seeded Pattern for any rule with a fix shape (alpha.4 broadened gate).
+    # Originally detection-only (not has_autofix); broadened because Structural
+    # Replay (ADR-0019) and Recipe Foundry (ADR-0020) need a rich Pattern
+    # substrate. Autofixable rules get BOTH a Bundle and a Pattern — the
+    # Recipe cascade stage fires first; the Pattern is defense-in-depth fallback.
+    if parsed.after:
         pattern_entry = {
             "pattern_id": f"seed-{parsed.rule}",
             "rule": parsed.rule,

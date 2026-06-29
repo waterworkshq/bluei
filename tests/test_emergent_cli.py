@@ -248,7 +248,11 @@ def test_bluei_emergent_propose_from_fix_patterns(tmp_path) -> None:
     )
 
     assert result.returncode == 0
-    assert "created=1 updated=0 skipped=0" in result.stdout
+    # The synthetic fp-test pattern must produce exactly one created proposal.
+    # ``skipped`` reflects shipped authoritative-seed patterns (detection-only,
+    # success_count=0 below threshold) loaded from the product seeded_patterns/
+    # dir, so it is not asserted to be zero.
+    assert "created=1 updated=0" in result.stdout
     payload = json.loads((state_dir / "emergent_rules.json").read_text())
     assert payload["rules"][0]["detection_pattern"]["search_pattern"] == "broad-except"
 
@@ -490,27 +494,38 @@ def test_bluei_emergent_approve_activates_rule(tmp_path) -> None:
     state_dir = repos_dir / "demo" / "state"
     state_dir.mkdir(parents=True)
     import json
+
     rules_data = {
         "version": 1,
         "rules": [
             {
                 "rule_id": "er-approve-test",
                 "header": "Test rule",
-                "detection_pattern": {"detection_type": "text_pattern", "search_pattern": "test-rule"},
+                "detection_pattern": {
+                    "detection_type": "text_pattern",
+                    "search_pattern": "test-rule",
+                },
                 "language": "python",
                 "category": "lint",
                 "status": "candidate",
             }
         ],
     }
-    (state_dir / "emergent_rules.json").write_text(json.dumps(rules_data), encoding="utf-8")
+    (state_dir / "emergent_rules.json").write_text(
+        json.dumps(rules_data), encoding="utf-8"
+    )
 
     result = subprocess.run(
         [
-            sys.executable, str(Path(__file__).parent.parent / "bin" / "bluei.py"),
-            "emergent", "approve", "er-approve-test",
-            "--repo", "demo",
-            "--state-root", str(repos_dir),
+            sys.executable,
+            str(Path(__file__).parent.parent / "bin" / "bluei.py"),
+            "emergent",
+            "approve",
+            "er-approve-test",
+            "--repo",
+            "demo",
+            "--state-root",
+            str(repos_dir),
         ],
         cwd=str(Path(__file__).parent.parent),
         text=True,
@@ -529,13 +544,17 @@ def test_bluei_emergent_gc_retires_stale(tmp_path) -> None:
     state_dir = repos_dir / "demo" / "state"
     state_dir.mkdir(parents=True)
     import json
+
     rules_data = {
         "version": 1,
         "rules": [
             {
                 "rule_id": "er-old",
                 "header": "Old rule",
-                "detection_pattern": {"detection_type": "text_pattern", "search_pattern": "old"},
+                "detection_pattern": {
+                    "detection_type": "text_pattern",
+                    "search_pattern": "old",
+                },
                 "language": "python",
                 "category": "lint",
                 "status": "active",
@@ -544,7 +563,10 @@ def test_bluei_emergent_gc_retires_stale(tmp_path) -> None:
             {
                 "rule_id": "er-new",
                 "header": "New rule",
-                "detection_pattern": {"detection_type": "text_pattern", "search_pattern": "new"},
+                "detection_pattern": {
+                    "detection_type": "text_pattern",
+                    "search_pattern": "new",
+                },
                 "language": "python",
                 "category": "lint",
                 "status": "active",
@@ -552,14 +574,20 @@ def test_bluei_emergent_gc_retires_stale(tmp_path) -> None:
             },
         ],
     }
-    (state_dir / "emergent_rules.json").write_text(json.dumps(rules_data), encoding="utf-8")
+    (state_dir / "emergent_rules.json").write_text(
+        json.dumps(rules_data), encoding="utf-8"
+    )
 
     result = subprocess.run(
         [
-            sys.executable, str(Path(__file__).parent.parent / "bin" / "bluei.py"),
-            "emergent", "gc",
-            "--repo", "demo",
-            "--state-root", str(repos_dir),
+            sys.executable,
+            str(Path(__file__).parent.parent / "bin" / "bluei.py"),
+            "emergent",
+            "gc",
+            "--repo",
+            "demo",
+            "--state-root",
+            str(repos_dir),
         ],
         cwd=str(Path(__file__).parent.parent),
         text=True,

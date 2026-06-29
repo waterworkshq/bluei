@@ -7,6 +7,7 @@ loader (load_seeded_patterns) on a tmp seeded_patterns dir.
 """
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from bluei.engine.pattern_store import FixPattern, FixPatternStore, open_pattern
 from bluei.engine.seeded_pattern_loader import load_seeded_patterns
 from bluei.tools.seed.models import ParsedRule
 from bluei.tools.seed.package import package_rule
+from bluei.tools.seed.regenerate import regenerate_patterns_from_bundles
 
 
 def _make_parsed(*, has_autofix: bool = False, after="x = 1\n") -> ParsedRule:
@@ -83,7 +85,9 @@ def test_package_detection_only_rule_writes_bundle_and_pattern(tmp_path):
     assert pattern.structural_hash  # populated
 
 
-def test_package_autofix_rule_writes_bundle_only(tmp_path):
+def test_package_autofix_rule_writes_bundle_and_pattern(tmp_path):
+    """alpha.4: broadened gate — all rules with a fix shape produce BOTH
+    a Bundle and a seeded Pattern (defense-in-depth; ADR-0019/0020)."""
     parsed = _make_parsed(has_autofix=True)
     manifest = package_rule(
         parsed,
@@ -91,7 +95,9 @@ def test_package_autofix_rule_writes_bundle_only(tmp_path):
         seeded_patterns_dir=tmp_path / "seeded_patterns",
     )
     assert manifest["bundle"] is not None
-    assert manifest["pattern"] is None  # autofix rules -> bundle only
+    assert (
+        manifest["pattern"] is not None
+    )  # broadened gate: autofix -> Bundle + Pattern
 
 
 def test_load_seeded_patterns_injects_into_store(tmp_path):
@@ -158,3 +164,158 @@ def test_load_seeded_patterns_product_wins_on_conflict(tmp_path):
     # Mined replaced; seed present
     assert "mined-1" not in store._patterns
     assert "seed-ruff-b904" in store._patterns
+
+
+_HAS_ESLINT = shutil.which("eslint") is not None
+_HAS_RUFF = shutil.which("ruff") is not None
+_REAL_BUNDLES = (
+    Path(__file__).resolve().parent.parent / "bluei" / "engine" / "golden_bundles"
+)
+
+
+@pytest.mark.skipif(
+    not (_HAS_ESLINT and _HAS_RUFF),
+    reason="regenerator against real bundles needs ruff + eslint on PATH",
+)
+def test_regenerate_patterns_from_real_bundles_loads_into_store(tmp_path):
+    seeded_dir = tmp_path / "seeded_patterns"
+    summary = regenerate_patterns_from_bundles(
+        golden_bundles_dir=_REAL_BUNDLES,
+        seeded_patterns_dir=seeded_dir,
+    )
+
+    assert summary["bundles_read"] == 38
+    assert summary["patterns_written"] > 0
+    # alpha.4 broadened gate: all rules with a fix shape produce Patterns.
+    assert summary["patterns_written"] == 38
+    assert summary["skipped_autofixable"] == 0
+
+    # The runtime loader picks the regenerated Patterns up.
+    store = FixPatternStore(tmp_path / "patterns.jsonl")
+    assert len(store._patterns) == 0
+    loaded = load_seeded_patterns(store, seeded_dir=seeded_dir)
+    # Two bundles share rule "ruff-b904" (gb-ruff-b904 + ruff-b904-raise-with-from),
+    # producing the same pattern_id "seed-ruff-b904" — the store deduplicates by ID.
+    assert loaded == summary["patterns_written"]
+    assert len(store._patterns) == summary["patterns_written"] - 1  # 37 unique IDs
+    # calibration.yaml must be untouched (no *.jsonl collision).
+    assert list(seeded_dir.glob("*.jsonl"))
+
+
+def test_regenerate_patterns_from_synthetic_bundle(tmp_path, monkeypatch):
+    """Deterministic unit test: monkeypatch the linter so a synthetic detection-only
+    bundle flows through the regenerator and produces a seeded Pattern JSONL line."""
+    bundles_dir = tmp_path / "golden_bundles"
+    bundles_dir.mkdir()
+
+    bundle_data = {
+        "id": "gb-ruff-b904",
+        "asset_class": "pattern",
+        "asset_ref": None,
+        "rule": "ruff-b904",
+        "rule_family": "ruff-b",
+        "language": "python",
+        "before": "try:\n    pass\nexcept Exception:\n    raise\n",
+        "after": "try:\n    pass\nexcept Exception:\n    raise from None\n",
+        "detector_before": "B904 raise without from",
+        "detector_after": "",
+        "validation_command": "ruff check --select B904",
+        "source_finding_id": None,
+        "extracted_at": "2026-06-29T00:00:00Z",
+        "imports_touched": [],
+        "negative_examples": [],
+    }
+    (bundles_dir / "gb-ruff-b904.yaml").write_text(
+        yaml.safe_dump(bundle_data, sort_keys=False), encoding="utf-8"
+    )
+
+    # Stub the linter: confirm validity, force has_autofix=False so the pattern gate fires.
+    from bluei.tools.seed import regenerate as regen_mod
+    from bluei.tools.seed.validator import ValidationResult
+
+    def _stub_validate(candidate, ruff_executable="ruff", eslint_executable="eslint"):
+        candidate.has_autofix = False
+        return ValidationResult(
+            valid=True,
+            before_triggered=True,
+            after_clean=True,
+            before_diagnostics=1,
+            after_diagnostics=0,
+            reason="",
+        )
+
+    monkeypatch.setattr(regen_mod, "validate_candidate", _stub_validate)
+
+    seeded_dir = tmp_path / "seeded_patterns"
+    summary = regenerate_patterns_from_bundles(
+        golden_bundles_dir=bundles_dir,
+        seeded_patterns_dir=seeded_dir,
+    )
+
+    assert summary == {
+        "bundles_read": 1,
+        "patterns_written": 1,
+        "skipped_autofixable": 0,
+    }
+
+    pattern_file = seeded_dir / "ruff-b.jsonl"
+    assert pattern_file.exists()
+    lines = [
+        ln for ln in pattern_file.read_text(encoding="utf-8").splitlines() if ln.strip()
+    ]
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    pattern = FixPattern.from_dict(record)
+    assert pattern.pattern_id == "seed-ruff-b904"
+    assert pattern.rule == "ruff-b904"
+    assert pattern.rule_family == "ruff-b"
+    assert pattern.source == "authoritative-seed"
+    assert pattern.confidence == pytest.approx(0.6)
+    assert pattern.before_snippet == bundle_data["before"]
+    assert pattern.after_snippet == bundle_data["after"]
+
+
+def test_regenerate_clears_stale_jsonl_but_keeps_calibration(tmp_path, monkeypatch):
+    """Regeneration is idempotent: pre-existing *.jsonl are cleared, non-jsonl files survive."""
+    from bluei.tools.seed import regenerate as regen_mod
+    from bluei.tools.seed.validator import ValidationResult
+
+    seeded_dir = tmp_path / "seeded_patterns"
+    seeded_dir.mkdir()
+    (seeded_dir / "stale.jsonl").write_text("garbage\n", encoding="utf-8")
+    (seeded_dir / "calibration.yaml").write_text("key: value\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        regen_mod,
+        "validate_candidate",
+        lambda *a, **k: ValidationResult(
+            valid=False,
+            before_triggered=False,
+            after_clean=False,
+            before_diagnostics=0,
+            after_diagnostics=0,
+            reason="stub",
+        ),
+    )
+    bundles_dir = tmp_path / "golden_bundles"
+    bundles_dir.mkdir()
+    (bundles_dir / "gb-ruff-b904.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "rule": "ruff-b904",
+                "language": "python",
+                "before": "x = 1\n",
+                "after": "x = 2\n",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    regenerate_patterns_from_bundles(
+        golden_bundles_dir=bundles_dir,
+        seeded_patterns_dir=seeded_dir,
+    )
+
+    assert not (seeded_dir / "stale.jsonl").exists()
+    assert (seeded_dir / "calibration.yaml").exists()
