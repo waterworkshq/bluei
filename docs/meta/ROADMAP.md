@@ -67,8 +67,10 @@ Make bluei learn how each repo prefers code to be fixed.
 
 | Feature | Problem it solves |
 |---------|-------------------|
-| Taste Atlas | Learns repo-local conventions: tests, fixtures, imports, naming, framework idioms, preferred libraries, and local exceptions |
+| Taste Atlas | Learns repo-local conventions: tests, fixtures, imports, naming, framework idioms, and local exceptions |
 | Campaign Lab | Turns Campaigns into evidence-gathering instruments, not just batch execution |
+| Rule Hatchery plugin-skeleton generation (carried from alpha.4) | Graduated ACTIVE Emergent Rules become first-class plugin rules (`plugins/<lang>/` module + `plugin.yaml` + detector + test scaffold). Deferred from alpha.4 per seed 05 — plugin packaging is naturally a repo-native concern. Must pass the alpha.4 FP-rate gate (rule-owned negatives) before shipping. |
+| AST STRUCTURAL detection for emergent rules (carried from alpha.4) | `DetectionType.STRUCTURAL` scanning in `scan_shadow_rules` — the alpha.4 regex-abstraction bridge (ADR-0021) covers variable-name generalization; alpha.5 adds full AST structural matching alongside Taste Atlas. Regex rules stay (additive). |
 
 **Why here:** repo taste should influence learned fixes after the promotion pipeline exists. Campaigns can then intentionally collect evidence for deterministic assets.
 

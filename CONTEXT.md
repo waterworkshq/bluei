@@ -88,6 +88,10 @@ _Avoid_: coding style (too narrow), team preferences (too broad), memory.
 The non-mutating evidence-collection path for learned Patterns: apply a Pattern's fix to a scratch copy, run the Validation Gate, record the would-have-applied outcome (HIT / MISS / FAILURE), discard the scratch. Runs alongside the cascade for matched-but-not-selected Patterns. Feeds promotion and demotion evidence.
 _Avoid_: shadow replay (collides with review's `LiveRolloutMode.SHADOW`, which would-have-published a PR comment — different subsystem), dry run (too generic — `bluei duster` is a dry-run scan), shadow learning.
 
+**Structural Replay**
+The AST-aware application path for learned Patterns. When a Pattern's canonical `before_snippet` does not literally appear in the target file (different variable names, imports, layout), Structural Replay parses both the snippet and the target region into ASTs, structurally matches them with a variable-binding map, derives the AST edit from the Pattern's before→after delta, and applies the same edit to the matched target subtree. Lives as a fallback inside the Pattern replay stage (not the AST Transform stage) so that HIT/MISS/FAILURE evidence and SPRT/Dry Replay flows stay unified. Activates only at auto-replay confidence; low-confidence Patterns still surface as prompt hints.
+_Avoid_: AST replay (too generic — `ASTTransformCascadeStage` is the hand-authored-transform path; Structural Replay is Pattern-derived), structural matching (that is the *lookup* step — Structural Replay is the *application* step).
+
 **Golden Validation Bundle**
 A small regression fixture extracted from a successful fix, used to validate that a Pattern, Recipe, transform, or Emergent Rule still behaves correctly.
 _Avoid_: golden test (ambiguous), fixture only, regression test.
