@@ -1,0 +1,22 @@
+id: foundry-ruff-b018
+rule: ruff-b018
+language: python
+safety: safe
+description: Remove useless expression statements flagged by B018
+match:
+  type: rule_exact
+  rule: ruff-b018
+replacement:
+  type: regex_substitute
+  pattern: ^[ \t]+(?:[0-9]+(?:\.[0-9]+)?|'[^'\n]*'|"[^"\n]*")[ \t]*$\n?
+  replacement: ''
+  count: 1
+validation:
+  run_baseline: true
+  run_target: true
+metadata:
+  version: 1
+  author: bluei-recipe-foundry
+  source_pattern_id: seed-ruff-b018
+  source_bundle_id: gb-ruff-b018
+priority: 100

@@ -1,0 +1,22 @@
+id: foundry-ruff-e712
+rule: ruff-e712
+language: python
+safety: safe
+description: Simplify `x == True` to `x`
+match:
+  type: rule_exact
+  rule: ruff-e712
+replacement:
+  type: regex_substitute
+  pattern: ' == True\b'
+  replacement: ''
+  count: 1
+validation:
+  run_baseline: true
+  run_target: true
+metadata:
+  version: 1
+  author: bluei-recipe-foundry
+  source_pattern_id: seed-ruff-e712
+  source_bundle_id: gb-ruff-e712
+priority: 5

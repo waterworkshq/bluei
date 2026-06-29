@@ -1,0 +1,23 @@
+id: foundry-ruff-up031
+rule: ruff-up031
+language: python
+safety: needs_validation
+description: Convert %-formatted string to f-string (UP031)
+match:
+  type: rule_exact
+  rule: ruff-up031
+  scope: line
+replacement:
+  type: regex_substitute
+  pattern: '"([^"]*?)%s([^"]*?)" % (\w+)'
+  replacement: f"\1{\3}\2"
+  count: 1
+validation:
+  run_baseline: true
+  run_target: true
+metadata:
+  version: 1
+  author: bluei-recipe-foundry
+  source_pattern_id: seed-ruff-up031
+  source_bundle_id: gb-ruff-up031
+priority: 50

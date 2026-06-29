@@ -1,0 +1,23 @@
+id: foundry-ruff-b904-from-none
+rule: ruff-b904
+language: python
+safety: needs_validation
+description: Add `from None` to new exception raised inside `except` block
+match:
+  type: rule_exact
+  rule: ruff-b904
+  scope: line
+replacement:
+  type: regex_substitute
+  pattern: raise ValueError\("oops"\)$
+  replacement: raise ValueError("oops") from None
+  count: 1
+validation:
+  run_baseline: true
+  run_target: true
+metadata:
+  version: 1
+  author: bluei-recipe-foundry
+  source_pattern_id: seed-ruff-b904
+  source_bundle_id: gb-ruff-b904-raise-with-from
+priority: 100

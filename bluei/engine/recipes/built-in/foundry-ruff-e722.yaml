@@ -1,0 +1,24 @@
+id: foundry-ruff-e722
+rule: ruff-e722
+language: python
+safety: needs_validation
+description: Replace bare `except:` clauses with `except Exception:` to explicitly
+  catch the Exception base class
+match:
+  type: rule_exact
+  rule: ruff-e722
+  scope: line
+replacement:
+  type: regex_substitute
+  pattern: except:\s*$
+  replacement: 'except Exception:'
+  count: 1
+validation:
+  run_baseline: true
+  run_target: true
+metadata:
+  version: 1
+  author: bluei-recipe-foundry
+  source_pattern_id: seed-ruff-e722
+  source_bundle_id: gb-ruff-e722
+priority: 100

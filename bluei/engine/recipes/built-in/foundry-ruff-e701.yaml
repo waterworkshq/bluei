@@ -1,0 +1,22 @@
+id: foundry-ruff-e701
+rule: ruff-e701
+language: python
+safety: needs_validation
+description: 'Split single-line `if <cond>: <body>` into a header and indented body'
+match:
+  type: rule_exact
+  rule: ruff-e701
+replacement:
+  type: regex_substitute
+  pattern: '^(if\s+[^:]+): (\S.*)$'
+  replacement: $1:\n    $2
+  count: 1
+validation:
+  run_baseline: true
+  run_target: true
+metadata:
+  version: 1
+  author: bluei-recipe-foundry
+  source_pattern_id: seed-ruff-e701
+  source_bundle_id: gb-ruff-e701
+priority: 50

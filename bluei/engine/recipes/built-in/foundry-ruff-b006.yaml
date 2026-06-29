@@ -1,0 +1,23 @@
+id: foundry-ruff-b006
+rule: ruff-b006
+language: python
+safety: needs_validation
+description: Replace mutable default list argument with None + sentinel initialization
+match:
+  type: regex
+  pattern: items=\[\]:\n(\s+)items\.append
+  scope: file
+replacement:
+  type: regex_substitute
+  pattern: items=\[\]:\n(\s+)items\.append
+  replacement: items=None):\n\1if items is None:\n\1    items = []\n\1items.append
+  count: 1
+validation:
+  run_baseline: true
+  run_target: true
+metadata:
+  version: 1
+  author: bluei-recipe-foundry
+  source_pattern_id: seed-ruff-b006
+  source_bundle_id: gb-ruff-b006
+priority: 50

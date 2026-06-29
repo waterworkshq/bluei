@@ -1,0 +1,23 @@
+id: foundry-ruff-f841
+rule: ruff-f841
+language: python
+safety: needs_validation
+description: Remove unused local variable assignments flagged by F841
+match:
+  type: regex
+  pattern: ^[ \t]+\w+[ \t]*=[ \t]*[^=].*$
+  scope: line
+replacement:
+  type: regex_substitute
+  pattern: ^[ \t]+\w+[ \t]*=[ \t]*[^=].*\n
+  replacement: ''
+  count: 1
+validation:
+  run_baseline: true
+  run_target: true
+metadata:
+  version: 1
+  author: bluei-recipe-foundry
+  source_pattern_id: seed-ruff-f841
+  source_bundle_id: gb-ruff-f841
+priority: 50

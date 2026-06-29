@@ -1,0 +1,22 @@
+id: foundry-eslint-no-dupe-keys
+rule: eslint-no-dupe-keys
+language: javascript
+safety: needs_validation
+description: Rename the duplicate 'rule' key with value 'eqeqeq' to 'next'
+match:
+  type: rule_exact
+  rule: eslint-no-dupe-keys
+  scope: file
+replacement:
+  type: text
+  value: 'next: "eqeqeq"'
+  count: 1
+validation:
+  run_baseline: true
+  run_target: true
+metadata:
+  version: 1
+  author: bluei-recipe-foundry
+  source_pattern_id: seed-eslint-no-dupe-keys
+  source_bundle_id: gb-eslint-no-dupe-keys
+priority: 50

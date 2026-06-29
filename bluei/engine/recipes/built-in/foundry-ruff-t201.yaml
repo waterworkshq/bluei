@@ -1,0 +1,27 @@
+id: foundry-ruff-t201
+rule: ruff-t201
+language: python
+safety: needs_validation
+description: Replace print() with module-level logger.info() and add logging scaffolding
+match:
+  type: rule_exact
+  rule: ruff-t201
+  scope: file
+replacement:
+  type: scaffold
+  value: 'import logging
+
+
+    log = logging.getLogger(__name__)
+
+    '
+  count: 1
+validation:
+  run_baseline: true
+  run_target: true
+metadata:
+  version: 1
+  author: bluei-recipe-foundry
+  source_pattern_id: seed-ruff-t201
+  source_bundle_id: gb-ruff-t201
+priority: 100

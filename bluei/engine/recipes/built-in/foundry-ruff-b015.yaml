@@ -1,0 +1,21 @@
+id: foundry-ruff-b015
+rule: ruff-b015
+language: python
+safety: safe
+description: Remove useless comparison expressions flagged by B015
+match:
+  type: rule_exact
+  rule: ruff-b015
+replacement:
+  type: text
+  value: ''
+  count: 1
+validation:
+  run_baseline: true
+  run_target: true
+metadata:
+  version: 1
+  author: bluei-recipe-foundry
+  source_pattern_id: seed-ruff-b015
+  source_bundle_id: gb-ruff-b015
+priority: 10

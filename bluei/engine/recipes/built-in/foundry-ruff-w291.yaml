@@ -1,0 +1,23 @@
+id: foundry-ruff-w291
+rule: ruff-w291
+language: python
+safety: safe
+description: Strip trailing whitespace from end of line
+match:
+  type: regex
+  pattern: '[ \t]+$'
+  scope: line
+replacement:
+  type: regex_substitute
+  pattern: '[ \t]+$'
+  replacement: ''
+  count: 1
+validation:
+  run_baseline: true
+  run_target: true
+metadata:
+  version: 1
+  author: bluei-recipe-foundry
+  source_pattern_id: seed-ruff-w291
+  source_bundle_id: gb-ruff-w291
+priority: 50
