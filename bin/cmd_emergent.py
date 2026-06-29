@@ -153,15 +153,16 @@ def _cmd_emergent(rest: list[str]) -> int:
             )
             return 1
         try:
+            from bluei.app.emergent_rules import measure_false_positives
+
+            rule = next((r for r in store.load() if r.rule_id == rule_id), None)
+            measured_fps = measure_false_positives(rule) if rule is not None else 0
             result = store.record_shadow_run(
                 rule_id,
                 matches=_parse_positive_int(
                     _parse_option(sub_rest, "--matches"), default=0
                 ),
-                false_positives=_parse_positive_int(
-                    _parse_option(sub_rest, "--false-positives"),
-                    default=0,
-                ),
+                false_positives=measured_fps,
                 min_shadow_runs=_parse_positive_int(
                     _parse_option(sub_rest, "--min-shadow-runs"),
                     default=3,

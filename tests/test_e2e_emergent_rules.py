@@ -160,10 +160,9 @@ class TestIntegratedLifecycle:
         ``rule`` field carries the ``emergent:`` prefix when scanned against a
         repository that contains the rule's search pattern.
 
-        Note: ``propose_rules_from_findings`` seeds the rule's
-        ``search_pattern`` from ``finding.rule`` (not the snippet), so the
-        on-disk repo content must contain that literal for ``scan_shadow_rules``
-        to produce matches.
+        Note: ``propose_rules_from_findings`` derives a regex detection
+        pattern from the finding snippet (ADR-0021). The on-disk repo content
+        must satisfy that regex for ``scan_shadow_rules`` to produce matches.
         """
         import textwrap
 
@@ -198,6 +197,9 @@ class TestIntegratedLifecycle:
         store = EmergentRuleStore(tmp_path / "rules.json")
 
         # 1) Observe: 6 findings with the same rule in the same dir glob.
+        # ``propose_rules_from_findings`` extracts a regex detection pattern
+        # from the finding snippet (ADR-0021); the resulting regex still
+        # matches the literal ``shell=True`` lines written below.
         findings = [
             make_finding(
                 finding_id=f"f-life-{i}",
@@ -216,8 +218,15 @@ class TestIntegratedLifecycle:
         proposed = [r for r in rules if r.status == EmergentRuleStatus.PROPOSED]
         assert len(proposed) == 1
         rule_id = proposed[0].rule_id
-        # search_pattern mirrors finding.rule so the repo scan can match it.
-        assert proposed[0].detection_pattern.search_pattern == "shell=True"
+        # Detection pattern is a regex that generalizes the snippet's
+        # identifiers while preserving the ``shell=True`` literal.
+        from bluei.app.emergent_rules import DetectionType
+
+        assert (
+            proposed[0].detection_pattern.detection_type == DetectionType.REGEX_PATTERN
+        )
+        assert r"\w+" in proposed[0].detection_pattern.search_pattern
+        assert "shell=True" in proposed[0].detection_pattern.search_pattern
 
         # 2) Validate: PROPOSED -> CANDIDATE.
         validated = store.validate_proposals()

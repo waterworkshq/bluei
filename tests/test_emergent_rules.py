@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
@@ -11,6 +12,8 @@ from bluei.app.emergent_rules import (
     EmergentRuleStatus,
     EmergentRuleStore,
     ShadowRuleMatch,
+    extract_detection_regex,
+    measure_false_positives,
     propose_rules_from_fix_patterns,
     propose_rules_from_findings,
     discover_active_rule_findings,
@@ -960,3 +963,312 @@ class TestEmergentRulesLoopContinues:
         result = store.observe_findings(findings, run_id="run-1", min_observations=5)
         assert result["created"] == 1
         assert result["skipped"] == 0
+
+
+# ── Slice 5 (ADR-0021): detection extraction + evidence hardening ──
+
+
+class TestExtractDetectionRegex:
+    """AC-P3-1: extract_detection_regex behavior."""
+
+    def test_abstracts_python_call_into_regex(self):
+        regex = extract_detection_regex('raise ValueError("bad")', "python")
+        assert regex
+        assert r"\w+" in regex
+        assert re.search(regex, "raise CustomError(custom_msg)")
+        assert not re.search(regex, 'return ValueError("bad")')
+
+    def test_returns_empty_on_unparseable_python(self):
+        assert extract_detection_regex("not valid python !!!", "python") == ""
+
+    def test_returns_empty_on_empty_snippet(self):
+        assert extract_detection_regex("", "python") == ""
+        assert extract_detection_regex("   ", "python") == ""
+
+    def test_non_python_uses_lowercase_identifier_regex(self):
+        regex = extract_detection_regex("foo.bar(x)", "go")
+        assert regex
+        assert r"\w+" in regex
+
+
+class TestScanShadowRulesRegexBranch:
+    """AC-P3-2: scan_shadow_rules dispatches on detection_type."""
+
+    def test_regex_pattern_uses_re_search(self, tmp_path):
+        import re as _re
+
+        worktree = tmp_path / "repo"
+        (worktree / "src").mkdir(parents=True)
+        (worktree / "src" / "a.py").write_text(
+            "raise CustomError(custom_msg)\nreturn ValueError('bad')\n",
+            encoding="utf-8",
+        )
+        rule = EmergentRule(
+            rule_id="er-regex",
+            header="Regex",
+            detection_pattern=DetectionPattern(
+                detection_type=DetectionType.REGEX_PATTERN,
+                search_pattern=r"raise (\w+)\((\w+)\)",
+                file_glob="**/*",
+            ),
+            language="python",
+            category="lint",
+            status=EmergentRuleStatus.TENTATIVE,
+        )
+        matches = scan_shadow_rules([rule], worktree)
+        assert len(matches) == 1
+        assert matches[0].line == 1
+        assert matches[0].rule_id == "er-regex"
+
+    def test_text_pattern_still_substring(self, tmp_path):
+        worktree = tmp_path / "repo"
+        (worktree / "src").mkdir(parents=True)
+        (worktree / "src" / "a.py").write_text("shell=True\n", encoding="utf-8")
+        rule = EmergentRule(
+            rule_id="er-text",
+            header="Text",
+            detection_pattern=DetectionPattern(
+                detection_type=DetectionType.TEXT_PATTERN,
+                search_pattern="shell=True",
+            ),
+            language="python",
+            category="lint",
+            status=EmergentRuleStatus.ACTIVE,
+        )
+        matches = scan_shadow_rules([rule], worktree)
+        assert len(matches) == 1
+
+    def test_structural_still_skipped(self, tmp_path):
+        worktree = tmp_path / "repo"
+        (worktree / "src").mkdir(parents=True)
+        (worktree / "src" / "a.py").write_text("TODO\n", encoding="utf-8")
+        rule = EmergentRule(
+            rule_id="er-struct",
+            header="Structural",
+            detection_pattern=DetectionPattern(
+                detection_type=DetectionType.STRUCTURAL,
+                search_pattern="TODO",
+            ),
+            language="python",
+            category="lint",
+            status=EmergentRuleStatus.TENTATIVE,
+        )
+        assert scan_shadow_rules([rule], worktree) == []
+
+    def test_invalid_regex_is_skipped(self, tmp_path):
+        worktree = tmp_path / "repo"
+        (worktree / "src").mkdir(parents=True)
+        (worktree / "src" / "a.py").write_text("anything\n", encoding="utf-8")
+        rule = EmergentRule(
+            rule_id="er-bad",
+            header="Bad regex",
+            detection_pattern=DetectionPattern(
+                detection_type=DetectionType.REGEX_PATTERN,
+                search_pattern="(unbalanced",
+            ),
+            language="python",
+            category="lint",
+            status=EmergentRuleStatus.TENTATIVE,
+        )
+        assert scan_shadow_rules([rule], worktree) == []
+
+
+class TestProposeRulesFromFindingsRegex:
+    """AC-P3-3: proposal functions produce REGEX_PATTERN with \\w+."""
+
+    def test_propose_uses_regex_when_snippet_parses(self):
+        findings = [
+            _finding(
+                f"f-{i}",
+                "ruff-b904",
+                path=f"src/api/m{i}.py",
+                snippet='raise ValueError("bad")',
+            )
+            for i in range(3)
+        ]
+        proposals = propose_rules_from_findings(
+            findings, run_id="r1", min_observations=2
+        )
+        assert len(proposals) == 1
+        pattern = proposals[0].detection_pattern
+        assert pattern.detection_type == DetectionType.REGEX_PATTERN
+        assert r"\w+" in pattern.search_pattern
+        assert pattern.search_pattern != "ruff-b904"
+
+    def test_propose_falls_back_to_text_when_unparseable(self):
+        findings = [
+            _finding(
+                f"f-{i}",
+                "llm-style",
+                path=f"src/api/m{i}.py",
+                snippet="not valid python !!!",
+            )
+            for i in range(3)
+        ]
+        proposals = propose_rules_from_findings(
+            findings, run_id="r1", min_observations=2
+        )
+        assert len(proposals) == 1
+        pattern = proposals[0].detection_pattern
+        assert pattern.detection_type == DetectionType.TEXT_PATTERN
+        assert pattern.search_pattern == "llm-style"
+
+
+class TestMeasureFalsePositives:
+    """AC-P3-4: measure_false_positives counts rule-owned negative matches."""
+
+    def test_regex_rule_counts_matches(self):
+        rule = EmergentRule(
+            rule_id="er-fp",
+            header="FP",
+            detection_pattern=DetectionPattern(
+                detection_type=DetectionType.REGEX_PATTERN,
+                search_pattern=r"raise (\w+)\((\w+)\)",
+            ),
+            language="python",
+            category="lint",
+            negative_examples=[
+                "raise CustomError(custom_msg)",  # match
+                "return ValueError('bad')",  # no match
+                "raise OtherError(detail)",  # match
+            ],
+        )
+        assert measure_false_positives(rule) == 2
+
+    def test_text_rule_uses_substring(self):
+        rule = EmergentRule(
+            rule_id="er-fp-text",
+            header="FP text",
+            detection_pattern=DetectionPattern(
+                detection_type=DetectionType.TEXT_PATTERN,
+                search_pattern="shell=True",
+            ),
+            language="python",
+            category="lint",
+            negative_examples=[
+                "subprocess.run(cmd, shell=True)",  # match
+                "x = 1",  # no match
+            ],
+        )
+        assert measure_false_positives(rule) == 1
+
+    def test_structural_returns_zero(self):
+        rule = EmergentRule(
+            rule_id="er-fp-struct",
+            header="FP struct",
+            detection_pattern=DetectionPattern(
+                detection_type=DetectionType.STRUCTURAL,
+                search_pattern="TODO",
+            ),
+            language="python",
+            category="lint",
+            negative_examples=["TODO", "TODO"],
+        )
+        assert measure_false_positives(rule) == 0
+
+    def test_empty_negatives_returns_zero(self):
+        rule = EmergentRule(
+            rule_id="er-fp-empty",
+            header="FP empty",
+            detection_pattern=DetectionPattern(
+                detection_type=DetectionType.REGEX_PATTERN,
+                search_pattern=r"foo",
+            ),
+            language="python",
+            category="lint",
+        )
+        assert measure_false_positives(rule) == 0
+
+
+class TestRecordShadowRunWithMeasuredFPs:
+    """AC-P3-5: record_shadow_run with measured FPs drives the FP-rate gate."""
+
+    def test_measured_fps_reject_noisy_rule(self, tmp_path):
+        store = EmergentRuleStore(tmp_path / "rules.json")
+        store.save(
+            [
+                EmergentRule(
+                    rule_id="er-noisy",
+                    header="Noisy",
+                    detection_pattern=DetectionPattern(
+                        detection_type=DetectionType.REGEX_PATTERN,
+                        search_pattern=r"print\(",
+                    ),
+                    language="python",
+                    category="lint",
+                    status=EmergentRuleStatus.CANDIDATE,
+                    negative_examples=[
+                        "print('debug')",
+                        "print('trace')",
+                        "print('info')",
+                    ],
+                )
+            ]
+        )
+        rule = store.load()[0]
+        measured = measure_false_positives(rule)
+        assert measured == 3
+        result = store.record_shadow_run(
+            rule.rule_id,
+            matches=5,
+            false_positives=measured,
+            min_shadow_runs=1,
+            max_false_positive_rate=0.2,
+        )
+        assert result["status"] == "rejected"
+        reloaded = store.load()[0]
+        assert reloaded.false_positive_count == 3
+        assert reloaded.false_positive_rate == 3 / 5
+
+
+class TestNegativeExamplesRoundTrip:
+    """AC-P3-6: negative_examples round-trip + backward compat."""
+
+    def test_round_trip(self, tmp_path):
+        store = EmergentRuleStore(tmp_path / "rules.json")
+        store.save(
+            [
+                EmergentRule(
+                    rule_id="er-neg",
+                    header="Neg",
+                    detection_pattern=DetectionPattern(search_pattern="x"),
+                    language="python",
+                    category="lint",
+                    negative_examples=["a", "b"],
+                )
+            ]
+        )
+        loaded = store.load()[0]
+        assert loaded.negative_examples == ["a", "b"]
+
+    def test_old_rule_loads_with_empty_negatives(self, tmp_path):
+        path = tmp_path / "rules.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "rules": [
+                        {
+                            "rule_id": "er-old",
+                            "header": "Old",
+                            "detection_pattern": {
+                                "detection_type": "text_pattern",
+                                "search_pattern": "old",
+                            },
+                            "language": "python",
+                            "category": "lint",
+                            "status": "proposed",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        rules = EmergentRuleStore(path).load()
+        assert rules[0].negative_examples == []
+
+
+if __name__ == "__main__":
+    import pytest
+
+    pytest.main([__file__, "-v"])

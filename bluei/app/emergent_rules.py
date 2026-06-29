@@ -8,8 +8,10 @@ health scores, suppress findings, or activate rules.
 from __future__ import annotations
 
 import logging
+import ast
 import hashlib
 import json
+import re
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -35,6 +37,7 @@ class EmergentRuleStatus(str, Enum):
 
 class DetectionType(str, Enum):
     TEXT_PATTERN = "text_pattern"
+    REGEX_PATTERN = "regex_pattern"
     STRUCTURAL = "structural"
     COMPOSITE = "composite"
 
@@ -94,6 +97,7 @@ class EmergentRule:
     retired_at: str | None = None
     rejected_reason: str | None = None
     notes: str = ""
+    negative_examples: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -127,6 +131,7 @@ class EmergentRule:
         payload.setdefault("retired_at", None)
         payload.setdefault("rejected_reason", None)
         payload.setdefault("notes", "")
+        payload.setdefault("negative_examples", [])
         return cls(**payload)
 
 
@@ -647,15 +652,29 @@ def scan_shadow_rules(
         EmergentRuleStatus.TENTATIVE,
         EmergentRuleStatus.ACTIVE,
     }
+    regex_cache: dict[str, "re.Pattern[str]"] = {}
     for rule in rules:
         pattern = rule.detection_pattern
         if rule.status not in shadowable_statuses:
             continue
-        if pattern.detection_type != DetectionType.TEXT_PATTERN:
+        detection_type = pattern.detection_type
+        if detection_type not in (
+            DetectionType.TEXT_PATTERN,
+            DetectionType.REGEX_PATTERN,
+        ):
             continue
         needle = pattern.search_pattern.strip()
         if not needle:
             continue
+        compiled = None
+        if detection_type == DetectionType.REGEX_PATTERN:
+            compiled = regex_cache.get(rule.rule_id)
+            if compiled is None:
+                try:
+                    compiled = re.compile(needle)
+                except re.error:
+                    continue
+                regex_cache[rule.rule_id] = compiled
         for path in _iter_shadow_files(root, pattern.file_glob):
             if not path.is_file():
                 continue
@@ -665,7 +684,10 @@ def scan_shadow_rules(
                 continue
             relative_path = path.relative_to(root).as_posix()
             for index, line in enumerate(text.splitlines(), start=1):
-                if needle not in line:
+                if compiled is not None:
+                    if not compiled.search(line):
+                        continue
+                elif needle not in line:
                     continue
                 matches.append(
                     ShadowRuleMatch(
@@ -677,6 +699,44 @@ def scan_shadow_rules(
                     )
                 )
     return matches
+
+
+def measure_false_positives(rule: EmergentRule) -> int:
+    """Count how many of the rule's own negative examples match its pattern.
+
+    Runs the rule's detection pattern against ``rule.negative_examples`` and
+    returns the number of matches. Used to feed evidence-driven false-positive
+    rates into ``record_shadow_run``.
+
+    Args:
+        rule: Emergent rule whose negatives should be evaluated.
+
+    Returns:
+        Count of ``negative_examples`` that the pattern matches.
+    """
+    detection_type = rule.detection_pattern.detection_type
+    if detection_type not in (
+        DetectionType.TEXT_PATTERN,
+        DetectionType.REGEX_PATTERN,
+    ):
+        return 0
+    needle = rule.detection_pattern.search_pattern.strip()
+    if not needle:
+        return 0
+    compiled = None
+    if detection_type == DetectionType.REGEX_PATTERN:
+        try:
+            compiled = re.compile(needle)
+        except re.error:
+            return 0
+    count = 0
+    for example in rule.negative_examples:
+        if compiled is not None:
+            if compiled.search(example):
+                count += 1
+        elif needle in example:
+            count += 1
+    return count
 
 
 def discover_active_rule_findings(
@@ -781,16 +841,27 @@ def propose_rules_from_findings(
         if len(grouped) < min_observations:
             continue
         finding_ids = [finding.finding_id for finding in grouped]
+        snippet = grouped[0].snippet or ""
+        if not isinstance(snippet, str):
+            snippet = ""
+        language = infer_language_from_path(grouped[0].path)
+        regex_pattern = extract_detection_regex(snippet, language)
+        if regex_pattern:
+            detection_type = DetectionType.REGEX_PATTERN
+            search_pattern = regex_pattern
+        else:
+            detection_type = DetectionType.TEXT_PATTERN
+            search_pattern = rule
         proposals.append(
             EmergentRule(
                 rule_id=_emergent_rule_id(rule, file_glob),
                 header=f"Repeated {rule} findings in {file_glob}",
                 detection_pattern=DetectionPattern(
-                    detection_type=DetectionType.TEXT_PATTERN,
-                    search_pattern=rule,
+                    detection_type=detection_type,
+                    search_pattern=search_pattern,
                     file_glob=file_glob,
                 ),
-                language=infer_language_from_path(grouped[0].path),
+                language=language,
                 category=_infer_category(rule),
                 status=EmergentRuleStatus.PROPOSED,
                 evidence_runs=[run_id],
@@ -845,16 +916,27 @@ def propose_rules_from_fix_patterns(
             for finding_id in getattr(pattern, "source_finding_ids", []) or []:
                 if finding_id and finding_id not in source_finding_ids:
                     source_finding_ids.append(finding_id)
+        language = str(getattr(grouped[0], "language", "all") or "all")
+        snippet = getattr(grouped[0], "before_snippet", "") or ""
+        if not isinstance(snippet, str):
+            snippet = ""
+        regex_pattern = extract_detection_regex(snippet, language)
+        if regex_pattern:
+            detection_type = DetectionType.REGEX_PATTERN
+            search_pattern = regex_pattern
+        else:
+            detection_type = DetectionType.TEXT_PATTERN
+            search_pattern = rule
         proposals.append(
             EmergentRule(
                 rule_id=_emergent_rule_id(f"fix-pattern:{rule}", file_glob),
                 header=f"Repeated successful {rule} fix patterns in {file_glob}",
                 detection_pattern=DetectionPattern(
-                    detection_type=DetectionType.TEXT_PATTERN,
-                    search_pattern=rule,
+                    detection_type=detection_type,
+                    search_pattern=search_pattern,
                     file_glob=file_glob,
                 ),
-                language=str(getattr(grouped[0], "language", "all") or "all"),
+                language=language,
                 category=_infer_category(rule),
                 status=EmergentRuleStatus.PROPOSED,
                 evidence_runs=[run_id],
@@ -908,6 +990,65 @@ def _directory_glob(path: str) -> str:
     if len(parts) <= 1:
         return "**/*"
     return "/".join(parts[:-1]) + "/**"
+
+
+_PYTHON_SKIP_NAMES = {"True", "False", "None", "self", "cls"}
+_IDENT_RE = re.compile(r"\b[a-z_][a-z0-9_]*\b")
+_TOKEN_RE = re.compile(r'"[^"]*"|\'[^\']*\'|[A-Za-z_]\w*|[^"\'A-Za-z_]+|[^"\'A-Za-z_]')
+_STRING_IDENT_RE = re.compile(r"^[A-Za-z_]\w*$")
+
+
+def extract_detection_regex(snippet: str, language: str) -> str:
+    r"""Build a detection regex from a code snippet by abstracting identifiers.
+
+    Identifier occurrences are replaced with ``(\w+)`` capture groups; string
+    literals whose contents look like identifiers are likewise abstracted; all
+    other text is ``re.escape``-d. For Python, identifiers are extracted via
+    ``ast.parse`` (skipping builtins and ``self``/``cls``); for other languages
+    a case-sensitive lowercase identifier regex is used.
+
+    Args:
+        snippet: Source code snippet to generalize.
+        language: Language hint (e.g. ``"python"`` selects the AST path).
+
+    Returns:
+        Regex string, or ``""`` on parse failure or empty input.
+    """
+    if not snippet or not snippet.strip():
+        return ""
+    identifiers: set[str] = set()
+    is_python = bool(language) and language.lower() == "python"
+    if is_python:
+        try:
+            tree = ast.parse(snippet)
+        except (SyntaxError, ValueError):
+            return ""
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id not in _PYTHON_SKIP_NAMES:
+                identifiers.add(node.id)
+    else:
+        for match in _IDENT_RE.finditer(snippet):
+            name = match.group(0)
+            if name not in _PYTHON_SKIP_NAMES:
+                identifiers.add(name)
+    if not identifiers:
+        return ""
+    parts: list[str] = []
+    found = False
+    for match in _TOKEN_RE.finditer(snippet):
+        tok = match.group(0)
+        first = tok[0]
+        if (first.isalpha() or first == "_") and tok in identifiers:
+            parts.append(r"(\w+)")
+            found = True
+        elif first in ("'", '"') and _STRING_IDENT_RE.match(tok[1:-1]):
+            parts.append(r"(\w+)")
+            found = True
+        else:
+            parts.append(re.escape(tok))
+    if not found:
+        return ""
+    return "".join(parts)
 
 
 # NOTE: ``_infer_language(path)`` and ``_infer_category(rule)`` were previously
