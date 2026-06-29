@@ -4,17 +4,31 @@ When a Pattern's canonical ``before_snippet`` does not literally appear in
 the target file (different variable names, imports, layout), Structural
 Replay parses both snippets and the target into ASTs, structurally matches
 them while building a variable-binding map, derives the AST edit from the
-Pattern's before->after delta, applies the same edit to the matched target
+before->after delta, applies the same edit to the matched target
 subtree, and returns the new source.
 
 Activated as a fallback inside ``PatternReplayCascadeStage`` on literal
 miss. Python-only in alpha.4; TypeScript deferred.
+
+Alpha limitations (documented for future expansion):
+  - Single-statement before/after snippets only (``body[0]`` is the anchor;
+    multi-statement snippets silently use only the first statement).
+  - ``ast.arg`` nodes (function parameters) are not bound — patterns
+    involving parameter renaming are unsupported.
+  - Attribute names (``.method()``) are compared literally, not bound —
+    API-migration patterns (method renames) are unsupported.
+  - ``async def`` / decorators are type-strict (``AsyncFunctionDef`` does
+    not match ``FunctionDef``).
+  - Names introduced by the after-snippet that are not in the before-snippet
+    (e.g., ``from err`` where ``err`` is a new variable) are passed through
+    literally — the caller's Validation Gate is the defense for these cases.
 """
 
 from __future__ import annotations
 
 import ast
 import copy
+import textwrap
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Optional
 
@@ -25,6 +39,8 @@ from bluei.engine.structural_hash import (
 
 if TYPE_CHECKING:
     from bluei.engine.pattern_store import FixPattern
+
+_MAX_FILE_SIZE = 256 * 1024
 
 
 @dataclass
@@ -44,6 +60,9 @@ def apply_structural_replay(
     target_line: int = 0,
 ) -> Optional[StructuralReplayResult]:
     if language != "python":
+        return None
+
+    if len(file_text) > _MAX_FILE_SIZE:
         return None
 
     try:
@@ -67,7 +86,9 @@ def apply_structural_replay(
     if candidate is None:
         return None
 
-    region_text = ast.get_source_segment(file_text, candidate) or file_text
+    region_text = ast.get_source_segment(file_text, candidate)
+    if region_text is None:
+        return None
     fuzzy = fuzzy_structural_match(region_text, pattern.before_snippet, language)
     if fuzzy < get_fuzzy_threshold(pattern.rule, catalog=_detector_catalog()):
         return None
@@ -81,23 +102,41 @@ def apply_structural_replay(
 
     new_after = _apply_delta(after_anchor, bindings)
 
+    start_line = getattr(candidate, "lineno", 0)
+    end_line = getattr(candidate, "end_lineno", start_line)
+    if not start_line:
+        return None
+
+    new_stmt_text = ast.unparse(new_after)
+
+    lines = file_text.splitlines(keepends=True)
+    if 1 <= start_line <= len(lines):
+        original_line = lines[start_line - 1]
+        indent = original_line[: len(original_line) - len(original_line.lstrip())]
+        if indent:
+            new_stmt_text = textwrap.indent(new_stmt_text, indent)
+
+    pre = "".join(lines[: start_line - 1])
+    post = "".join(lines[end_line:])
+    new_source = pre + new_stmt_text + "\n" + post
+
     imports_added = _compute_imports_added(
         before_tree, after_tree, pattern, target_tree
     )
-    imports_to_insert = _parse_imports_for_insertion(imports_added, target_tree)
-
-    new_target_tree = _SwapNode(candidate, new_after).visit(target_tree)
-    if isinstance(new_target_tree, ast.Module) and imports_to_insert:
-        new_target_tree.body = list(imports_to_insert) + list(new_target_tree.body)
+    if imports_added:
+        existing = set(_collect_imports(target_tree))
+        to_insert = [
+            _normalize_import_text(t)
+            for t in imports_added
+            if _normalize_import_text(t) not in existing
+        ]
+        if to_insert:
+            new_source = _insert_imports_textually(new_source, to_insert)
 
     try:
-        new_source = ast.unparse(new_target_tree)
         compile(new_source, "<structural-replay>", "exec")
     except SyntaxError:
         return None
-
-    start_line = getattr(candidate, "lineno", 0) or 0
-    end_line = getattr(candidate, "end_lineno", start_line) or start_line
 
     public_binding_map = {_public_key(k): _public_value(v) for k, v in bindings.items()}
 
@@ -116,7 +155,7 @@ def _detector_catalog() -> List[Dict]:
         from bluei.engine.constants import DETECTOR_CATALOG
 
         return DETECTOR_CATALOG
-    except Exception:
+    except ImportError:
         return []
 
 
@@ -248,19 +287,6 @@ class _DeltaApplier(ast.NodeTransformer):
         return node
 
 
-class _SwapNode(ast.NodeTransformer):
-    def __init__(self, target: ast.AST, new_node: ast.AST):
-        self.target = target
-        self.new_node = new_node
-        self.found = False
-
-    def visit(self, node: ast.AST) -> ast.AST:
-        if node is self.target:
-            self.found = True
-            return self.new_node
-        return super().visit(node)
-
-
 def _collect_imports(tree: ast.Module) -> List[str]:
     result: List[str] = []
     for node in tree.body:
@@ -299,22 +325,39 @@ def _compute_imports_added(
     return added
 
 
-def _parse_imports_for_insertion(
-    imports_added: List[str], target_tree: ast.Module
-) -> List[ast.stmt]:
-    existing_target_imports = set(_collect_imports(target_tree))
-    inserted: List[ast.stmt] = []
-    for imp_text in imports_added:
-        if imp_text in existing_target_imports:
+def _insert_imports_textually(source: str, imports: List[str]) -> str:
+    """Insert import statements at the correct position in source text.
+
+    Skips leading module docstring and ``from __future__`` imports, then
+    inserts after any contiguous existing imports. This avoids the
+    ``SyntaxError`` from placing imports before ``__future__`` and the
+    comment-stripping of a whole-file ``ast.unparse`` round-trip.
+    """
+    lines = source.splitlines(keepends=True)
+    insert_at = 0
+
+    if lines:
+        stripped = lines[0].lstrip()
+        if stripped.startswith(('"""', "'''")) or stripped.startswith(("r'''", 'r"""')):
+            quote = stripped[:3].lstrip("r")
+            for i in range(1, len(lines)):
+                if quote in lines[i]:
+                    insert_at = i + 1
+                    break
+
+    while insert_at < len(lines):
+        line = lines[insert_at].strip()
+        if not line or line.startswith("#"):
+            insert_at += 1
             continue
-        try:
-            parsed = ast.parse(imp_text)
-        except SyntaxError:
+        if line.startswith("from __future__") or line.startswith("import "):
+            insert_at += 1
             continue
-        for stmt in parsed.body:
-            if isinstance(stmt, (ast.Import, ast.ImportFrom)):
-                inserted.append(stmt)
-    return inserted
+        break
+
+    import_block = "\n".join(imports) + "\n"
+    lines.insert(insert_at, import_block)
+    return "".join(lines)
 
 
 def _public_key(internal_key: str) -> str:

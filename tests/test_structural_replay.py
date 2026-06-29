@@ -269,3 +269,41 @@ def test_inconsistent_binding_returns_none() -> None:
     file_text = "a = b + 1\n"
     result = apply_structural_replay(file_text, pattern, "python", target_line=1)
     assert result is None
+
+
+def test_comments_preserved_after_structural_replay() -> None:
+    pattern = _make_pattern(
+        before='raise ValueError("bad")',
+        after='raise ValueError("bad") from err',
+    )
+    file_text = (
+        "# License header\n"
+        "def f():  # type: ignore\n"
+        '    """Doc."""\n'
+        "    raise CustomError(custom_msg)\n"
+        "# trailing comment\n"
+    )
+    result = apply_structural_replay(file_text, pattern, "python", target_line=4)
+    assert result is not None
+    assert "# License header" in result.new_source
+    assert "# type: ignore" in result.new_source
+    assert '"""Doc."""' in result.new_source
+    assert "# trailing comment" in result.new_source
+
+
+def test_indentation_preserved_inside_class_method() -> None:
+    pattern = _make_pattern(
+        before='raise ValueError("bad")',
+        after='raise ValueError("bad") from err',
+    )
+    file_text = "class C:\n    def m(self):\n        raise CustomError(custom_msg)\n"
+    result = apply_structural_replay(file_text, pattern, "python", target_line=3)
+    assert result is not None
+    assert "        raise CustomError" in result.new_source
+
+
+def test_large_file_returns_none() -> None:
+    pattern = _make_pattern(before="x = 1", after="x = 2")
+    big_file = "x = 1\n" * 50000
+    result = apply_structural_replay(big_file, pattern, "python", target_line=1)
+    assert result is None
