@@ -280,6 +280,46 @@ def _try_replay_inner(
 
     match_result = _find_snippet_in_file(file_text, before_snippet)
     if match_result is None:
+        from bluei.engine.structural_replay import apply_structural_replay
+
+        language = getattr(pattern, "language", None) or infer_language_from_path(
+            finding.path, fallback="python"
+        )
+        structural = apply_structural_replay(
+            file_text, pattern, language, target_line=finding.line
+        )
+        if structural is not None:
+            target_file.write_text(structural.new_source, encoding="utf-8")
+            validation_passed = _run_baseline_validation(
+                worktree_path, baseline_checks, log_file
+            )[0]
+            if not validation_passed:
+                run_capture(
+                    ["git", "checkout", "--", finding.path],
+                    cwd=Path(worktree_path),
+                    timeout=30,
+                )
+                if record_outcome:
+                    store.record_replay_outcome(pid, ReplayOutcome.FAILURE)
+                append_log(
+                    log_file,
+                    (
+                        f"pattern-replay-structural-fail: pattern_id={pid} "
+                        f"reason=validation_failed"
+                    ),
+                )
+                return (False, None)
+            if record_outcome:
+                store.record_replay_outcome(pid, ReplayOutcome.HIT)
+            append_log(
+                log_file,
+                (
+                    f"pattern-replay-structural-success: pattern_id={pid} "
+                    f"binding_map_size={len(structural.binding_map)} "
+                    f"fuzzy={structural.fuzzy_score:.2f}"
+                ),
+            )
+            return (True, pid)
         if record_outcome:
             store.record_replay_outcome(pid, ReplayOutcome.MISS)
         append_log(
