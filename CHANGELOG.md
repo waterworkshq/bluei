@@ -20,7 +20,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Policy-driven approval:** Default `gate_open_audit` (build-time) = auto-write + `auto_promote` record. Explicit `gate_closed` = cache YAML in ApprovalRecord's `evidence_snapshot` + `pending_approval` → surfaces in `bluei learn inbox` → `learn approve` → `resume_pending_promotion` writes the YAML.
 - **`parse_recipe` refactor:** Split from `load_recipe(path)` so the Foundry can parse LLM-emitted YAML strings without tempfile IO.
 - **`resume_pending_promotion`:** Reads cached YAML from `evidence_snapshot`, writes to staged dir on approval.
-- Foundry first-run seeded-Recipes pending (T2.5 operational step — needs `claude_author_cmd_template` config wiring + LLM run against 38 seeded Patterns).
+- Foundry first-run produced **37 canonical seeded-Recipes** covering all detection-only seeded Pattern rules (ruff B/E/F/S/C4/SIM/UP/RUF/N/T/W groups + eslint). Each Recipe was LLM-authored via claude CLI, validated via detector oracle, and committed to `recipes/built-in/`. AC-P2-6 coverage test asserts every seeded Pattern rule has a matching Recipe.
 
 ### Rule Hatchery: Detection Extraction + Evidence Hardening (ADR-0021)
 

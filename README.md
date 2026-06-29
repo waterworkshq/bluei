@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/v/release/waterworkshq/bluei" alt="version" />
-  <img src="https://img.shields.io/badge/tests-6017%20passed-brightgreen" alt="tests" />
+  <img src="https://img.shields.io/badge/tests-6401%20passed-brightgreen" alt="tests" />
   <img src="https://img.shields.io/github/license/waterworkshq/bluei" alt="license" />
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey" alt="platform" />
 </p>
@@ -13,7 +13,7 @@
   <a href="https://bluei.dev">bluei.dev</a>
 </h3>
 
-> **⚠️ Pre-release software.** This is `v0.1.0-beta.1` — an early preview with significant bugs, incomplete features, and breaking changes ahead. **Do not use in production.** Use for evaluation, testing, and contributions only. Production-ready releases will follow in the coming weeks.
+> **⚠️ Pre-release software.** This is `v0.2.0-alpha.4` — an early preview with significant bugs, incomplete features, and breaking changes ahead. **Do not use in production.** Use for evaluation, testing, and contributions only. Production-ready releases will follow in the coming weeks.
 
 # bluei — Trust the silence
 
@@ -346,8 +346,8 @@ Key design principles:
 | v0.2.0-alpha.1 "Evidence" | Delivered | Flywheel Ledger + Pattern Court Lite: deterministic-vs-LLM metrics, cascade-stage counts, honest three-way replay outcomes, savings, and Pattern Court Lite explainability |
 | v0.2.0-alpha.2 "Safe Learning" | Delivered | Governance substrate (Operator Control Plane, Golden Validation Bundles, Dry Replay, SPRT demotion, bluei learn CLI). Ships inert — evidence population in alpha.3. |
 | v0.2.0-alpha.3 "Evidence Foundation" | Delivered | Provenance-aware mining infrastructure (`open_pattern_store` + `register_asset`), envelope field completion, authoritative guidelines (ADR-0017), SPRT per-family calibration harness. Synthesize-then-validate Seed Library pipeline (ADR-0018) with 38 validated bundles (Python + JS). |
-| v0.2.0-alpha.4 "Deterministic Assets" | Planned | Recipe Foundry, Rule Hatchery, and Python AST structural replay — built on a populated substrate |
-| v0.2.0-alpha.5 "Repo Native" | Planned | Repo Taste Profile and Campaign Lab for evidence-gathering Campaigns |
+| v0.2.0-alpha.4 "Deterministic Assets" | Delivered | Structural Replay (ADR-0019 — AST-aware Pattern application), Recipe Foundry (ADR-0020 — build-time LLM-authoring with 37 canonical seeded-Recipes), Rule Hatchery detection extraction (ADR-0021 — regex-based detection replacing the rule-name stub), `bluei learn` governance verbs, eslint autofix wildcard. 38 seeded Patterns, 6401 tests. |
+| v0.2.0-alpha.5 "Repo Native" | Planned | Repo Taste Profile, Campaign Lab, AST STRUCTURAL detection for emergent rules, plugin-skeleton generation |
 | v0.2.0-alpha.6 "Economics" | Planned | Model Governor and proof harness for model downgrade and cost/reliability evidence |
 
 See [Roadmap](docs/meta/ROADMAP.md) for release boundaries and the planning seed map.
