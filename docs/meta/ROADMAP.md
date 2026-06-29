@@ -15,6 +15,7 @@ What's been built, and what's next.
 | v0.2.0-alpha.1 | "Evidence": Flywheel Ledger (deterministic-vs-LLM resolution metrics, cascade-stage counts, honest three-way HIT/MISS/FAILURE replay outcomes, standalone-Pattern-replay $ savings) + Pattern Court Lite (`last_failed_at`/`excluded_paths` envelopes with lookup-layer enforcement, enriched `patterns show`/`list`, `exclude`/`unexclude` producer). Rendered across the `clean` summary, `report` (markdown + HTML), and dashboard. Observability only — no fix-behavior changes. |
 | v0.2.0-alpha.2 | "Safe Learning": Governance substrate (Operator Control Plane with event-sourced ApprovalRecord trail, per-class policy-driven promotion gate, tri-state safe-mode), Golden Validation Bundles (container + storage + ruff-b904 fixture), Dry Replay (non-mutating evidence collection for matched-but-not-selected Patterns), SPRT demotion (two-sided Wald's Sequential Probability Ratio Test), `bluei learn` CLI namespace. 10 ADRs (0006–0016), 6245 tests. Ships inert — evidence population deferred to alpha.3 self-seeding. |
 | v0.2.0-alpha.3 | "Evidence Foundation": Provenance-aware mining infrastructure (`open_pattern_store` factory, `register_asset` producer interface, provenance-by-storage-locus), envelope field completion (`imports_touched`/`validation_commands_passed`/`rule_family`), authoritative guidelines as prompt-context (ADR-0017), SPRT per-family calibration harness with hand-picked fallback. Synthesize-then-validate Seed Library pipeline (ADR-0018): LLM generates canonical rules, linter validates as oracle. 38 validated bundles shipped (30 Python + 7 JS + 1 original). 6295 tests. |
+| v0.2.0-alpha.4 | "Deterministic Assets": Structural Replay (ADR-0019 — AST-aware Pattern application on literal miss with two-stage confidence gate), Recipe Foundry (ADR-0020 — build-time LLM-authoring pipeline with policy-driven approval loop), Rule Hatchery detection extraction (ADR-0021 — regex-based detection replacing the rule-name stub + rule-owned FP measurement). 38 seeded Patterns populated across 12 rule families. `bluei learn` governance decision verbs (ADR-0015 revised). eslint autofix wildcard. 4 ADRs (0019-0021 + 0007/0015 refined). 6360 tests. Foundry first-run seeded-Recipes pending (T2.5 operational step). |
 
 > Full release notes live in [`CHANGELOG.md`](../CHANGELOG.md).
 
@@ -38,26 +39,6 @@ v0.2.0-alpha.1 "Evidence" has shipped (see Delivered above). These items were sc
 | `bluei savings <repo>` standalone CLI | post-alpha.1 (patch or later) | Redundant with the enriched `clean` summary + `report` section + dashboard card, which fully satisfy seed-01 acceptance. Cumulative ledger JSONL makes a read-only CLI trivial to add once operators ask for it. |
 | Cascade-internal Pattern/composite savings instrumentation (thread `cost_tracker` into `CascadeContext`) | alpha.2 | Broader plumbing change excluded from additive-only alpha.1; revives deferred `bluei savings` completeness and makes cascade-internal Pattern/composite wins contribute real $ instead of counts-only. Captured in ADR-0003 (option C). |
 | `run_id` correlation key on ledger/cost sinks | when cumulative/cross-cycle Ledger features begin (alpha.2 / `bluei savings`) | alpha.1's per-cycle block reads an in-memory accumulator (ADR-0005), so no `run_id` is needed; `cascade_resolutions.jsonl` + `cost_log.jsonl` rows omit it. The first cumulative/cross-cycle view (per-cycle savings CLI, cross-cycle trends, shadow-replay history) requires `run_id` generated in the engine CLI and stamped on both sinks, then read-time join. Add before starting any such feature. |
-
----
-
-### v0.2.0-alpha.4 - "Deterministic Assets" (was alpha.3)
-
-Start turning repeated successful fixes into stronger deterministic assets. Now built on a *populated* substrate from alpha.3. **First release where the alpha.2 Operator Control Plane has consumers** — Recipe Foundry proposals flow through the approval gate, Rule Hatchery promotions get audit trails, AST replay transforms enter governance.
-
-| Feature | Problem it solves |
-|---------|-------------------|
-| Recipe Foundry | Uses LLMs to propose deterministic Recipe YAML from successful fixes (including self-seeded candidates from alpha.3), then validates before activation |
-| Rule Hatchery | Hardens repeated local smells into shadow-tested Emergent Rules |
-| Python AST Structural Replay | Replays learned fix shapes across variable/import differences with dry-run and fallback behavior |
-
-**Why here:** by this point the ledger, Pattern evidence, bundles, governance, AND a populated library exist. alpha.4 can safely make determinism stronger on top of real evidence.
-
-**Consumes from alpha.3:** 38 Golden Validation Bundles (promotion gate satisfiable for multiple rule families), `imports_touched` (for AST replay), `validation_commands_passed` (for Recipe Foundry validation), `rule_family` taxonomy, `register_asset` producer interface, authoritative guidelines (prompt-context). No seeded Patterns shipped — all ruff/eslint rules are autofixable (Bundle only); the Pattern replay path activates post-stable when bluei mines real repos.
-
-**Governance consumers activated:** Recipe Foundry promotion gate (first non-empty `bluei learn inbox`), Rule Hatchery lifecycle governance, AST transform activation governance. See seed `14-governance-consumers.md`.
-
-Planning seeds: `docs/plans/v2/04-recipe-foundry.md`, `docs/plans/v2/05-rule-hatchery.md`, `docs/plans/v2/06-ast-structural-replay.md`, `docs/plans/v2/14-governance-consumers.md`
 
 ---
 

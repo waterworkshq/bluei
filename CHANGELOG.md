@@ -6,6 +6,57 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.2.0-alpha.4] — Deterministic Assets
+
+### Structural Replay (ADR-0019)
+
+- **AST-aware Pattern application.** When a Pattern's canonical `before_snippet` doesn't literally match the target file (different variable names, imports, layout), Structural Replay parses both into ASTs, structurally matches with a variable-binding map, derives the AST edit from the before→after delta, and applies the same edit to the matched target subtree. Activates as a fallback inside `PatternReplayCascadeStage` on literal miss — same HIT/MISS/FAILURE evidence path, same SPRT/Dry Replay consumers.
+- **Two-stage confidence gate:** Pattern confidence ≥ AUTO_REPLAY (0.9) AND `fuzzy_structural_match` ≥ rule-category threshold AND binding-map completeness = 1.0 (every pattern variable resolved to a target counterpart).
+- Python-only in alpha.4; TypeScript Structural Replay deferred.
+
+### Recipe Foundry (ADR-0020)
+
+- **Build-time LLM-authoring pipeline** (`bluei/tools/foundry/`). Consumes seeded Patterns, invokes an LLM via injectable callback to author full Recipe YAML, validates each proposal (strict `parse_recipe` schema + detector oracle), and writes to `recipes/staged/` under policy routing.
+- **Policy-driven approval:** Default `gate_open_audit` (build-time) = auto-write + `auto_promote` record. Explicit `gate_closed` = cache YAML in ApprovalRecord's `evidence_snapshot` + `pending_approval` → surfaces in `bluei learn inbox` → `learn approve` → `resume_pending_promotion` writes the YAML.
+- **`parse_recipe` refactor:** Split from `load_recipe(path)` so the Foundry can parse LLM-emitted YAML strings without tempfile IO.
+- **`resume_pending_promotion`:** Reads cached YAML from `evidence_snapshot`, writes to staged dir on approval.
+- Foundry first-run seeded-Recipes pending (T2.5 operational step — needs `claude_author_cmd_template` config wiring + LLM run against 38 seeded Patterns).
+
+### Rule Hatchery: Detection Extraction + Evidence Hardening (ADR-0021)
+
+- **Regex-based detection extraction.** Replaced the stub mechanism (`search_pattern = linter rule name`) with `extract_detection_regex(snippet, language)`: tokenizes identifiers via AST walk, replaces each with `\w+` capture groups. `propose_rules_from_findings`/`propose_rules_from_fix_patterns` now produce REGEX_PATTERN rules from actual code snippets.
+- **`scan_shadow_rules` regex branch.** `DetectionType.REGEX_PATTERN` dispatches to `re.search` with compiled-regex caching alongside the existing TEXT_PATTERN substring path.
+- **Rule-owned FP measurement.** New `EmergentRule.negative_examples: List[str]` field. `measure_false_positives(rule)` runs the rule's regex against its own negatives. The existing FP-rate gate (`record_shadow_run` auto-promote at ≤ 0.2) is now fed real data instead of the caller passing zero.
+- **Bundle gate dropped.** No bundle links to emergent rules (`asset_ref: null` on all shipped bundles); the two-tier gate was vacuous. FP-rate gate via rule-owned negatives is the sole ACTIVE gate.
+
+### Seeded Patterns Substrate (Slice 0)
+
+- **38 seeded Patterns** populated across 12 rule families (30 Python/ruff + 7 JS/eslint + 1 other) — alpha.3 shipped Bundles but not the parallel Patterns. Deterministic regenerator reads existing bundles, re-validates via linter, produces Patterns without LLM.
+- **Broadened packaging gate:** `if parsed.after:` (was `if not has_autofix and after:`). All rules with a fix shape produce BOTH a Bundle and a seeded Pattern — defense-in-depth (Recipe cascade fires first; Pattern is fallback).
+
+### Governance Decision Verbs (ADR-0015 revised)
+
+- **`bluei learn {approve, reject, pause, resume, retire}`** — five cross-asset governance decision verbs that append ApprovalRecords. `learn approve` additionally calls `resume_pending_promotion` for `recipe:` asset_refs. The `learn` namespace now hosts both reads (inbox/status/audit/bundle) and cross-asset governance decisions, per ADR-0015's three-category write split.
+
+### eslint Autofix Wildcard
+
+- **`recipes/built-in/eslint-autofix.yaml`** — command-handler wildcard parallel to `ruff-autofix.yaml`, covering autofixable `eslint-*` rules. RecipeEngine precedence (exact +50 > prefix +30) ensures specific detection-only Recipes win over wildcards.
+
+### ADRs
+
+- **ADR-0019:** Structural Replay lives in the Pattern replay stage with a two-stage confidence gate.
+- **ADR-0020:** Recipe Foundry is a build-time LLM-author pipeline; governance approval is policy-driven (refines ADR-0007 runtime/build-time axis).
+- **ADR-0021:** Emergent Rule detection uses regex abstraction now, AST STRUCTURAL in alpha.5.
+- **ADR-0007 refined:** Distinguishes runtime silent promoters (gate-closed) from build-time curated pipelines (gate-open; human commit IS the approval).
+- **ADR-0015 revised:** Three write categories — governance decisions (cross-asset, under `learn`), native lifecycle transitions (stay native), asset-content edits (stay native).
+
+### Testing
+
+- 6,360 tests across 170+ test files. 9 skipped. +65 new tests from alpha.3 baseline (6,295).
+- Run via `PYTHONPATH=. .venv/bin/python -m pytest tests/ -q`.
+
+---
+
 ## [0.2.0-alpha.3] — Evidence Foundation
 
 Populates the empty alpha.2 substrate with provenance-aware infrastructure, authoritative guidelines, envelope field completion, and a synthesize-then-validate Seed Library pipeline (ADR-0018) shipping 38 validated canonical bundles across Python (ruff) and JavaScript (eslint).
