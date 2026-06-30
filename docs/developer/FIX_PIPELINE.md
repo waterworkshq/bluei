@@ -348,7 +348,7 @@ Before invoking the LLM, `apply_claude_fix()` loads context from multiple source
 
 ### Prompt Structure
 
-`render_claude_fix_prompt()` in `prompts.py` builds prompts with 7 ordered sections:
+`render_claude_fix_prompt()` in `prompts.py` builds prompts with 10 ordered sections:
 
 ```
 Section 1: Finding metadata    (rule, file, line, confidence)
@@ -357,8 +357,15 @@ Section 3: Constraints         (max_files_changed, max_loc_diff, no unrelated ed
 Section 4: Validation context  (baseline checks + rule-target checks)
 Section 5: Prior context from memory (Mnemo directives, if available)
 Section 6: Prior context       (LESSONS_LOG fix_history, rule_history, learned patterns, failure clusters)
+Section 6e: Authoritative guidelines (ADR-0017 — PEP 8, OWASP, TS conventions matched by rule family)
+Section 6f: Repo taste         (alpha.5 — framework conventions matched by RepoConfig.framework)
 Section 7: Fix history         (attempts, last error — only if retrying)
 ```
+
+> **Note:** Sections 6e and 6f are prompt-context channels (NOT governed assets).
+> The four specialized renderers below (xo-max-lines, xo-complexity, test-coverage-*,
+> type-missing-*) do NOT receive any Section 6 context channels — threading taste/guidelines
+> into them is a tracked patch-level deferral.
 
 ### Specialized Prompts
 
