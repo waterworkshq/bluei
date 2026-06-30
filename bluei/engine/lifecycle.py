@@ -271,6 +271,7 @@ class ClaudeFixRequest:
     learned_patterns: Optional[str] = None
     detected_frameworks: Optional[List[str]] = None
     authoritative_guidelines: Optional[str] = None
+    repo_taste: Optional[str] = None
 
 
 def apply_claude_fix(req: ClaudeFixRequest) -> Tuple[int, str, str]:
@@ -306,6 +307,7 @@ def apply_claude_fix(req: ClaudeFixRequest) -> Tuple[int, str, str]:
         rule_history=rule_history,
         failure_clusters=failure_clusters,
         authoritative_guidelines=req.authoritative_guidelines,
+        repo_taste=req.repo_taste,
     )
     prompt_path.write_text(prompt_text, encoding="utf-8")
 

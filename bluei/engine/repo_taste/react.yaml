@@ -1,0 +1,10 @@
+topic: React conventions
+language: typescript
+frameworks:
+  - react
+directives:
+  - "Prefer function components over class components."
+  - "Lift state up only when sibling components need the same data."
+  - "Co-locate component styles; avoid global CSS for component trees."
+sources:
+  - "React docs § Components and Props"

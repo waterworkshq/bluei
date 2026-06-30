@@ -6,11 +6,14 @@ that pipeline phases receive and mutate by reference.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from bluei.engine.cost_tracker import CostTracker
 from bluei.engine.models import Finding
 from bluei.engine.pattern_store import FixPatternStore
+
+if TYPE_CHECKING:  # pragma: no cover — forward ref only, avoids import cycle
+    from bluei.common.models import RepoConfig
 
 
 @dataclass
@@ -84,6 +87,10 @@ class RunContext:
 
     # Pattern store
     pattern_store: Optional[FixPatternStore] = None
+
+    # Repo config (resolved once at cycle start) — used by the taste channel
+    # to read RepoConfig.framework. Forward-ref string avoids an import cycle.
+    repo_config: Optional["RepoConfig"] = None
 
     # Baseline checks (per-repo, resolved once)
     PER_REPO_BASELINE_CHECKS: Dict[str, List[str]] = field(default_factory=dict)

@@ -1,0 +1,10 @@
+topic: Django conventions
+language: python
+frameworks:
+  - django
+directives:
+  - "Use class-based views for CRUD; function-based views only for simple endpoints."
+  - "Prefer model managers for querysets over raw queries."
+  - "Keep business logic in models/services, not in views."
+sources:
+  - "Django docs § Class-based views"

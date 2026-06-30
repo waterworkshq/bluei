@@ -52,6 +52,8 @@ from bluei.engine.git_utils import get_branch
 from bluei.engine.pattern_replay import try_replay
 from bluei.engine.pattern_store import ReplayOutcome
 from bluei.engine.guideline_loader import load_authoritative_guidelines
+from bluei.engine.repo_taste_loader import load_repo_taste
+from bluei.engine.rule_family import derive_rule_family
 from bluei.engine.report import infer_language_from_path
 from bluei.engine.constants import (
     BASELINE_VALIDATION_CHECKS,
@@ -852,6 +854,12 @@ def _process_one_issue(
                 authoritative_guidelines = load_authoritative_guidelines(
                     finding.rule, guideline_lang
                 )
+                framework = repo_config.framework if repo_config else None
+                repo_taste = load_repo_taste(
+                    framework,
+                    guideline_lang,
+                    rule_family=derive_rule_family(finding.rule),
+                )
 
                 if use_claude_engine and cost_tracker.exceeded_limit():
                     _append_text(
@@ -883,6 +891,7 @@ def _process_one_issue(
                             else None,
                             learned_patterns=learned_patterns,
                             authoritative_guidelines=authoritative_guidelines,
+                            repo_taste=repo_taste,
                         ),
                     )
                     model_name = "claude-sonnet-4"
@@ -1333,6 +1342,18 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
 
     _approval_records = read_jsonl(ctx.state_file.parent / "approval_records.jsonl")
     ctx.governance_state = project_governance_state(_approval_records)
+
+    # Repo Taste Profile (ADR-0017 principle): resolve the repo's
+    # RepoConfig.framework once at cycle start so the taste channel can read
+    # it per-finding without re-loading the YAML. Function-local import
+    # mirrors the load_global_config import below (no enforce_architecture
+    # violation; pr_cycle is already an app.config consumer).
+    try:
+        from bluei.app.config import ConfigManager
+
+        ctx.repo_config = ConfigManager().load_repo_config(ctx.repo_path.name)
+    except Exception:
+        ctx.repo_config = None
 
     # Learning mode (ADR-0013): resolve the global tri-state ceiling once at
     # cycle start. Defaults to ``active`` when no config.yaml is present.

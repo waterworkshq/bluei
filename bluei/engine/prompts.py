@@ -299,6 +299,7 @@ def render_claude_fix_prompt(
     rule_history: Optional[List[Dict[str, Any]]] = None,
     failure_clusters: Optional[str] = None,
     authoritative_guidelines: Optional[str] = None,
+    repo_taste: Optional[str] = None,
 ) -> str:
     # Use specialized prompt for max-lines refactoring
     if finding.rule == 'xo-max-lines':
@@ -473,6 +474,17 @@ def render_claude_fix_prompt(
             authoritative_guidelines,
             '',
         ])
+
+    # Section 6f: Repo taste (prompt-context only — per ADR-0017 principle)
+    if repo_taste:
+        sections.extend(
+            [
+                "## Repo taste",
+                "",
+                repo_taste,
+                "",
+            ]
+        )
 
     # Section 7: Fix history from findings.jsonl (Phase 2 finding_record)
     if finding_record is not None and finding_record.get('fix_attempts', 0) > 0:

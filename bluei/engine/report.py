@@ -290,6 +290,38 @@ def _load_reconciliation_events(state_data: dict) -> List[Dict]:
     ]
 
 
+def _matching_taste_topics(framework: Optional[str]) -> List[str]:
+    """Return the list of repo taste topics whose frameworks match ``framework``.
+
+    Pure read over the product taste fixtures; ``[]`` when no framework is
+    configured or no fixtures match. Surfaces the repo's applied taste
+    profile in :func:`extract_report_data` (ADR-0017 principle).
+    """
+    if not framework:
+        return []
+    try:
+        from bluei.engine.repo_taste_loader import _PRODUCT_TASTE_DIR
+
+        import yaml as _yaml
+    except Exception:
+        return []
+    if not _PRODUCT_TASTE_DIR.is_dir():
+        return []
+    topics: List[str] = []
+    for yaml_path in sorted(_PRODUCT_TASTE_DIR.glob("*.yaml")):
+        try:
+            with yaml_path.open("r", encoding="utf-8") as f:
+                data = _yaml.safe_load(f)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        fw_list = data.get("frameworks", []) or []
+        if framework in fw_list:
+            topics.append(data.get("topic", yaml_path.stem))
+    return topics
+
+
 def extract_report_data(
     repo_path: str,
     repo_name: str,
@@ -424,7 +456,8 @@ def extract_report_data(
 
     repo_path_str = str(repo_path) if repo_path else ""
     repo_url = None
-    # Try to get URL from config or status
+    repo_framework = None
+    # Try to get URL + framework from config or status
     config_file = state_dir.parent / "config.yaml"
     if config_file.exists():
         try:
@@ -433,6 +466,7 @@ def extract_report_data(
             with open(config_file) as f:
                 config = yaml.safe_load(f)
             repo_url = config.get("url", None)
+            repo_framework = config.get("framework", None)
         except Exception:
             _logger.debug("Failed to read config yaml for repo URL")
 
@@ -467,6 +501,7 @@ def extract_report_data(
         "reconciliation_events": reconciliation_events,
         "recent_runs": run_metrics["runs"],
         "flywheel_ledger": status_data.get("flywheel_ledger") or {},
+        "repo_taste": _matching_taste_topics(repo_framework),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 

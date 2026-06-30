@@ -1,0 +1,10 @@
+topic: pytest conventions
+language: python
+frameworks:
+  - pytest
+directives:
+  - "Use fixtures for setup/teardown; avoid setUp/tearDown methods."
+  - "Name tests test_<unit>_<scenario>_<expected>."
+  - "Prefer parametrize over loops inside a single test body."
+sources:
+  - "pytest docs § Fixtures"
