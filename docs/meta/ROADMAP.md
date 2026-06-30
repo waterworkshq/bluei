@@ -16,6 +16,7 @@ What's been built, and what's next.
 | v0.2.0-alpha.2 | "Safe Learning": Governance substrate (Operator Control Plane with event-sourced ApprovalRecord trail, per-class policy-driven promotion gate, tri-state safe-mode), Golden Validation Bundles (container + storage + ruff-b904 fixture), Dry Replay (non-mutating evidence collection for matched-but-not-selected Patterns), SPRT demotion (two-sided Wald's Sequential Probability Ratio Test), `bluei learn` CLI namespace. 10 ADRs (0006–0016), 6245 tests. Ships inert — evidence population deferred to alpha.3 self-seeding. |
 | v0.2.0-alpha.3 | "Evidence Foundation": Provenance-aware mining infrastructure (`open_pattern_store` factory, `register_asset` producer interface, provenance-by-storage-locus), envelope field completion (`imports_touched`/`validation_commands_passed`/`rule_family`), authoritative guidelines as prompt-context (ADR-0017), SPRT per-family calibration harness with hand-picked fallback. Synthesize-then-validate Seed Library pipeline (ADR-0018): LLM generates canonical rules, linter validates as oracle. 38 validated bundles shipped (30 Python + 7 JS + 1 original). 6295 tests. |
 | v0.2.0-alpha.4 | "Deterministic Assets": Structural Replay (ADR-0019 — AST-aware Pattern application on literal miss with two-stage confidence gate), Recipe Foundry (ADR-0020 — build-time LLM-authoring pipeline with 37 canonical seeded-Recipes produced via first Foundry run), Rule Hatchery detection extraction (ADR-0021 — regex-based detection replacing the rule-name stub + rule-owned FP measurement). 38 seeded Patterns populated across 12 rule families. `bluei learn` governance decision verbs (ADR-0015 revised). eslint autofix wildcard. 4 ADRs (0019-0021 + 0007/0015 refined). 6401 tests. |
+| v0.2.0-alpha.5 | "Repo Native": Taste Atlas (Repo Taste Profile — framework-matched prompt-context seed library mirroring Authoritative Guidelines, ADR-0017; injected as prompt §6f + surfaced in reports; NOT governed), Campaign Lab (Learning Objective + evidence routing via injected consumer — campaigns advance native lifecycle + write evidence stores only, ZERO governance ApprovalRecord writes; decoupled from app via callback injection), Plugin-skeleton generator (build-time `bluei/tools/graduator/` → self-contained `DiscoveryPlugin` packs; 1 curated worked example `plugins/graduated-eslint/`), AST STRUCTURAL detection (ADR-0021 fulfillment — `extract_detection_ast` + `scan_shadow_rules` STRUCTURAL branch, Python-only, exact hash + fuzzy fallback). Zero new ADRs (integration release). 6463 tests. |
 
 > Full release notes live in [`CHANGELOG.md`](../CHANGELOG.md).
 
@@ -42,26 +43,9 @@ v0.2.0-alpha.1 "Evidence" has shipped (see Delivered above). These items were sc
 
 ---
 
-### v0.2.0-alpha.5 - "Repo Native" (was alpha.4)
+### Deferred from v0.2.0-alpha.5 (DELIVERED)
 
-Make bluei learn how each repo prefers code to be fixed.
-
-| Feature | Problem it solves |
-|---------|-------------------|
-| Taste Atlas | Learns repo-local conventions: tests, fixtures, imports, naming, framework idioms, and local exceptions |
-| Campaign Lab | Turns Campaigns into evidence-gathering instruments, not just batch execution |
-| Rule Hatchery plugin-skeleton generation (carried from alpha.4) | Graduated ACTIVE Emergent Rules become first-class plugin rules (`plugins/<lang>/` module + `plugin.yaml` + detector + test scaffold). Deferred from alpha.4 per seed 05 — plugin packaging is naturally a repo-native concern. Must pass the alpha.4 FP-rate gate (rule-owned negatives) before shipping. |
-| AST STRUCTURAL detection for emergent rules (carried from alpha.4) | `DetectionType.STRUCTURAL` scanning in `scan_shadow_rules` — the alpha.4 regex-abstraction bridge (ADR-0021) covers variable-name generalization; alpha.5 adds full AST structural matching alongside Taste Atlas. Regex rules stay (additive). |
-
-**Why here:** repo taste should influence learned fixes after the promotion pipeline exists. Campaigns can then intentionally collect evidence for deterministic assets.
-
-Planning seeds: `docs/plans/v2/07-taste-atlas.md`, `docs/plans/v2/09-campaign-lab.md`
-
----
-
-### Deferred from v0.2.0-alpha.5
-
-Items scoped out of alpha.5 during grilling (Phase 4 arc review). Each has a target release/patch and is recorded in the cited seed doc so the next release's Phase 0 picks it up.
+alpha.5 shipped (see Delivered above). Items scoped out during grilling (Phase 4 arc review). Each has a target release/patch and is recorded in the cited seed doc so the next release's Phase 0 picks it up.
 
 | Deferred item | Target | Why deferred | Recorded in |
 |---------------|--------|--------------|-------------|
@@ -117,6 +101,7 @@ These remain unscheduled until prerequisite foundations are in place.
 | Multi-file composite rollback | Should be revisited before composite Patterns are promoted aggressively |
 | Non-Python AST cascade | Defer until Python AST structural replay proves the design |
 | TS/JS AST STRUCTURAL detection + TS structural hasher | Deferred from alpha.5 (Python-only STRUCTURAL shipped). Needs a TS AST hasher (tree-sitter/regex-AST); standalone work. Regex detection (ADR-0021) covers TS meanwhile. Pick up when TS emergent-rule detection is prioritized. |
+| campaigns→app layering: `planner.py:437` `import_graph` import | Pre-existing since alpha.1 (`90d6f22`); MEMORY's "campaigns→app 0 current" was inaccurate. `enforce_architecture.py` doesn't check campaigns→app. Fix: move `build_import_graph` to engine OR decouple the `dependency_ordered` planner strategy. |
 | `skip` strategy asymmetry | Needs a small design decision before routing semantics are cleaned up |
 
 *Updated 2026-06-30*

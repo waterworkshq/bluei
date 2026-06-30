@@ -6,6 +6,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.2.0-alpha.5] — Repo Native
+
+### Taste Atlas (Repo Taste Profile)
+
+- **Framework-matched prompt-context.** New `bluei/engine/repo_taste_loader.py` (`load_repo_taste(framework, language, rule_family=None)`) mirrors the Authoritative Guidelines pattern (ADR-0017) — reads YAML from `bluei/engine/repo_taste/`, matches by `frameworks` + `language` (+ optional `rule_families` for exception entries), returns a formatted `### {topic}\n- {directive}` string injected as a new prompt §6f into `render_claude_fix_prompt`'s generic path. **NOT a governed asset** — prompt-context only, like guidelines.
+- **Repo framework at fix site.** New `RunContext.repo_config` (populated once at cycle start via `ConfigManager`) surfaces `RepoConfig.framework` to the per-finding taste loader. Reuses the existing `repo_config` local at `pr_cycle.py:679`.
+- **Report surface.** `extract_report_data` gains a `"repo_taste"` key listing applied taste topics.
+- **3 seed fixtures** ship: `django.yaml`, `pytest.yaml`, `react.yaml`. The 4 specialized prompt renderers (`xo-max-lines`, `xo-complexity`, `test-coverage-*`, `type-missing-*`) are unchanged — threading taste into them deferred (patch-level).
+
+### Campaign Lab (Learning Objective + Evidence Routing)
+
+- **Learning Objective.** `Campaign` gains an optional `LearningObjective` (target: emergent-rule / pattern-family / recipe). `Campaign.from_dict` reconstructs the nested dataclass (the verified `cls(**payload)` gap). A None-objective campaign behaves exactly as before.
+- **Evidence routing via injected consumer** (campaigns→app decoupled). For emergent-rule targets, `CampaignExecutor` invokes an injected `emergent_evidence_consumer` callable (defined in `bluei/app/campaign_evidence.py`, wired at `bin/cmd_campaign.py`). The consumer advances the target rule via `scan_shadow_rules` + `record_shadow_run` AND proposes new rules from successful fix patterns via `propose_rules_from_fix_patterns`. For pattern-family targets, the executor runs Dry Replay (`run_dry_replay`, writes `dry_replay.jsonl`). Mirrors the `fix_runner` injection pattern — `bluei/campaigns/` has zero `bluei.app` imports.
+- **Zero governance ApprovalRecord writes** (AC-P2-4). Campaigns write evidence stores only; SPRT evaluates the gathered dry-replay evidence in the normal pr-cycle path. The Governance overlay (ADR-0008) stays operator-controlled.
+- **Completion report.** `CampaignExecutor.run` return gains a `learning_report` key (when objective set): method breakdown, assets proven, proposed rules, candidates.
+- **fix_runner return widened** additively (`deterministic`/`matched_asset`/`cascade_stage`). `apply_autofix` NOT widened (method granularity used).
+
+### Plugin-Skeleton Generation
+
+- **Build-time generator** (`bluei/tools/graduator/`). `generate_plugin_pack(rule, output_dir)` emits a complete self-contained `DiscoveryPlugin` pack (`plugin.py` + `plugin.yaml` + test scaffold) for a graduated ACTIVE emergent rule. The generated `discover()` embeds the rule's `DetectionPattern` (TEXT/REGEX/STRUCTURAL dispatch); the STRUCTURAL path is self-contained (re-implements the statement-boundary subtree walk + exact hash + fuzzy fallback inline, importing only the public `bluei.engine.structural_hash` API). ACTIVE-only gate (stricter than `promote_rule`). COMPOSITE + non-Python STRUCTURAL refused.
+- **Curated worked example:** a synthetic fixture `EmergentRule` (eslint-no-console, REGEX) → `plugins/graduated-eslint/`, committed and loadable by `PluginLoader` unchanged (verified to load without `PYTHONPATH` via the self-contained sys.path hack). The first real self-contained `DiscoveryPlugin` (the existing `plugins/test/` was a canned-finding fixture).
+
+### AST STRUCTURAL Detection (ADR-0021 Fulfillment)
+
+- **`extract_detection_ast(snippet, language)`** — computes a JSON structural fingerprint (`hash`/`nodes`/`operators`/`canonical_snippet`/`language`) from a Python violation snippet; None for non-Python/unparseable. Mirrors `extract_detection_regex` (ADR-0021).
+- **`scan_shadow_rules` STRUCTURAL branch** (Python only) — parses the `ast_pattern` JSON blob, walks statement-boundary subtrees (container-skipping, capped at 200/file), matches via exact `compute_structural_hash` then `fuzzy_structural_match ≥ FUZZY_THRESHOLDS` fallback. Mirrors the Pattern-replay lookup + Structural Replay gate (ADR-0019).
+- **`measure_false_positives` STRUCTURAL branch** — runs the structural match against `rule.negative_examples`.
+- **Both proposers AST-first** for Python (`propose_rules_from_findings`/`propose_rules_from_fix_patterns` now prefer STRUCTURAL with a populated `ast_pattern`, falling back to regex/text). Regex detection stays additive — TEXT/REGEX branches + `extract_detection_regex` unchanged.
+- **Python-only** per Phase 1 C2. TS/JS STRUCTURAL + a TS structural hasher deferred to future-cross-cutting (regex detection covers TS meanwhile). Note: `compute_structural_hash` is node-shape-invariant (normalizes identifier names + literal values, distinguishes Name vs Constant).
+
+### Summary
+
+- Zero new ADRs (integration release — every decision wires existing machinery: the prompt-context pattern (ADR-0017), native evidence layers (ADR-0008/0011/0012), build-time generation (ADR-0020), structural primitives (ADR-0019/0021)).
+- 6463 tests (+62 from alpha.4 baseline 6401), 0 regressions. All mechanisms proven synthetically only (no live runs before 0.2.0 stable).
+- Layering: `bluei/campaigns/executor.py` has zero `bluei.app` imports (decoupled via injected consumer). Pre-existing `planner.py:437` campaigns→app violation (alpha.1) recorded in ROADMAP Future Cross-Cutting Seeds for future cleanup.
+- 2 code-review suggestions filed as patch-level follow-ups in `docs/plans/REMAINING-WORK.md` (CR-1 STRUCTURAL recursion guard, CR-2 campaign_evidence double-load).
+
+---
+
 ## [0.2.0-alpha.4] — Deterministic Assets
 
 ### Structural Replay (ADR-0019)
