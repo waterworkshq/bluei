@@ -139,12 +139,30 @@ def _cmd_campaign(rest: list[str]) -> int:
                 _psp = _psp_file
         except Exception:
             pass
+        # Inject the app-layer emergent-rule evidence consumer so an
+        # emergent-rule learning objective advances the target rule + proposes
+        # new ones. Injected (not imported by campaigns) — keeps campaigns
+        # free of bluei.app.* (layering invariant). Only the --allow-mutate
+        # branch wires it; the dry-run branch never gathers evidence.
+        _emergent_consumer = None
+        try:
+            from functools import partial
+
+            from bluei.app.campaign_evidence import consume_emergent_evidence
+
+            _emergent_store = state.get_emergent_rules_file(repo)
+            _emergent_consumer = partial(
+                consume_emergent_evidence, emergent_store_path=_emergent_store
+            )
+        except Exception:
+            pass
         try:
             if allow_mutate:
                 result = CampaignExecutor(
                     campaign_store,
                     fix_runner=autofix_fix_runner,
                     pattern_store_path=_psp,
+                    emergent_evidence_consumer=_emergent_consumer,
                 ).run(
                     campaign_id,
                     dry_run=False,

@@ -11,15 +11,17 @@ import logging
 import os
 import subprocess
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, List
 
 _logger = logging.getLogger(__name__)
 
-from .types import CampaignStatus, PhaseStatus
+from .types import CampaignStatus, PhaseStatus, LearningObjective, ObjectiveTarget
 from .state import CampaignStateManager
 from bluei.engine.models import Finding, now_iso
 from bluei.engine.lifecycle import apply_autofix
 from bluei.engine.pattern_store import FixPatternStore
+from bluei.engine.dry_replay import run_dry_replay
+from bluei.engine.rule_family import derive_rule_family
 
 
 def autofix_fix_runner(
@@ -46,6 +48,11 @@ def autofix_fix_runner(
 
     Returns:
         Dict with "status" ("success"/"failed") and "method" or "error" keys.
+        Additive keys (Campaign Lab, alpha.5): "deterministic" (always True —
+        pattern_replay + apply_autofix never invoke the LLM), "matched_asset"
+        (pattern_id when method=="pattern_replay", else None), "cascade_stage"
+        (None in alpha.5 — apply_autofix returns bool). Existing readers that
+        only consult "status"/"method"/"error" are unaffected.
     """
     try:
         snapshot = {**finding, "finding_id": finding.get("finding_id") or finding_id}
@@ -54,6 +61,9 @@ def autofix_fix_runner(
         return {
             "status": "failed",
             "error": f"missing finding snapshot field: {exc}",
+            "deterministic": True,
+            "matched_asset": None,
+            "cascade_stage": None,
         }
 
     if pattern_store_path is not None and pattern_store_path.exists():
@@ -72,7 +82,13 @@ def autofix_fix_runner(
                             pattern.before_snippet, pattern.after_snippet, 1
                         )
                         target_file.write_text(new_content)
-                        return {"status": "success", "method": "pattern_replay"}
+                        return {
+                            "status": "success",
+                            "method": "pattern_replay",
+                            "deterministic": True,
+                            "matched_asset": pattern.pattern_id,
+                            "cascade_stage": None,
+                        }
         except Exception:
             _logger.debug("Failed to replay campaign fix pattern")
 
@@ -84,16 +100,25 @@ def autofix_fix_runner(
         return {
             "status": "failed",
             "error": f"autofix exception: {type(exc).__name__}",
+            "deterministic": True,
+            "matched_asset": None,
+            "cascade_stage": None,
         }
     if not applied:
         return {
             "status": "failed",
             "error": "autofix returned false",
             "method": "autofix",
+            "deterministic": True,
+            "matched_asset": None,
+            "cascade_stage": None,
         }
     return {
         "status": "success",
         "method": "autofix",
+        "deterministic": True,
+        "matched_asset": None,
+        "cascade_stage": None,
     }
 
 
@@ -105,16 +130,40 @@ class CampaignExecutor:
         campaign_store: CampaignStateManager,
         fix_runner: Callable[..., Dict[str, Any]] | None = None,
         pattern_store_path: Path | None = None,
+        *,
+        emergent_evidence_consumer: Callable[..., Dict[str, Any]] | None = None,
+        dry_replay_path: Path | None = None,
+        baseline_checks: Dict[str, Any] | None = None,
+        run_id: str = "",
     ):
         """
         Args:
             campaign_store: State manager for loading/saving campaign data.
             fix_runner: Callable that applies a single fix; required when dry_run=False.
             pattern_store_path: Optional path to a FixPatternStore file for pattern replay.
+            emergent_evidence_consumer: Optional app-layer callable (defined in
+                ``bluei/app/campaign_evidence.py``, wired at
+                ``bin/cmd_campaign.py``) that advances the target emergent
+                rule + proposes new rules from successful fix patterns.
+                Required for emergent-rule learning objectives. Injected (not
+                imported) so the campaigns layer never depends on
+                ``bluei.app.*``. When ``None`` (default), emergent-rule
+                objectives are a no-op.
+            dry_replay_path: Optional path to a dry_replay.jsonl file. Required
+                for pattern-family learning objectives (evidence store).
+            baseline_checks: Validation command map consumed by Dry Replay.
+            run_id: Identifier stamped on dry-replay records / proposed rules.
+
+        The learning-objective kwargs are additive and default to no-ops;
+        a campaign without a ``learning_objective`` behaves exactly as before.
         """
         self.campaign_store = campaign_store
         self.fix_runner = fix_runner
         self.pattern_store_path = pattern_store_path
+        self.emergent_evidence_consumer = emergent_evidence_consumer
+        self.dry_replay_path = dry_replay_path
+        self.baseline_checks: Dict[str, Any] = baseline_checks or {}
+        self.run_id = run_id
 
     def run(
         self,
@@ -181,6 +230,11 @@ class CampaignExecutor:
 
             phases_walked = 0
             findings_skipped = 0
+            objective = campaign.learning_objective
+            method_breakdown: Dict[str, int] = {}
+            assets_proven: List[str] = []
+            proposed_rule_ids: List[str] = []
+            dry_replay_candidates: List[str] = []
             for phase in campaign.phases:
                 if phase.status == PhaseStatus.completed:
                     continue
@@ -241,11 +295,40 @@ class CampaignExecutor:
                         )
                         continue
 
+                    finding_snapshot = campaign.finding_snapshots.get(finding_id, {})
+                    # For pattern-family objectives, snapshot the target file
+                    # before the fix so Dry Replay can replay candidates against
+                    # the original content (per DESIGN §2.5).
+                    original_content: str | None = None
+                    replay_path: Path | None = None
+                    replay_target = (
+                        not dry_run
+                        and objective is not None
+                        and objective.target_type == ObjectiveTarget.pattern_family
+                        and self.dry_replay_path is not None
+                        and derive_rule_family(finding_snapshot.get("rule", ""))
+                        == objective.target_ref
+                    )
+                    if replay_target:
+                        rel = finding_snapshot.get("path", "")
+                        if rel:
+                            candidate_path = cwd / rel
+                            if candidate_path.exists():
+                                try:
+                                    snapshot_text = candidate_path.read_text(
+                                        encoding="utf-8"
+                                    )
+                                except Exception:
+                                    snapshot_text = None
+                                if snapshot_text is not None:
+                                    replay_path = candidate_path
+                                    original_content = snapshot_text
+
                     fix_result = self._apply_finding(
                         campaign=campaign,
                         phase=phase,
                         finding_id=finding_id,
-                        finding=campaign.finding_snapshots.get(finding_id, {}),
+                        finding=finding_snapshot,
                         worktree_path=cwd,
                     )
                     if str(fix_result.get("status")) != "success":
@@ -269,6 +352,43 @@ class CampaignExecutor:
                     campaign.findings_fixed += 1
                     phase.findings_fixed += 1
                     phase_fixed_this_run += 1
+
+                    # Accumulate the fix outcome for the learning report.
+                    if objective is not None:
+                        method_key = fix_result.get("method") or "fix_runner"
+                        method_breakdown[method_key] = (
+                            method_breakdown.get(method_key, 0) + 1
+                        )
+                        matched = fix_result.get("matched_asset")
+                        if matched:
+                            if matched not in assets_proven:
+                                assets_proven.append(matched)
+
+                    # Pattern-family evidence routing: Dry Replay writes
+                    # would_have_outcome records to dry_replay.jsonl. This is
+                    # the EVIDENCE store only — never the governance trail
+                    # (run_sprt_check is deliberately NOT called here; SPRT
+                    # evaluates the gathered evidence in the pr-cycle).
+                    if (
+                        replay_target
+                        and original_content is not None
+                        and replay_path is not None
+                    ):
+                        try:
+                            winner_content = replay_path.read_text(encoding="utf-8")
+                            self._run_pattern_family_replay(
+                                finding_snapshot,
+                                cwd,
+                                original_content,
+                                winner_content,
+                                dry_replay_candidates,
+                            )
+                        except Exception:
+                            _logger.debug(
+                                "campaign dry-replay routing failed for %s",
+                                finding_id,
+                            )
+
                     self.campaign_store.save(campaign)
                     self.campaign_store.append_event(
                         campaign_id,
@@ -279,6 +399,25 @@ class CampaignExecutor:
                             "finding_id": finding_id,
                             "method": fix_result.get("method", "fix_runner"),
                         },
+                    )
+
+                # Emergent-rule evidence routing: delegate to the injected
+                # app-layer consumer (bluei/app/campaign_evidence.py). The
+                # consumer advances the named target rule via shadow validation
+                # AND proposes new rules from successful fix patterns. Both
+                # touch the emergent store JSON only — zero governance
+                # ApprovalRecord writes (AC-P2-4). No consumer wired → no-op.
+                if (
+                    not dry_run
+                    and objective is not None
+                    and objective.target_type == ObjectiveTarget.emergent_rule
+                    and self.emergent_evidence_consumer is not None
+                ):
+                    self._advance_emergent_objective(
+                        objective,
+                        cwd,
+                        assets_proven,
+                        proposed_rule_ids,
                     )
 
                 post_result = self._run_validation_checks(
@@ -341,6 +480,19 @@ class CampaignExecutor:
                 "findings_skipped": findings_skipped,
                 "findings_fixed": campaign.findings_fixed,
                 "findings_failed": campaign.findings_failed,
+                **(
+                    {
+                        "learning_report": {
+                            "objective": objective.to_dict(),
+                            "method_breakdown": dict(method_breakdown),
+                            "assets_proven": list(assets_proven),
+                            "proposed_rules": list(proposed_rule_ids),
+                            "candidates": list(dry_replay_candidates),
+                        }
+                    }
+                    if objective is not None
+                    else {}
+                ),
             }
         finally:
             os.close(lock_fd)
@@ -487,6 +639,93 @@ class CampaignExecutor:
             worktree_path=worktree_path,
             pattern_store_path=self.pattern_store_path,
         )
+
+    def _run_pattern_family_replay(
+        self,
+        finding_snapshot: Dict[str, Any],
+        cwd: Path,
+        original_content: str,
+        winner_content: str,
+        candidates_log: List[str],
+    ) -> None:
+        """Gather Dry Replay evidence for a pattern-family finding.
+
+        Loads candidate patterns for the finding's rule from the configured
+        pattern store and runs Dry Replay (writes ``would_have_outcome``
+        records to ``dry_replay.jsonl``). The worktree is restored to the
+        winning fix on exit. No governance writes (AC-P2-4).
+        """
+        if self.pattern_store_path is None or self.dry_replay_path is None:
+            return
+        try:
+            snapshot = {
+                **finding_snapshot,
+                "finding_id": finding_snapshot.get("finding_id") or "campaign-lo",
+            }
+            finding_obj = Finding.from_dict(snapshot)
+        except (KeyError, TypeError, ValueError):
+            return
+        try:
+            store = FixPatternStore(self.pattern_store_path)
+        except Exception:
+            _logger.debug("campaign pattern store unavailable for dry replay")
+            return
+        candidates = store.load_active(rule=finding_obj.rule)
+        if not candidates:
+            return
+        log_file = cwd / ".bluei" / "campaign-dry-replay.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        performed = run_dry_replay(
+            finding_obj,
+            candidates,
+            cwd,
+            original_content,
+            winner_content,
+            self.baseline_checks,
+            log_file,
+            self.run_id or "campaign",
+            self.dry_replay_path,
+        )
+        if performed:
+            for pattern in candidates[:performed]:
+                if pattern.pattern_id and pattern.pattern_id not in candidates_log:
+                    candidates_log.append(pattern.pattern_id)
+
+    def _advance_emergent_objective(
+        self,
+        objective: LearningObjective,
+        cwd: Path,
+        assets_proven: List[str],
+        proposed_rule_ids: List[str],
+    ) -> None:
+        """Delegate emergent-rule evidence gathering to the injected consumer.
+
+        The actual advancement (scan_shadow_rules + record_shadow_run) and
+        new-rule proposal (propose_rules_from_fix_patterns) live in the
+        app-layer consumer injected at construction (``bluei/app/
+        campaign_evidence.py``). Campaigns stays free of ``bluei.app.*``
+        imports; this method is a thin callback that merges the returned
+        summary into the learning report accumulators. When no consumer is
+        wired (default), the call site guards this — but defend anyway.
+        """
+        if self.emergent_evidence_consumer is None:
+            return  # no consumer wired → no emergent evidence (tests/default)
+        try:
+            summary = self.emergent_evidence_consumer(
+                target_ref=objective.target_ref,
+                worktree=cwd,
+                run_id=self.run_id,
+                pattern_store_path=self.pattern_store_path,
+            )
+        except Exception:
+            _logger.debug("emergent_evidence_consumer failed")
+            return
+        for proven in summary.get("assets_proven", []):
+            if proven not in assets_proven:
+                assets_proven.append(proven)
+        for proposed in summary.get("proposed_rules", []):
+            if proposed not in proposed_rule_ids:
+                proposed_rule_ids.append(proposed)
 
     def _run_validation_checks(
         self,

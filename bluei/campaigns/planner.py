@@ -15,7 +15,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .types import CampaignStatus, CampaignStrategy, PhaseStatus, PhaseExecutionMode
+from .types import (
+    CampaignStatus,
+    CampaignStrategy,
+    LearningObjective,
+    PhaseStatus,
+    PhaseExecutionMode,
+)
 from bluei.engine.models import Finding
 
 _logger = logging.getLogger(__name__)
@@ -121,6 +127,7 @@ class Campaign:
     paused_at: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    learning_objective: Optional[LearningObjective] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the campaign including nested phases.
@@ -151,6 +158,10 @@ class Campaign:
         payload["phases"] = [
             CampaignPhase.from_dict(phase) for phase in payload.get("phases", [])
         ]
+        objective = payload.get("learning_objective")
+        payload["learning_objective"] = (
+            LearningObjective.from_dict(objective) if objective else None
+        )
         return cls(**payload)
 
 
@@ -187,6 +198,7 @@ class CampaignPlanner:
         target_rules: Optional[List[str]] = None,
         target_paths: Optional[List[str]] = None,
         strategy: str = CampaignStrategy.rule_based,
+        learning_objective: Optional[LearningObjective] = None,
     ) -> Campaign:
         """Build a Campaign with ordered phases from a list of findings.
 
@@ -218,6 +230,7 @@ class CampaignPlanner:
         campaign.estimated_llm_calls = sum(
             1 for finding in filtered if not finding.safe_to_autofix
         )
+        campaign.learning_objective = learning_objective
 
         abort_reason = self._safety_abort_reason(filtered)
         if abort_reason is not None:

@@ -901,7 +901,13 @@ def test_autofix_fix_runner_adapts_finding_snapshot_to_sandbox_autofix(
         worktree_path=tmp_path,
     )
 
-    assert result == {"status": "success", "method": "autofix"}
+    assert result["status"] == "success"
+    assert result["method"] == "autofix"
+    # Additive Campaign Lab keys (alpha.5) — present but do not change the
+    # status/method/error contract consumed by existing readers.
+    assert result["deterministic"] is True
+    assert result["matched_asset"] is None
+    assert result["cascade_stage"] is None
     assert len(calls) == 1
     worktree_path, adapted_finding, log_file = calls[0]
     assert worktree_path == tmp_path
