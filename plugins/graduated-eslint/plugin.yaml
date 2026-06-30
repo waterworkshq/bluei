@@ -1,0 +1,22 @@
+id: "graduated-eslint"
+name: "Graduated Rule: eslint no-console"
+version: 0.1.0
+author: bluei-graduator
+
+languages:
+  - "javascript"
+
+requires_container: false
+
+discovery:
+  rules:
+    - id: "er-eslint-no-console"
+      category: "lint"
+      confidence: 0.85
+      autofix: false
+      promoted_from: emergent
+      evidence_count: 14
+
+detection:
+  files:
+    - "**/*.js"
