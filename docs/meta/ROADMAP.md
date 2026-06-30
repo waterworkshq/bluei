@@ -59,6 +59,23 @@ Planning seeds: `docs/plans/v2/07-taste-atlas.md`, `docs/plans/v2/09-campaign-la
 
 ---
 
+### Deferred from v0.2.0-alpha.5
+
+Items scoped out of alpha.5 during grilling (Phase 4 arc review). Each has a target release/patch and is recorded in the cited seed doc so the next release's Phase 0 picks it up.
+
+| Deferred item | Target | Why deferred | Recorded in |
+|---------------|--------|--------------|-------------|
+| Taste injection into the 4 specialized prompts (`prompts.py:304-341` take zero context channels today) | **patch** (whenever prompts touched) | Focused refactor; no consuming feature. Also benefits Authoritative Guidelines / patterns / history. Must not be orphaned. | seed 07 |
+| TS/JS AST STRUCTURAL detection + TS structural hasher | **future-cross-cutting** (post-alpha.6) | alpha.5 STRUCTURAL is Python-only (mature AST hasher); TS has none. TS hasher is standalone work; not a fit for alpha.6 "Economics." Regex (ADR-0021) covers TS meanwhile. | seed 05; ROADMAP Future Cross-Cutting Seeds |
+| Governed Repo Taste Profile (5th governed asset class) | **post-stable** | Trigger: repo-observed taste exists (live runs). alpha.5 taste is prompt-context (influences, doesn't auto-apply). | seed 07; seed 14 |
+| Campaign Lab as a governance ApprovalRecord producer | **post-stable** (conditional) | Only if a campaign must *decide* governance. alpha.5 campaigns are evidence sources (native lifecycle only), never governance decision-makers. | seed 09; seed 14 |
+| Campaign auto-feed *real* Pattern Court promotion under live runs | **post-stable** | Routing wiring lands alpha.5 (synthetic-proven); real firing needs live campaigns. | seed 09 |
+| Shadow-evidence-driven cluster→candidate automation | **post-stable** | Originally targeted alpha.5 (seed 05) but outside the 4-feature scope; needs live shadow evidence. | seed 05; seed 09 |
+| "Rank Findings by deterministic potential" + batch-size auto-tuning | **post-stable** | Need live run telemetry. alpha.5 routes by declared objective but does not rank or auto-tune. | seed 09 |
+| Live-graduated plugin rule governance | **post-stable** | alpha.5 ships only pre-vetted build-time plugins (seed-library pattern); live graduation governance is post-stable. | seed 05; seed 14 |
+
+---
+
 ### v0.2.0-alpha.6 - "Economics" (was alpha.5)
 
 Make the cost and reliability advantage measurable enough to become a buying argument.
@@ -99,6 +116,7 @@ These remain unscheduled until prerequisite foundations are in place.
 | FixPatternStore O(n) rebuild | Becomes urgent when Pattern evidence and replay volume grow; options remain append-only compaction, sqlite, or in-memory flush |
 | Multi-file composite rollback | Should be revisited before composite Patterns are promoted aggressively |
 | Non-Python AST cascade | Defer until Python AST structural replay proves the design |
+| TS/JS AST STRUCTURAL detection + TS structural hasher | Deferred from alpha.5 (Python-only STRUCTURAL shipped). Needs a TS AST hasher (tree-sitter/regex-AST); standalone work. Regex detection (ADR-0021) covers TS meanwhile. Pick up when TS emergent-rule detection is prioritized. |
 | `skip` strategy asymmetry | Needs a small design decision before routing semantics are cleaned up |
 
-*Updated 2026-06-25*
+*Updated 2026-06-30*

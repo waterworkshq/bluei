@@ -32,6 +32,10 @@ _Avoid_: rule (reserved for detection rules), fix template.
 A multi-phase batch of related fixes. Groups Findings by rule or path, orders by dependency, and executes phases sequentially.
 _Avoid_: batch (reserved for the batch PR engine), plan (too generic).
 
+**Learning Objective**
+A declared evidence target attached to a Campaign: which asset class and asset the Campaign is meant to gather evidence for (an emergent rule, a Pattern rule family, or a Recipe). Routes per-finding outcomes to the matching native evidence layer — `record_shadow_run` / `propose_rules_from_fix_patterns` for emergent rules, Dry Replay / SPRT for Patterns. A Campaign without a Learning Objective executes fixes but gathers no learning evidence (today's behavior). Campaigns are evidence sources, not governance decision-makers — they advance native lifecycle (e.g. EmergentRuleStatus) but write no ApprovalRecords; the Governance overlay (ADR-0008) stays operator-controlled.
+_Avoid_: campaign goal (too generic), learning target (collides with rule-family target).
+
 **Emergent Rule**
 A new detection rule proposed from repeated Finding patterns. Lifecycle: PROPOSED → CANDIDATE → TENTATIVE → ACTIVE → RETIRED/REJECTED.
 _Avoid_: custom rule, dynamic rule.
@@ -81,8 +85,8 @@ The three-way result of replaying a Pattern against a Finding: HIT (matched and 
 _Avoid_: replay result (ambiguous two-way), replay status.
 
 **Repo Taste Profile**
-A repo-local summary of conventions bluei has observed and can use when fixing Findings: preferred libraries, naming style, test style, framework idioms, and recurring exceptions.
-_Avoid_: coding style (too narrow), team preferences (too broad), memory.
+A summary of the conventions a repo or framework prefers when fixing Findings: preferred libraries, naming style, test style, framework idioms, and rule-specific local exceptions. Distinct from an Authoritative Guideline (industry-wide canon that applies to every repo) — a Taste Profile is specific to a framework or repo's local taste. Surfaced as prompt-context (not a Governed Asset); matched by framework + language.
+_Avoid_: coding style (too narrow), team preferences (too broad), memory, convention (reserved as the generic term a Taste Profile captures).
 
 **Dry Replay**
 The non-mutating evidence-collection path for learned Patterns: apply a Pattern's fix to a scratch copy, run the Validation Gate, record the would-have-applied outcome (HIT / MISS / FAILURE), discard the scratch. Runs alongside the cascade for matched-but-not-selected Patterns. Feeds promotion and demotion evidence.
