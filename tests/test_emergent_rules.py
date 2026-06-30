@@ -1074,9 +1074,15 @@ class TestScanShadowRulesRegexBranch:
 
 
 class TestProposeRulesFromFindingsRegex:
-    """AC-P3-3: proposal functions produce REGEX_PATTERN with \\w+."""
+    """AC-P3-3 (alpha.4): regex proposal for parseable snippets.
 
-    def test_propose_uses_regex_when_snippet_parses(self):
+    Superseded for Python by AC-P4-3 (alpha.5 Slice 1): parseable Python
+    snippets now produce STRUCTURAL (AST-first). The TEXT fallback for
+    unparseable snippets (AC-P3-3 text half) still holds, and non-Python
+    languages still use the regex path.
+    """
+
+    def test_propose_uses_structural_when_python_snippet_parses(self):
         findings = [
             _finding(
                 f"f-{i}",
@@ -1091,9 +1097,10 @@ class TestProposeRulesFromFindingsRegex:
         )
         assert len(proposals) == 1
         pattern = proposals[0].detection_pattern
-        assert pattern.detection_type == DetectionType.REGEX_PATTERN
-        assert r"\w+" in pattern.search_pattern
-        assert pattern.search_pattern != "ruff-b904"
+        # alpha.5: AST-first → STRUCTURAL with a populated ast_pattern blob.
+        assert pattern.detection_type == DetectionType.STRUCTURAL
+        assert pattern.ast_pattern is not None
+        assert pattern.search_pattern == ""
 
     def test_propose_falls_back_to_text_when_unparseable(self):
         findings = [

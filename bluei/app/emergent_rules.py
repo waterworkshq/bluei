@@ -21,6 +21,13 @@ from typing import Any, Dict, Iterable, List, Optional
 from bluei.engine.governance import format_asset_ref, is_governance_active
 from bluei.engine.models import Finding, now_iso
 from bluei.engine.report import _infer_category, infer_language_from_path
+from bluei.engine.structural_hash import (
+    compute_structural_hash,
+    extract_node_sequence,
+    extract_operator_sequence,
+    fuzzy_structural_match,
+    get_fuzzy_threshold,
+)
 from .state import _atomic_json_write
 
 _logger = logging.getLogger(__name__)
@@ -661,7 +668,23 @@ def scan_shadow_rules(
         if detection_type not in (
             DetectionType.TEXT_PATTERN,
             DetectionType.REGEX_PATTERN,
+            DetectionType.STRUCTURAL,
         ):
+            continue
+        if detection_type == DetectionType.STRUCTURAL:
+            if rule.language != "python":
+                continue
+            ast_blob = pattern.ast_pattern
+            if not ast_blob:
+                continue
+            for path in _iter_shadow_files(root, pattern.file_glob):
+                if not path.is_file():
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                matches.extend(_scan_structural(rule, ast_blob, path, text, root))
             continue
         needle = pattern.search_pattern.strip()
         if not needle:
@@ -701,6 +724,100 @@ def scan_shadow_rules(
     return matches
 
 
+_STRUCTURAL_SUBTREE_CAP = 200
+
+
+def _iter_structural_subtrees(tree: ast.AST) -> List[ast.AST]:
+    """Yield statement-boundary subtrees for STRUCTURAL matching.
+
+    Walks statements at module level and inside function/class bodies — the
+    granularity of typical finding snippets (a single ``raise``/``return``/
+    call line). Container nodes (FunctionDef/ClassDef) are descended into but
+    NOT emitted themselves, so a function wrapping a violation does not
+    double-match alongside its body. Bounded by ``_STRUCTURAL_SUBTREE_CAP``
+    per file (DESIGN 4.6).
+    """
+    subtrees: List[ast.AST] = []
+    container_kinds = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+    def _walk_body(body: list) -> None:
+        for node in body:
+            if len(subtrees) >= _STRUCTURAL_SUBTREE_CAP:
+                _logger.debug(
+                    "structural scan: subtree cap (%d) reached; skipping remainder",
+                    _STRUCTURAL_SUBTREE_CAP,
+                )
+                return
+            if isinstance(node, container_kinds):
+                _walk_body(list(getattr(node, "body", [])))
+                continue
+            subtrees.append(node)
+
+    _walk_body(list(getattr(tree, "body", [])))
+    return subtrees
+
+
+def _scan_structural(
+    rule: EmergentRule,
+    ast_blob: str,
+    path: Path,
+    text: str,
+    root: Path,
+) -> List[ShadowRuleMatch]:
+    """Match a Python STRUCTURAL rule against the AST of one file.
+
+    Parses the rule's ``ast_pattern`` JSON blob (DESIGN 4.1) and emits a
+    :class:`ShadowRuleMatch` for each subtree whose structural hash equals the
+    blob's ``hash`` OR whose fuzzy similarity to ``canonical_snippet`` clears
+    ``get_fuzzy_threshold(rule.rule_id)``. Mirrors the Pattern-replay lookup.
+    """
+    try:
+        blob = json.loads(ast_blob)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(blob, dict):
+        return []
+    target_hash = blob.get("hash")
+    canonical = blob.get("canonical_snippet") or ""
+    if not target_hash:
+        return []
+    threshold = get_fuzzy_threshold(rule.rule_id)
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return []
+    relative_path = path.relative_to(root).as_posix()
+    matches: List[ShadowRuleMatch] = []
+    for subtree in _iter_structural_subtrees(tree):
+        try:
+            snippet_src = ast.get_source_segment(text, subtree) or ""
+        except Exception:
+            snippet_src = ""
+        if not snippet_src.strip():
+            continue
+        sub_hash = compute_structural_hash(snippet_src, "python")
+        is_match = sub_hash == target_hash
+        if not is_match and canonical:
+            try:
+                score = fuzzy_structural_match(snippet_src, canonical, "python")
+            except Exception:
+                score = 0.0
+            is_match = score >= threshold
+        if not is_match:
+            continue
+        lineno = getattr(subtree, "lineno", 1) or 1
+        matches.append(
+            ShadowRuleMatch(
+                rule_id=rule.rule_id,
+                path=relative_path,
+                line=lineno,
+                snippet=snippet_src.strip(),
+                status=rule.status,
+            )
+        )
+    return matches
+
+
 def measure_false_positives(rule: EmergentRule) -> int:
     """Count how many of the rule's own negative examples match its pattern.
 
@@ -715,6 +832,8 @@ def measure_false_positives(rule: EmergentRule) -> int:
         Count of ``negative_examples`` that the pattern matches.
     """
     detection_type = rule.detection_pattern.detection_type
+    if detection_type == DetectionType.STRUCTURAL:
+        return _measure_structural_fps(rule)
     if detection_type not in (
         DetectionType.TEXT_PATTERN,
         DetectionType.REGEX_PATTERN,
@@ -736,6 +855,50 @@ def measure_false_positives(rule: EmergentRule) -> int:
                 count += 1
         elif needle in example:
             count += 1
+    return count
+
+
+def _measure_structural_fps(rule: EmergentRule) -> int:
+    """Count STRUCTURAL matches among ``rule.negative_examples``.
+
+    Mirrors :func:`_scan_structural`'s match logic: a negative example counts
+    as a false positive if its structural hash equals the blob's ``hash`` OR
+    its fuzzy similarity to ``canonical_snippet`` clears the rule's threshold.
+    Non-Python / malformed blobs count zero (AC-P4-4 — no crash).
+    """
+    ast_blob = rule.detection_pattern.ast_pattern
+    if not ast_blob:
+        return 0
+    try:
+        blob = json.loads(ast_blob)
+    except (ValueError, TypeError):
+        return 0
+    if not isinstance(blob, dict):
+        return 0
+    target_hash = blob.get("hash")
+    canonical = blob.get("canonical_snippet") or ""
+    language = rule.language or blob.get("language") or "python"
+    if not target_hash:
+        return 0
+    threshold = get_fuzzy_threshold(rule.rule_id)
+    count = 0
+    for example in rule.negative_examples:
+        if not example or not example.strip():
+            continue
+        try:
+            sub_hash = compute_structural_hash(example, language)
+        except Exception:
+            continue
+        if sub_hash == target_hash:
+            count += 1
+            continue
+        if canonical:
+            try:
+                score = fuzzy_structural_match(example, canonical, language)
+            except Exception:
+                score = 0.0
+            if score >= threshold:
+                count += 1
     return count
 
 
@@ -845,13 +1008,20 @@ def propose_rules_from_findings(
         if not isinstance(snippet, str):
             snippet = ""
         language = infer_language_from_path(grouped[0].path)
-        regex_pattern = extract_detection_regex(snippet, language)
-        if regex_pattern:
-            detection_type = DetectionType.REGEX_PATTERN
-            search_pattern = regex_pattern
+        ast_blob = (
+            extract_detection_ast(snippet, language) if language == "python" else None
+        )
+        if ast_blob:
+            detection_type = DetectionType.STRUCTURAL
+            search_pattern = ""
         else:
-            detection_type = DetectionType.TEXT_PATTERN
-            search_pattern = rule
+            regex_pattern = extract_detection_regex(snippet, language)
+            if regex_pattern:
+                detection_type = DetectionType.REGEX_PATTERN
+                search_pattern = regex_pattern
+            else:
+                detection_type = DetectionType.TEXT_PATTERN
+                search_pattern = rule
         proposals.append(
             EmergentRule(
                 rule_id=_emergent_rule_id(rule, file_glob),
@@ -860,6 +1030,7 @@ def propose_rules_from_findings(
                     detection_type=detection_type,
                     search_pattern=search_pattern,
                     file_glob=file_glob,
+                    ast_pattern=ast_blob,
                 ),
                 language=language,
                 category=_infer_category(rule),
@@ -920,13 +1091,20 @@ def propose_rules_from_fix_patterns(
         snippet = getattr(grouped[0], "before_snippet", "") or ""
         if not isinstance(snippet, str):
             snippet = ""
-        regex_pattern = extract_detection_regex(snippet, language)
-        if regex_pattern:
-            detection_type = DetectionType.REGEX_PATTERN
-            search_pattern = regex_pattern
+        ast_blob = (
+            extract_detection_ast(snippet, language) if language == "python" else None
+        )
+        if ast_blob:
+            detection_type = DetectionType.STRUCTURAL
+            search_pattern = ""
         else:
-            detection_type = DetectionType.TEXT_PATTERN
-            search_pattern = rule
+            regex_pattern = extract_detection_regex(snippet, language)
+            if regex_pattern:
+                detection_type = DetectionType.REGEX_PATTERN
+                search_pattern = regex_pattern
+            else:
+                detection_type = DetectionType.TEXT_PATTERN
+                search_pattern = rule
         proposals.append(
             EmergentRule(
                 rule_id=_emergent_rule_id(f"fix-pattern:{rule}", file_glob),
@@ -935,6 +1113,7 @@ def propose_rules_from_fix_patterns(
                     detection_type=detection_type,
                     search_pattern=search_pattern,
                     file_glob=file_glob,
+                    ast_pattern=ast_blob,
                 ),
                 language=language,
                 category=_infer_category(rule),
@@ -1049,6 +1228,45 @@ def extract_detection_regex(snippet: str, language: str) -> str:
     if not found:
         return ""
     return "".join(parts)
+
+
+def extract_detection_ast(snippet: str, language: str) -> Optional[str]:
+    """Compute a structural fingerprint from a Python violation snippet.
+
+    Mirrors :func:`extract_detection_regex` but emits a JSON structural
+    fingerprint (DESIGN 4.1) usable as ``DetectionPattern.ast_pattern`` rather
+    than a regex. The fingerprint is shape-invariant:
+    ``compute_structural_hash`` normalizes identifier names AND literal values,
+    so same-shape renames match (``raise ValueError("x")`` ≡
+    ``raise CustomError("y")`` — both ``Name(Constant)``), while a different
+    argument shape does not (``raise CustomError(custom_msg)`` — ``Name(Name)``).
+    The fuzzy fallback can still catch near-shapes.
+
+    Args:
+        snippet: Source code snippet to fingerprint.
+        language: Language hint; only ``"python"`` is supported in Phase 1.
+
+    Returns:
+        JSON string blob (``{hash, nodes, operators, canonical_snippet,
+        language}``), or ``None`` for non-Python / empty / unparseable snippets.
+    """
+    if not snippet or not snippet.strip():
+        return None
+    is_python = bool(language) and language.lower() == "python"
+    if not is_python:
+        return None
+    try:
+        ast.parse(snippet)
+    except (SyntaxError, ValueError):
+        return None
+    blob = {
+        "hash": compute_structural_hash(snippet, "python"),
+        "nodes": extract_node_sequence(snippet, "python"),
+        "operators": extract_operator_sequence(snippet, "python"),
+        "canonical_snippet": snippet,
+        "language": "python",
+    }
+    return json.dumps(blob)
 
 
 # NOTE: ``_infer_language(path)`` and ``_infer_category(rule)`` were previously

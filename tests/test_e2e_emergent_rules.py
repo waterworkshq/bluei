@@ -197,9 +197,10 @@ class TestIntegratedLifecycle:
         store = EmergentRuleStore(tmp_path / "rules.json")
 
         # 1) Observe: 6 findings with the same rule in the same dir glob.
-        # ``propose_rules_from_findings`` extracts a regex detection pattern
-        # from the finding snippet (ADR-0021); the resulting regex still
-        # matches the literal ``shell=True`` lines written below.
+        # alpha.5 (AC-P4-3): parseable Python snippets now produce a STRUCTURAL
+        # detection pattern (AST-first); the structural hash of
+        # ``subprocess.run(cmd, shell=True)`` still matches the identical lines
+        # written into helpers.py below.
         findings = [
             make_finding(
                 finding_id=f"f-life-{i}",
@@ -218,15 +219,11 @@ class TestIntegratedLifecycle:
         proposed = [r for r in rules if r.status == EmergentRuleStatus.PROPOSED]
         assert len(proposed) == 1
         rule_id = proposed[0].rule_id
-        # Detection pattern is a regex that generalizes the snippet's
-        # identifiers while preserving the ``shell=True`` literal.
+        # alpha.5: AST-first → STRUCTURAL with a populated ast_pattern blob.
         from bluei.app.emergent_rules import DetectionType
 
-        assert (
-            proposed[0].detection_pattern.detection_type == DetectionType.REGEX_PATTERN
-        )
-        assert r"\w+" in proposed[0].detection_pattern.search_pattern
-        assert "shell=True" in proposed[0].detection_pattern.search_pattern
+        assert proposed[0].detection_pattern.detection_type == DetectionType.STRUCTURAL
+        assert proposed[0].detection_pattern.ast_pattern is not None
 
         # 2) Validate: PROPOSED -> CANDIDATE.
         validated = store.validate_proposals()
