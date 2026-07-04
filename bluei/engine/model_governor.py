@@ -224,20 +224,18 @@ def select_tier(
     elif coverage.total_assets >= policy.tier_1_min_assets:
         tier = ModelTier.TIER_1
         rationale = _coverage_rationale(coverage)
-    elif coverage.total_assets == 0:
-        if policy.escalate_on_zero_coverage:
-            tier = ModelTier.ESCALATE
-            rationale = (
-                f"rule family '{coverage.rule_family}' has no seeded assets "
-                f"and policy escalates on zero coverage"
-            )
-        else:
-            tier = ModelTier.TIER_2
-            rationale = _coverage_rationale(coverage)
+    elif coverage.total_assets == 0 and policy.escalate_on_zero_coverage:
+        tier = ModelTier.ESCALATE
+        rationale = (
+            f"rule family '{coverage.rule_family}' has no seeded assets "
+            f"and policy escalates on zero coverage"
+        )
     else:
-        # Defensive: the >= checks above cover every non-negative count, so
-        # this branch is unreachable in practice. Tier-1 is the safe midpoint.
-        tier = ModelTier.TIER_1
+        # Below the tier-1 threshold: either zero assets when not escalating,
+        # or a nonzero count in the gap (0, tier_1_min) under a custom policy.
+        # Route to tier-2 (the coverage gap). Total over all non-negative
+        # integers for any tier_0_min >= tier_1_min >= 1.
+        tier = ModelTier.TIER_2
         rationale = _coverage_rationale(coverage)
 
     return TierRecommendation(tier=tier, rationale=rationale, coverage=coverage)

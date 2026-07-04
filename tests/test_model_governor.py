@@ -229,6 +229,43 @@ def test_select_tier_custom_thresholds(make_finding):
     assert rec.tier is ModelTier.TIER_1
 
 
+def test_select_tier_total_for_custom_tier_1_min(make_finding):
+    """R1 fix (Phase 8): select_tier must be total over all non-negative
+    counts for any tier_0_min >= tier_1_min >= 1. With tier_1_min_assets=2,
+    a 1-asset family falls below the tier-1 threshold and must route to
+    tier-2 (the gap), NOT the old 'defensive else' tier-1."""
+    finding = make_finding()
+    policy = CoveragePolicy(tier_0_min_assets=3, tier_1_min_assets=2)
+    # 0 assets -> tier-2 (gap, no escalate)
+    assert (
+        select_tier(
+            finding, RuleFamilyCoverage(rule_family="x", pattern_count=0), policy
+        ).tier
+        is ModelTier.TIER_2
+    )
+    # 1 asset -> tier-2 (below tier_1_min=2; the gap) — the R1 fix
+    assert (
+        select_tier(
+            finding, RuleFamilyCoverage(rule_family="x", pattern_count=1), policy
+        ).tier
+        is ModelTier.TIER_2
+    )
+    # 2 assets -> tier-1 (meets tier_1_min)
+    assert (
+        select_tier(
+            finding, RuleFamilyCoverage(rule_family="x", pattern_count=2), policy
+        ).tier
+        is ModelTier.TIER_1
+    )
+    # 3 assets -> tier-0 (meets tier_0_min)
+    assert (
+        select_tier(
+            finding, RuleFamilyCoverage(rule_family="x", pattern_count=3), policy
+        ).tier
+        is ModelTier.TIER_0
+    )
+
+
 @pytest.mark.parametrize("family", KNOWN_FAMILIES)
 def test_select_tier_works_for_all_known_families(make_finding, family):
     finding = make_finding(rule=family + "-x900")

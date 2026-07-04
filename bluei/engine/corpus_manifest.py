@@ -16,6 +16,7 @@ committed seed assets only; no runtime state).
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List
@@ -25,6 +26,8 @@ import yaml
 from bluei.engine.jsonl import read_jsonl
 from bluei.engine.models import Finding
 from bluei.engine.rule_family import derive_rule_family
+
+_logger = logging.getLogger(__name__)
 
 _ENGINE_DIR = Path(__file__).parent
 _BUNDLES_DIR = _ENGINE_DIR / "golden_bundles"
@@ -111,7 +114,8 @@ def _load_bundles() -> List[CorpusEntry]:
     for path in sorted(_BUNDLES_DIR.glob("*.yaml")):
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError:
+        except yaml.YAMLError as exc:
+            _logger.debug("corpus: skipped malformed bundle %s: %r", path, exc)
             continue
         if not isinstance(data, dict):
             continue
@@ -149,7 +153,8 @@ def _load_seeded_patterns() -> List[CorpusEntry]:
                 continue
             try:
                 pattern = FixPattern.from_dict(record)
-            except Exception:
+            except Exception as exc:
+                _logger.debug("corpus: skipped unparseable pattern %s: %r", path, exc)
                 continue
             if pattern.confidence < DEACTIVATION_THRESHOLD:
                 continue
@@ -182,7 +187,8 @@ def _load_recipes() -> List[CorpusEntry]:
     for path in sorted(_RECIPES_DIR.glob("**/*.yaml")):
         try:
             recipe = load_recipe(path)
-        except Exception:
+        except Exception as exc:
+            _logger.debug("corpus: skipped unparseable recipe %s: %r", path, exc)
             continue
         if not recipe.rule:
             continue
