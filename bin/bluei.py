@@ -385,6 +385,12 @@ def _cmd_campaign(rest: list[str]) -> int:
     return _impl(rest)
 
 
+def _cmd_benchmark(rest: list[str]) -> int:
+    from bin.cmd_benchmark import _cmd_benchmark as _impl
+
+    return _impl(rest)
+
+
 def _cmd_emergent(rest: list[str]) -> int:
     from bin.cmd_emergent import _cmd_emergent as _impl
 
@@ -569,6 +575,8 @@ def main():
         return _cmd_patterns(rest)
     if cmd == "campaign":
         return _cmd_campaign(rest)
+    if cmd == "benchmark":
+        return _cmd_benchmark(rest)
     if cmd == "emergent":
         return _cmd_emergent(rest)
     if cmd == "lesson":

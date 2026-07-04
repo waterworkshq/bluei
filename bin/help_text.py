@@ -53,6 +53,7 @@ HELP_TEXT = {
 
   {GREEN}patterns{RESET}            {DIM}Inspect and manage learned fix patterns{RESET}
   {GREEN}campaign{RESET}            {DIM}Plan multi-finding refactor campaigns{RESET}
+  {GREEN}benchmark{RESET}           {DIM}Run the dev Benchmark Harness (flywheel gap analysis){RESET}
   {GREEN}emergent{RESET}            {DIM}Inspect proposed emergent rules{RESET}
   {GREEN}learn{RESET}               {DIM}Governance inbox, status, audit, bundle, and decision verbs{RESET}
   {GREEN}create-plugin{RESET}       {DIM}Scaffold a new discovery plugin{RESET}
@@ -563,5 +564,25 @@ also lives here.{RESET}
   bluei learn approve recipe:auto-ruff-b904 --repo my-app
   bluei learn pause pattern:fp-a1b2c3d4 --repo my-app
   bluei learn bundle fp-a1b2c3d4 --worktree ./worktrees/fix --from-finding f-001 --repo my-app
+""",
+    "benchmark": f"""{BOLD}bluei benchmark{RESET} [{YELLOW}options{RESET}]
+
+{DIM}Run the dev Benchmark Harness over the committed Seed Library corpus.
+Replays Golden Bundles + seeded Patterns + Recipes through the
+cascade-simulation proxy and the Model Governor, producing a per-rule-family
+coverage gap analysis + Flywheel Score ($ avoided per Finding via mocked
+rates). Static analysis only — no model invocation.{RESET}
+
+{BOLD}Usage:{RESET}
+  bluei benchmark
+  bluei benchmark --policy {CYAN}<policy.yaml>{RESET}
+  bluei benchmark --output {CYAN}<result.json>{RESET}
+
+{BOLD}Options:{RESET}
+  --policy {CYAN}<path>{RESET}        CoveragePolicy YAML (tier thresholds; defaults to alpha.6 bands)
+  --output {CYAN}<path>{RESET}        Write the JSON result to this path (in addition to the markdown report)
+  -h, --help                  Show this help
+
+{DIM}Internal dev tool (Slice 2 of alpha.6). NOT the user-facing stat surface.{RESET}
 """,
 }
