@@ -56,6 +56,22 @@ _Avoid:_ built-in library (too generic), default patterns (too narrow — it inc
 The routing step that classifies Findings as refactor candidates and sends them to the refactor queue for human-gated processing.
 _Avoid_: refactor engine (too broad — reforge is specifically the classification + routing step).
 
+**Model Governor**
+The selection step that recommends which LLM tier should handle a Finding the deterministic cascade could not resolve. Emits a recommendation over a routing ladder (model tiers ranked by cost/capability); does not itself apply the fix and does not override the cascade's deterministic-vs-LLM split. Distinct from Governance State (the Operator Control Plane's safety verdict on a Governed Asset — a model choice is not a governance decision) and from Reforge (which classifies the fix class; the Governor only selects within the LLM class).
+_Avoid_: model router (too generic — implies network routing), model picker, LLM selector.
+
+**Routing Ladder**
+The ordinal set of LLM cost/capability tiers the Model Governor recommends over. Three rungs: `tier-0` (cheapest, lowest capability), `tier-1` (strong, mid-cost), `tier-2` (frontier, highest capability and cost). The Governor emits a tier ordinal; it never resolves a tier to a concrete model id (that is the backend's job at invocation, via model discovery). "Deterministic" sits below the ladder (owned by the cascade) and "human" sits above it (owned by Escalation); the Governor's ladder is the LLM middle only.
+_Avoid_: model levels, routing tiers (too generic), model classes.
+
+**Benchmark Harness**
+The internal dev tool that proves and tunes the Deterministic Flywheel. Replays the synthetic Seed Library corpus (Golden Bundles + seeded Patterns + Recipes) through the cascade and the Model Governor, and produces a per-rule-family coverage gap analysis: which families resolve deterministically, which reach the Governor, and which the Governor routes to `tier-2` (the expensive gap). Drives the dev optimization loop — gaps identify where to add Patterns, Bundles, or Recipes. NOT user-facing; distinct from the user-visible savings statistic.
+_Avoid_: benchmark suite (too generic), flywheel test, performance benchmark.
+
+**Flywheel Score**
+The per-Finding dollar amount avoided by bluei's routing versus the baseline of a normal agent always using a frontier model. Computed from deterministic resolutions (cascade wins — full frontier-model cost avoided) plus the Model Governor's tier downgrades (cheaper-tier cost avoided). The unit a user-facing savings statistic aggregates over; the Benchmark Harness reports it per Finding and per rule family for gap analysis.
+_Avoid_: savings score, efficiency metric, cost score.
+
 **Worktree**
 An isolated git worktree used for applying fixes without touching the main working directory. Used during fix application, validation, and review.
 _Avoid_: branch (a worktree is backed by a branch but is a filesystem-level concept), sandbox.
