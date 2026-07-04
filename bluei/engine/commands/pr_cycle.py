@@ -872,6 +872,30 @@ def _process_one_issue(
                     counters.fixes_failed_verification += 1
                     return counters.to_deltas()
 
+                # Model Governor recommendation recording (ADR-0022; alpha.6
+                # identity default). F2: only pattern_store is in scope here
+                # (recipes/bundles not loaded in pr-cycle); compute_coverage
+                # tolerates None for them (default 0). F4: call ctx.selection_fn
+                # (NOT identity_selection directly) so beta.1's swap is a config flip.
+                if (
+                    ctx.governor_ledger_path is not None
+                    and ctx.selection_fn is not None
+                ):
+                    from bluei.engine.model_governor import (
+                        compute_coverage,
+                        record_recommendation,
+                    )
+
+                    _gov_coverage = compute_coverage(
+                        finding,
+                        derive_rule_family(finding.rule),
+                        pattern_store=ctx.pattern_store,
+                    )
+                    _gov_rec = ctx.selection_fn(finding, _gov_coverage)
+                    record_recommendation(
+                        finding, _gov_rec, ctx.governor_ledger_path, ctx.run_id
+                    )
+
                 if use_claude_engine:
                     rc, claude_output, prompt_file = apply_claude_fix(
                         ClaudeFixRequest(

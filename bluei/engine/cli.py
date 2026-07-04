@@ -292,6 +292,7 @@ def main() -> int:
     run_merge_cycle = args.run_phase in ("merge-cycle", "orchestrated")
 
     cost_log_path = Path(state_file).parent / "cost_log.jsonl"
+    governor_ledger_path = Path(state_file).parent / "governor_recommendations.jsonl"
     run_id = str(uuid.uuid4())
     cost_tracker = CostTracker(
         log_path=cost_log_path,
@@ -324,6 +325,7 @@ def main() -> int:
         previous_last_run_at=previous_last_run_at,
         cost_tracker=cost_tracker,
         cost_log_path=cost_log_path,
+        governor_ledger_path=governor_ledger_path,
         run_id=run_id,
         pattern_store=pattern_store,
         PER_REPO_BASELINE_CHECKS=PER_REPO_BASELINE_CHECKS,

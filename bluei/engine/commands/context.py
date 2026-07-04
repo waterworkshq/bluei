@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from bluei.engine.cost_tracker import CostTracker
+from bluei.engine.model_governor import SelectionFn, identity_selection
 from bluei.engine.models import Finding
 from bluei.engine.pattern_store import FixPatternStore
 
@@ -87,6 +88,14 @@ class RunContext:
 
     # Pattern store
     pattern_store: Optional[FixPatternStore] = None
+
+    # Model Governor (ADR-0022) — selection function injected so beta.1 can swap
+    # identity -> select_tier via config (policy flip, not code edit). Default
+    # is identity_selection (returns tier-2; no behavior change in alpha.6).
+    selection_fn: SelectionFn = field(default_factory=lambda: identity_selection)
+    governor_ledger_path: Optional[Path] = (
+        None  # mirrors cost_log_path; resolved at cycle start
+    )
 
     # Repo config (resolved once at cycle start) — used by the taste channel
     # to read RepoConfig.framework. Forward-ref string avoids an import cycle.
