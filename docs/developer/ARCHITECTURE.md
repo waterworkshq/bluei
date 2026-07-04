@@ -97,6 +97,8 @@ fixing, PR management, batch operations, and pattern learning.
 | `shared_pattern_library.py` | Thread-safe cross-repo pattern cache with confidence merging. |
 | `composite_pattern.py` | Multi-step fixes that modify multiple files atomically. |
 | `reforge.py` | Identifies refactor-class findings and routes them to the refactor queue. See [RULES_REFERENCE.md](../reference/RULES_REFERENCE.md) for routing precedence and context rules. |
+| `model_governor.py` | Model Governor (ADR-0022): tier-selection function that recommends a Routing Ladder tier (tier-0/1/2/escalate) per Finding based on rule-family deterministic coverage. Ships inert with an identity default (returns tier-2); selection function injected via `RunContext.selection_fn` so beta.1's swap is a config flip. Emits only tier ordinals — never model ids (discovery-based resolution). |
+| `corpus_manifest.py` | Loads the synthetic Seed Library corpus (Golden Bundles + seeded Patterns + Recipes) into a unified `List[CorpusEntry]` for the Benchmark Harness. |
 | `refactor_queue.py` | Durable queue for human-review-gated refactors. |
 | `regression.py` | Regression detection: finds test deletions, export changes, lint regressions. |
 | `rebase_sweep.py` | Post-merge rebase: rebases sibling PRs after a merge. |

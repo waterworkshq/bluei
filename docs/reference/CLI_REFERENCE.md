@@ -34,44 +34,75 @@ four invocation patterns:
 
 ## Command Index
 
-All 28 commands sorted alphabetically:
+All 29 commands sorted alphabetically:
 
 | # | Command | Description |
 |---|---------|-------------|
-| 1 | `campaign` | Plan and execute multi-finding refactor campaigns |
-| 2 | `ci` | Generate GitHub Actions CI workflow |
-| 3 | `clean` | Fix specks and open pull requests |
-| 4 | `dashboard` | Generate a read-only observability dashboard |
-| 5 | `doctor` | Run operational checks/diagnostics |
-| 6 | `duster` | Dry-run scan — preview specks, no changes |
-| 7 | `emergent` | Inspect and manage proposed emergent rules |
-| 8 | `heal` | Heal dirty worktrees from transient artifacts |
-| 9 | `health` | Show vitality score (0–100) |
-| 10 | `help` | Show help for a command or overview |
-| 11 | `init` | Register a project (interactive or `--path`) |
-| 12 | `install` | Print installation/setup instructions |
-| 13 | `install-cron` | Install host cron schedule for project cycles |
-| 14 | `install-hook` | Install pre-commit hook |
-| 15 | `languages` | List installed language packs and rules |
-| 16 | `learn` | Inspect governance state, pending approvals, and create Golden Validation Bundles |
-| 17 | `lesson` | Inspect and manage per-repo lesson entries |
-| 18 | `onboard` | Headless onboarding for a new project |
-| 19 | `patterns` | Inspect and manage learned fix patterns |
-| 20 | `preflight` | Assess a project before registering |
-| 21 | `report` | Generate a vitality report (PDF by default) |
-| 22 | `run` | Run full orchestrated sweep (scan → clean → verify) |
-| 23 | `scan` | Run discovery/issue-cycle scan on a project |
-| 24 | `secrets` | Scan for hardcoded secrets |
-| 25 | `status` | Show agent or project status |
-| 26 | `update` | Self-update to the latest version |
-| 27 | `upgrade-config` | Upgrade repo configuration to latest schema |
-| 28 | `version` | Print version info (`--version` or `-v` flag) |
+| 1 | `benchmark` | Run the dev Benchmark Harness over the Seed Library corpus (coverage gap analysis + Flywheel Score) |
+| 2 | `campaign` | Plan and execute multi-finding refactor campaigns |
+| 3 | `ci` | Generate GitHub Actions CI workflow |
+| 4 | `clean` | Fix specks and open pull requests |
+| 5 | `dashboard` | Generate a read-only observability dashboard |
+| 6 | `doctor` | Run operational checks/diagnostics |
+| 7 | `duster` | Dry-run scan — preview specks, no changes |
+| 8 | `emergent` | Inspect and manage proposed emergent rules |
+| 9 | `heal` | Heal dirty worktrees from transient artifacts |
+| 10 | `health` | Show vitality score (0–100) |
+| 11 | `help` | Show help for a command or overview |
+| 12 | `init` | Register a project (interactive or `--path`) |
+| 13 | `install` | Print installation/setup instructions |
+| 14 | `install-cron` | Install host cron schedule for project cycles |
+| 15 | `install-hook` | Install pre-commit hook |
+| 16 | `languages` | List installed language packs and rules |
+| 17 | `learn` | Inspect governance state, pending approvals, and create Golden Validation Bundles |
+| 18 | `lesson` | Inspect and manage per-repo lesson entries |
+| 19 | `onboard` | Headless onboarding for a new project |
+| 20 | `patterns` | Inspect and manage learned fix patterns |
+| 21 | `preflight` | Assess a project before registering |
+| 22 | `report` | Generate a vitality report (PDF by default) |
+| 23 | `run` | Run full orchestrated sweep (scan → clean → verify) |
+| 24 | `scan` | Run discovery/issue-cycle scan on a project |
+| 25 | `secrets` | Scan for hardcoded secrets |
+| 26 | `status` | Show agent or project status |
+| 27 | `update` | Self-update to the latest version |
+| 28 | `upgrade-config` | Upgrade repo configuration to latest schema |
+| 29 | `version` | Print version info (`--version` or `-v` flag) |
 
 > **Alias:** `setup` is an alias for `install`.
 
 ---
 
 ## Per-Command Reference
+
+### `benchmark`
+
+Run the dev Benchmark Harness over the committed Seed Library corpus. Replays
+Golden Bundles + seeded Patterns + Recipes through the cascade-simulation
+proxy and the Model Governor, producing a per-rule-family coverage gap
+analysis + Flywheel Score. **Internal dev tool** — not user-facing; drives the
+Deterministic Flywheel improvement loop (gaps identify where to add Patterns,
+Recipes, or Bundles). Static analysis only — no model invocation.
+
+**Syntax:**
+
+```
+bluei benchmark [options]
+```
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--output <path>` | Write the report to a file (markdown) instead of stdout |
+| `--policy <yaml>` | Override the default `CoveragePolicy` thresholds |
+
+**Output:** a per-rule-family table (deterministic-resolved / Governor-reached /
+tier distribution / gap flag) + a Flywheel Score breakdown ($ avoided per
+Finding under new-vs-old routing via mocked rates). Reproducible across runs.
+
+> See ADR-0022 (Model Governor) + CONTEXT.md "Benchmark Harness" / "Flywheel Score".
+
+---
 
 ### 1. `campaign`
 

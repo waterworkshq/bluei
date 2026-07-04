@@ -6,6 +6,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.2.0-alpha.6] — Economics
+
+### Model Governor (ADR-0022)
+
+- **Tier-selection function.** New `bluei/engine/model_governor.py` recommends which Routing Ladder tier (`tier-0` / `tier-1` / `tier-2` / `escalate`) should handle a Finding the deterministic cascade could not resolve. The sole primary signal is **rule-family deterministic coverage** (seeded Pattern/Recipe/Bundle count for the family + whether the cascade matched). High coverage → `tier-0` (cheap); low/none → `tier-2` (frontier, the coverage gap); zero with `escalate_on_zero_coverage` → `escalate` (consumed by the existing Escalation path).
+- **Inert default (alpha.6).** The live call site ships with an **identity default** (`identity_selection` returns `tier-2`, today's behavior). The Governor computes and records a recommendation per Finding but changes no live fix behavior — mirrors the alpha.1 "observability first" pattern. beta.1 swaps identity → `select_tier` via config (policy flip, not code edit).
+- **No hardcoded model ids (ADR-0022).** The Governor emits only a tier ordinal — it never resolves a tier to a concrete model id. Tier→model resolution is the backend's job at invocation via model discovery. The module contains zero vendor model-id literals (verified by a source-level test, AC-P1-3). `MODEL_RATES` in `cost_tracker.py` stays as the legacy estimator; the Governor does not touch it.
+- **Selection function injected via `RunContext.selection_fn`** (default `identity_selection`), so beta.1's swap is a config change, not a source edit. Threaded through the cycle context alongside `governor_ledger_path` (mirrors `cost_log_path`).
+- **Live-path recording.** `pr_cycle._process_one_issue` records a recommendation to `governor_recommendations.jsonl` before each `apply_claude_fix` call, guarded by `governor_ledger_path is not None`. The `apply_claude_fix` invocation, `model_name`, and `cost_tracker.record_invocation` are byte-identical to alpha.5 (identity default records `tier-2`, matching today's `model_name = "claude-sonnet-4"`).
+- **`select_tier` is total** over all non-negative asset counts for any `tier_0_min >= tier_1_min >= 1` (Phase 8 hardening — the "defensive else" was reachable with custom thresholds).
+
+### Benchmark Harness (internal dev tool)
+
+- **`bluei/tools/benchmark/`** — a build-time dev tool (mirrors `foundry/`/`graduator/`; NOT imported at runtime) that replays the synthetic Seed Library corpus through the cascade-simulation proxy + the Model Governor, producing a per-rule-family **coverage gap analysis** + **Flywheel Score**. Drives the Deterministic Flywheel improvement loop: gaps identify where to add Patterns, Bundles, or Recipes.
+- **Corpus manifest** (`bluei/engine/corpus_manifest.py`) — unifies the three committed seed sources into a deterministic `List[CorpusEntry]`: 38 Golden Bundles (`engine/golden_bundles/`) + 38 seeded Patterns (`engine/seeded_patterns/`) + 54 Recipes (`engine/recipes/built-in/`) = 130 entries across 28 rule families.
+- **F3 cascade-simulation proxy** — `cascade_matched` is derived from family-level set-membership (a Pattern or Recipe covering the family exists), NOT the vacuous self-match (a corpus entry's own asset matching its own rule). Pattern/Recipe entries exclude self from the count. Temp-file cascade lookup deferred to beta.1.
+- **FlywheelScore** uses the explicit two-rate formula: `(tier2.in - tierN.in)*3000/1000 + (tier2.out - tierN.out)*300/1000` per routed finding (pinned estimate constants; mocked rates). `$ avoided per Finding` under new-vs-old routing (100% tier-2 baseline).
+- **`bluei benchmark` CLI** — runs over the committed corpus with default `CoveragePolicy`; emits a markdown dev report. Static analysis only — no model invocation (C1/C2/C3). Reproducible (pinned `MockModelDiscovery`, sorted manifest, `sort_keys=True`).
+
+### User-facing "$ avoided" statistic
+
+- **`routing_savings_usd`** (default `0.0`) added to the `flywheel_ledger` block (`_build_flywheel_ledger`). The report/dashboard surfaces the aggregate "$ avoided = `savings_usd + routing_savings_usd`" in both HTML + markdown sections, with an honest routing-footnote ("active in beta.1"). Under alpha.6's identity default the routing contribution is `$0.00` (no live downgrades); the figure equals existing savings until beta.1. Additive key — old `status.json` loads identically.
+
+### Summary
+
+- **1 new ADR** (0022 — Model Governor locus + inert default + discovery-based model identity, amended post-spec-review to correct the locus from `runner.py:_template_for_backend` to the `apply_claude_fix` call sites).
+- **4 new CONTEXT terms** (Model Governor, Routing Ladder, Benchmark Harness, Flywheel Score).
+- 6463 → **6552 tests** (+89 new, 0 regressions). All mechanisms proven synthetically only (no live runs before 0.2.0 stable).
+- Ships **inert**: the Governor records recommendations but the live fix path is byte-identical to alpha.5. beta.1 flips the default when operators + live runs exist.
+- Phase 8 code review: ship-ready (no CRITICAL/HIGH/MEDIUM); R1 (select_tier totalness) fixed; CR-3/4/5 (test-quality hardening) deferred to `docs/plans/REMAINING-WORK.md`.
+
+---
+
 ## [0.2.0-alpha.5] — Repo Native
 
 ### Taste Atlas (Repo Taste Profile)

@@ -17,6 +17,7 @@ What's been built, and what's next.
 | v0.2.0-alpha.3 | "Evidence Foundation": Provenance-aware mining infrastructure (`open_pattern_store` factory, `register_asset` producer interface, provenance-by-storage-locus), envelope field completion (`imports_touched`/`validation_commands_passed`/`rule_family`), authoritative guidelines as prompt-context (ADR-0017), SPRT per-family calibration harness with hand-picked fallback. Synthesize-then-validate Seed Library pipeline (ADR-0018): LLM generates canonical rules, linter validates as oracle. 38 validated bundles shipped (30 Python + 7 JS + 1 original). 6295 tests. |
 | v0.2.0-alpha.4 | "Deterministic Assets": Structural Replay (ADR-0019 — AST-aware Pattern application on literal miss with two-stage confidence gate), Recipe Foundry (ADR-0020 — build-time LLM-authoring pipeline with 37 canonical seeded-Recipes produced via first Foundry run), Rule Hatchery detection extraction (ADR-0021 — regex-based detection replacing the rule-name stub + rule-owned FP measurement). 38 seeded Patterns populated across 12 rule families. `bluei learn` governance decision verbs (ADR-0015 revised). eslint autofix wildcard. 4 ADRs (0019-0021 + 0007/0015 refined). 6401 tests. |
 | v0.2.0-alpha.5 | "Repo Native": Taste Atlas (Repo Taste Profile — framework-matched prompt-context seed library mirroring Authoritative Guidelines, ADR-0017; injected as prompt §6f + surfaced in reports; NOT governed), Campaign Lab (Learning Objective + evidence routing via injected consumer — campaigns advance native lifecycle + write evidence stores only, ZERO governance ApprovalRecord writes; decoupled from app via callback injection), Plugin-skeleton generator (build-time `bluei/tools/graduator/` → self-contained `DiscoveryPlugin` packs; 1 curated worked example `plugins/graduated-eslint/`), AST STRUCTURAL detection (ADR-0021 fulfillment — `extract_detection_ast` + `scan_shadow_rules` STRUCTURAL branch, Python-only, exact hash + fuzzy fallback). Zero new ADRs (integration release). 6463 tests. |
+| v0.2.0-alpha.6 | "Economics": Model Governor (ADR-0022 — tier-selection function at the LLM call site; emits tier-0/1/2/escalate based on rule-family deterministic coverage; ships inert with identity default returning tier-2; selection_fn injected via RunContext so beta.1's swap is a config flip; no hardcoded model ids — discovery-based resolution), Benchmark Harness (internal dev tool `bluei/tools/benchmark/` + `bluei/engine/corpus_manifest.py` — replays the 130-entry synthetic corpus through the cascade-simulation proxy + Governor; per-family coverage gap analysis + Flywheel Score via mocked rates; `bluei benchmark` CLI; static analysis only), user-facing "$ avoided" statistic (`routing_savings_usd` additive key in flywheel_ledger + aggregate render). 1 new ADR (0022). 4 new CONTEXT terms. 6552 tests. Ships inert — no live downgrades until beta.1. |
 
 > Full release notes live in [`CHANGELOG.md`](../CHANGELOG.md).
 
@@ -60,18 +61,20 @@ alpha.5 shipped (see Delivered above). Items scoped out during grilling (Phase 4
 
 ---
 
-### v0.2.0-alpha.6 - "Economics" (was alpha.5)
+### Deferred from v0.2.0-alpha.6 (DELIVERED)
 
-Make the cost and reliability advantage measurable enough to become a buying argument.
+alpha.6 shipped (see Delivered above). Items scoped out during grilling (Phase 2) + execution. Each targets `0.2.0-beta.1` (the stabilization gate) and is recorded in the PRD out-of-scope + ADR-0022.
 
-| Feature | Problem it solves |
-|---------|-------------------|
-| Model Governor | Routes unresolved Findings to deterministic paths, smaller models, stronger models, frontier models, or humans based on evidence and risk. Reads Governance State as a first-class routing input (seed 14). |
-| Benchmark And Proof Harness | Replays historical and synthetic Findings to prove fewer LLM calls, stable validation, and higher deterministic resolution rate. Reports governance lifecycle metrics from ApprovalRecord trail. |
-
-**Why here:** model downgrade decisions need the evidence and promotion history from prior releases. v0.2.0-alpha.6 turns accumulated telemetry into economic proof.
-
-Planning seeds: `docs/plans/v2/08-model-governor.md`, `docs/plans/v2/11-benchmark-proof-harness.md`
+| Deferred item | Target | Why deferred | Recorded in |
+|---------------|--------|--------------|-------------|
+| Act-on-recommendation (live default flip identity → select_tier) | **beta.1** | C3 operator-blind; a behavior change on a system with no operators. alpha.6 parameterizes the call site so the flip is a config change. | ADR-0022; PRD AC-P1-5 |
+| Real model discovery (non-mocked tier→model resolution) | **beta.1** | Needs invocation; alpha.6 ships `MockModelDiscovery` only. | ADR-0022 |
+| Validation-stability measurement in Benchmark | **beta.1** | Needs invocation to compare tier-0 vs tier-2 validation outcomes. | PRD AC-P2 risks |
+| Validation-failure-history routing signal | **beta.1** | C1 — no committed per-family aggregation; needs live data. | PRD Q4 |
+| File-criticality routing signal | **beta.1** | C1 — needs live repo context. | PRD Q4 |
+| Real API token metering | **post-stable** | C2 — estimates kept; benchmark is relative. | PRD C2 |
+| T1.2 batch-path Governor wiring | **patch** | `_apply_single_fix` has no ctx; deferred rather than force-fit. | TASKS T1.2 |
+| CR-3/4/5 test-quality hardening (F3 two-peer, ledger-None guard, cascade-resolved→no-row) | **patch** | LOW; contracts currently work, tests missing. | `docs/plans/REMAINING-WORK.md` |
 
 ---
 
@@ -81,7 +84,7 @@ After the flywheel arc lands (`alpha.1` through `alpha.6`), stabilization procee
 
 | Step | Gate |
 |------|------|
-| `0.2.0-beta.1` | Feature-complete: Evidence → Economics shipped; deterministic flywheel measurable on internal repos |
+| `0.2.0-beta.1` | Feature-complete: Economics shipped (alpha.6 delivered); Governor default flipped to act-on-recommendation; deterministic flywheel measurable on internal repos |
 | `0.2.0-rc.1` | Proven on 2-3 repos you do not own; no data-loss/safety footguns; CLI/config/state schema frozen |
 | `0.2.0` (stable) | Docs match reality; no open schema-breaking decisions; the "do not use in production" warning can honestly come off |
 

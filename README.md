@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/v/release/waterworkshq/bluei" alt="version" />
-  <img src="https://img.shields.io/badge/tests-6463%20passed-brightgreen" alt="tests" />
+  <img src="https://img.shields.io/badge/tests-6552%20passed-brightgreen" alt="tests" />
   <img src="https://img.shields.io/github/license/waterworkshq/bluei" alt="license" />
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey" alt="platform" />
 </p>
@@ -13,7 +13,7 @@
   <a href="https://bluei.dev">bluei.dev</a>
 </h3>
 
-> **⚠️ Pre-release software.** This is `v0.2.0-alpha.4` — an early preview with significant bugs, incomplete features, and breaking changes ahead. **Do not use in production.** Use for evaluation, testing, and contributions only. Production-ready releases will follow in the coming weeks.
+> **⚠️ Pre-release software.** This is `v0.2.0-alpha.6` — an early preview with significant bugs, incomplete features, and breaking changes ahead. **Do not use in production.** Use for evaluation, testing, and contributions only. Production-ready releases will follow in the coming weeks.
 
 # bluei — Trust the silence
 
@@ -348,7 +348,7 @@ Key design principles:
 | v0.2.0-alpha.3 "Evidence Foundation" | Delivered | Provenance-aware mining infrastructure (`open_pattern_store` + `register_asset`), envelope field completion, authoritative guidelines (ADR-0017), SPRT per-family calibration harness. Synthesize-then-validate Seed Library pipeline (ADR-0018) with 38 validated bundles (Python + JS). |
 | v0.2.0-alpha.4 "Deterministic Assets" | Delivered | Structural Replay (ADR-0019 — AST-aware Pattern application), Recipe Foundry (ADR-0020 — build-time LLM-authoring with 37 canonical seeded-Recipes), Rule Hatchery detection extraction (ADR-0021 — regex-based detection replacing the rule-name stub), `bluei learn` governance verbs, eslint autofix wildcard. 38 seeded Patterns, 6401 tests. |
 | v0.2.0-alpha.5 "Repo Native" | Delivered | Repo Taste Profile (framework-matched prompt-context), Campaign Lab (Learning Objective + evidence routing via injected consumer, zero governance writes), plugin-skeleton generator (self-contained DiscoveryPlugin packs), AST STRUCTURAL detection (ADR-0021 fulfillment, Python-only). Zero new ADRs (integration release). 6463 tests. |
-| v0.2.0-alpha.6 "Economics" | Planned | Model Governor and proof harness for model downgrade and cost/reliability evidence |
+| v0.2.0-alpha.6 "Economics" | Delivered | Model Governor (ADR-0022 — tier-selection function, inert identity default, no hardcoded model ids), Benchmark Harness (internal dev tool, per-family coverage gap analysis + Flywheel Score over 130-entry corpus, `bluei benchmark` CLI), user-facing "$ avoided" statistic. Ships inert — no live downgrades until beta.1. 6552 tests. |
 
 See [Roadmap](docs/meta/ROADMAP.md) for release boundaries and the planning seed map.
 
