@@ -183,6 +183,32 @@ class TestFlywheelMarkdownSection:
         assert "$1.25 spent" in result
         assert "$0.48 avoided" in result
 
+    def test_aggregate_avoided_defaults_to_savings_when_routing_absent(self):
+        """AC-P3-1: aggregate '$ avoided' = savings_usd when routing_savings_usd
+        is absent (old status.json block). Renders the savings figure as the
+        aggregate, plus the routing footnote labelled honestly.
+        """
+        repo = _make_repo()
+        result = self.rg.generate_markdown_report(
+            repo, None, None, [], {}, flywheel_ledger=FULL_LEDGER
+        )
+        # Aggregate = 0.48 + 0.0 (missing key reads as default)
+        assert "$0.48 avoided" in result
+        assert "routing savings: $0.00 (active in beta.1)" in result
+
+    def test_aggregate_avoided_sums_savings_and_routing(self):
+        """AC-P3-1: aggregate '$ avoided' = savings_usd + routing_savings_usd
+        when both keys are present.
+        """
+        repo = _make_repo()
+        ledger = {**FULL_LEDGER, "routing_savings_usd": 1.50}
+        result = self.rg.generate_markdown_report(
+            repo, None, None, [], {}, flywheel_ledger=ledger
+        )
+        # 0.48 + 1.50 = 1.98
+        assert "$1.98 avoided" in result
+        assert "routing savings: $1.50 (active in beta.1)" in result
+
     def test_adr0003_footnote_present(self):
         repo = _make_repo()
         result = self.rg.generate_markdown_report(

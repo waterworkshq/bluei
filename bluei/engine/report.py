@@ -654,6 +654,8 @@ def _build_flywheel_html(ledger: Dict[str, Any]) -> str:
     exhausted = ledger.get("exhausted", 0)
     savings = ledger.get("savings_usd", 0.0)
     cost_total = ledger.get("cost_total_usd", 0.0)
+    routing_savings = float(ledger.get("routing_savings_usd", 0.0) or 0.0)
+    total_avoided = savings + routing_savings
 
     # Rates per ADR-0002: num/denom (%)
     if attempted > 0:
@@ -722,12 +724,16 @@ def _build_flywheel_html(ledger: Dict[str, Any]) -> str:
             f"<p><strong>Top failing patterns:</strong></p>\n<ul>{failing_rows}</ul>\n"
         )
 
-    # Cost
+    # Cost — surface the aggregate "$ avoided" (savings + routing_savings_usd).
+    # alpha.6: routing contribution is $0 under the identity default; active in beta.1.
     cost_block = ""
-    if cost_total or savings:
+    if cost_total or savings or routing_savings:
         cost_block = (
             f"<p><strong>Cost:</strong> ${cost_total:.2f} spent · "
-            f"${savings:.2f} avoided</p>\n"
+            f"${total_avoided:.2f} avoided</p>\n"
+            f'<p style="font-size:0.85em;color:#7f8c8d;">'
+            f"routing savings: ${routing_savings:.2f} "
+            "(active in beta.1)</p>\n"
         )
 
     # Footnote — required verbatim per ADR-0003

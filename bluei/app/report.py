@@ -223,11 +223,19 @@ class ReportGenerator:
                 lines.append(f"- `{pid}` — {rule} (failure_count={count})")
             lines.append("")
 
-        # Cost
+        # Cost — surface the aggregate "$ avoided" (savings + routing_savings_usd).
+        # alpha.6: routing contribution is $0 under the identity default; active in beta.1.
         cost_total = ledger.get("cost_total_usd", 0.0)
         savings = ledger.get("savings_usd", 0.0)
-        if cost_total or savings:
-            lines.append(f"**Cost:** ${cost_total:.2f} spent · ${savings:.2f} avoided")
+        routing_savings = float(ledger.get("routing_savings_usd", 0.0) or 0.0)
+        total_avoided = savings + routing_savings
+        if cost_total or savings or routing_savings:
+            lines.append(
+                f"**Cost:** ${cost_total:.2f} spent · ${total_avoided:.2f} avoided"
+            )
+            lines.append(
+                f"*routing savings: ${routing_savings:.2f} (active in beta.1)*"
+            )
             lines.append("")
 
         # Footnote — required per ADR-0003

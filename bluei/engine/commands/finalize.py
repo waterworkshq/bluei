@@ -101,6 +101,10 @@ def _build_flywheel_ledger(
         "pattern_replay_resolutions": pattern_replay_resolutions,
         "savings_usd": savings_usd,
         "cost_total_usd": cost_total_usd,
+        # alpha.6: Governor's routing contribution to "$ avoided". Always 0.0
+        # under the identity default (no live downgrades); active in beta.1.
+        # Default 0.0 (not None) so old status.json blocks load identically.
+        "routing_savings_usd": 0.0,
         "rates": rates,
         "active_pattern_count": active_pattern_count,
         "top_failing_patterns": top_failing_patterns,
