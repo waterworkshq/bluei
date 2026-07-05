@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/v/release/waterworkshq/bluei" alt="version" />
-  <img src="https://img.shields.io/badge/tests-6552%20passed-brightgreen" alt="tests" />
+  <img src="https://img.shields.io/badge/tests-6616%20passed-brightgreen" alt="tests" />
   <img src="https://img.shields.io/github/license/waterworkshq/bluei" alt="license" />
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey" alt="platform" />
 </p>
@@ -13,7 +13,7 @@
   <a href="https://bluei.dev">bluei.dev</a>
 </h3>
 
-> **⚠️ Pre-release software.** This is `v0.2.0-alpha.6` — an early preview with significant bugs, incomplete features, and breaking changes ahead. **Do not use in production.** Use for evaluation, testing, and contributions only. Production-ready releases will follow in the coming weeks.
+> **⚠️ Pre-release software.** This is `v0.2.0-beta.1` — the first stabilization gate. Still pre-release with the "do not use in production" warning in effect (C1: no live runs before 0.2.0 stable). Use for evaluation, testing, and contributions only. Production-ready releases will follow (`0.2.0-rc.1` → `0.2.0` stable).
 
 # bluei — Trust the silence
 
@@ -349,6 +349,7 @@ Key design principles:
 | v0.2.0-alpha.4 "Deterministic Assets" | Delivered | Structural Replay (ADR-0019 — AST-aware Pattern application), Recipe Foundry (ADR-0020 — build-time LLM-authoring with 37 canonical seeded-Recipes), Rule Hatchery detection extraction (ADR-0021 — regex-based detection replacing the rule-name stub), `bluei learn` governance verbs, eslint autofix wildcard. 38 seeded Patterns, 6401 tests. |
 | v0.2.0-alpha.5 "Repo Native" | Delivered | Repo Taste Profile (framework-matched prompt-context), Campaign Lab (Learning Objective + evidence routing via injected consumer, zero governance writes), plugin-skeleton generator (self-contained DiscoveryPlugin packs), AST STRUCTURAL detection (ADR-0021 fulfillment, Python-only). Zero new ADRs (integration release). 6463 tests. |
 | v0.2.0-alpha.6 "Economics" | Delivered | Model Governor (ADR-0022 — tier-selection function, inert identity default, no hardcoded model ids), Benchmark Harness (internal dev tool, per-family coverage gap analysis + Flywheel Score over 130-entry corpus, `bluei benchmark` CLI), user-facing "$ avoided" statistic. Ships inert — no live downgrades until beta.1. 6552 tests. |
+| v0.2.0-beta.1 "Stabilization" | Delivered | Governor flips to act-on-recommendation (`selection_fn` → `select_tier`; real tier recommendations); tier resolved to a concrete model via new `engine/model_discovery.py` (`BackendModelDiscovery`, operator-config-validated against the claude/opencode CLI, no shipped defaults) and injected into the command template at the call site (shared `resolve_governed_model` helper). Behavior gated on operator `model_tiers.yaml` — under C2 (no operators) invocation is byte-identical to alpha.6. Batch path wired symmetrically (T1.2); cycle-start constructs discovery. `apply_claude_fix` unchanged. CR-3/4/5 test hardening. ADR-0022 amended; "Model Discovery" CONTEXT term. 6616 tests. C1 holds — real-repo measurement at rc.1. |
 
 See [Roadmap](docs/meta/ROADMAP.md) for release boundaries and the planning seed map.
 

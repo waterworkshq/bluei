@@ -6,6 +6,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.2.0-beta.1] — Stabilization (Act-on-Recommendation)
+
+The first stabilization gate on the ladder to 0.2.0 stable. The Model Governor flips from record-only to **act-on-recommendation**, and model discovery becomes real. C1 ("no live runs before stable") still holds — the flip is live in code, proven via synthetic + mocked-subprocess tests; real-repo measurement lands at rc.1.
+
+### Act-on-recommendation flip (ADR-0022 amendment 1)
+
+- **`selection_fn` default flipped** `identity_selection` → `select_tier`. The Governor now records **real** tier recommendations per Finding (not the vacuous tier-2 from identity).
+- **Resolution at the call site.** The recommended tier is resolved to a concrete model via discovery and a `--model <id>` flag is injected into the `claude_cmd_template` at the pr-cycle call site (beside `apply_claude_fix`), via a new shared `resolve_governed_model` helper. `apply_claude_fix` is **byte-identical** to alpha.6 — its signature, body, and 12+ callers are untouched (AC-P1-3 regression-guarded).
+- **Behavior gated on operator tier-config.** The actual model downgrade only occurs when an operator supplies `model_tiers.yaml`. Under C2 (no operators) every recommendation resolves to the default model → **invocation byte-identical to alpha.6**. The gate shifted from the coarse `selection_fn=identity` to the finer operator-config presence.
+- **`policy_version`** bumped `alpha.6` → `beta.1` (flows into the recommendation ledger; old rows keep theirs).
+- The hardcoded `model_name = "claude-sonnet-4"` cost-ledger literal is replaced by `DEFAULT_ESTIMATE_LABEL` (kept verbatim as the rate anchor — estimate-only, never an invocation id).
+
+### Real model discovery (ADR-0022 amendment 2; CONTEXT "Model Discovery")
+
+- **`bluei/engine/model_discovery.py`** (new) — promotes `ResolvedModel`/`resolve_model` out of `tools/benchmark/` into the runtime engine layer (engine must not depend on tools). Adds the `ModelDiscovery` Protocol, `BackendModelDiscovery` (operator-config-validated against the backend CLI; **no shipped defaults** — nothing rots), `inject_model_flag` (auto-detects the backend from the template's first token), and `load_model_tiers`.
+- **Operator-config-validated.** Discovery queries the `claude`/`opencode` CLI for available models and validates the operator's tier mapping (rejects unavailable models; falls back on mismatch). Empty config → `discover` returns `[]` → identity behavior.
+- Zero vendor model-id literals ship in the discovery module or any default config (AC-P2-3 source-level test). The CLI listing command (`claude --list-models --output-format json`; opencode unsupported today) is best-effort with a `{}` fallback — the contract is robust to its absence.
+- `MockModelDiscovery` stays in `tools/benchmark/` for Benchmark reproducibility; the benchmark re-imports the promoted types from engine.
+
+### Batch-path wiring + cycle-start (T1.2 deferral)
+
+- **Batch path symmetric with pr-cycle.** `_apply_single_fix` now records + resolves via the same `resolve_governed_model` helper. The full batch chain (`process_batch → apply_batch_fixes → _apply_single_fix`) carries 4 optional keyword-only Governor kwargs (defaults preserve all existing callers).
+- **Cycle-start discovery construction.** `cli.py` loads `model_tiers.yaml` and constructs `BackendModelDiscovery` (or `None` if absent), setting `ctx.discovery` — so the flip becomes operative when an operator configures tiers.
+
+### Test-quality hardening (CR-3/4/5)
+
+- **CR-3** — F3 two-pattern mutual-coverage: a family with two Patterns → both `cascade_matched=True` → `deterministic_resolved == 2` (the load-bearing claim of the `- 1` self-exclusion).
+- **CR-4** — `governor_ledger_path=None` no-op guard for the pr-cycle path (the inert-posture contract).
+- **CR-5** — cascade-resolved Finding → 0 governor ledger rows; LLM-routed → 1 (the ADR-0022 scoped-locus guarantee, now test-pinned for both paths).
+
+### Summary
+
+- **ADR-0022 amended** (2 amendments: flip mechanics; discovery contract). **1 new CONTEXT term** (Model Discovery).
+- 6552 → **6616 tests** (+64 new across 4 execution slices, 0 regressions). All mechanisms proven synthetically only (C1 holds; real-repo measurement at rc.1).
+- **Inert-until-configured posture:** the Governor is live and recording real recommendations; live model downgrades wait for an operator's `model_tiers.yaml`. `apply_claude_fix` unchanged across all slices.
+- Re-deferred to **rc.1** (need live data C1 excludes): validation-stability measurement, validation-failure-history routing signal, file-criticality routing signal.
+
+---
+
 ## [0.2.0-alpha.6] — Economics
 
 ### Model Governor (ADR-0022)
