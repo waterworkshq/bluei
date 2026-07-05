@@ -162,7 +162,7 @@ class TestBenchmarkResult:
 
     def test_policy_version(self):
         result = run_benchmark(CoveragePolicy(), _mock_discovery_3tier())
-        assert result.policy_version == "alpha.6"
+        assert result.policy_version == "beta.1"
 
 
 # ─── AC-P2-3: gap analysis ────────────────────────────────────────────

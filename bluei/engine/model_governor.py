@@ -24,11 +24,14 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from bluei.engine.jsonl import append_jsonl
 from bluei.engine.models import Finding, now_iso
 from bluei.engine.rule_family import derive_rule_family
+
+if TYPE_CHECKING:  # pragma: no cover — forward refs only, avoids import cycle
+    from bluei.engine.model_discovery import ModelDiscovery, ResolvedModel
 
 
 class ModelTier(str, Enum):
@@ -103,7 +106,7 @@ class TierRecommendation:
     tier: ModelTier
     rationale: str
     coverage: RuleFamilyCoverage
-    policy_version: str = "alpha.6"
+    policy_version: str = "beta.1"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -244,12 +247,14 @@ def select_tier(
 def identity_selection(
     finding: Finding, coverage: RuleFamilyCoverage
 ) -> TierRecommendation:
-    """The default selection function (ADR-0022 inert default).
+    """The explicit opt-out fallback (ADR-0022 inert default).
 
     Returns ``tier-2`` (the current-model / frontier tier) with an
     'identity-default' rationale. The call site invokes the current model
-    unchanged — alpha.6 records the recommendation without changing fix
-    behavior. beta.1 swaps this for ``select_tier`` as a policy flip.
+    unchanged — no behavior change. beta.1 flipped the cycle default to
+    ``select_tier`` (real recommendations); this function remains for
+    operators who explicitly want the inert posture (set ``ctx.selection_fn
+    = identity_selection``) and for tests that exercise it directly.
     """
     return TierRecommendation(
         tier=ModelTier.TIER_2,
@@ -287,3 +292,60 @@ def record_recommendation(
         "timestamp": now_iso(),
     }
     append_jsonl(Path(ledger_path), row, sort_keys=True)
+
+
+# M4: cost-ledger rate anchor (estimate-only, never an invocation id). Kept
+# verbatim from alpha.6's hardcoded ``model_name = "claude-sonnet-4"`` so
+# ``cost_tracker.record_invocation`` → ``MODEL_RATES.get(model)`` resolves to
+# the SAME rate alpha.6 used under empty operator config (C2 identity). This is
+# NOT a vendor invocation id — it never enters the command template; it feeds
+# the legacy cost estimator only. See DESIGN §5/M4, ADR-0022 amendment 1.
+DEFAULT_ESTIMATE_LABEL = "claude-sonnet-4"
+
+
+def resolve_governed_model(
+    finding: Finding,
+    selection_fn: SelectionFn,
+    pattern_store: Optional[Any],
+    discovery: Optional["ModelDiscovery"],
+    base_template: str,
+    ledger_path: Optional[Path],
+    run_id: str,
+) -> Tuple[Optional[TierRecommendation], Optional["ResolvedModel"], str, str]:
+    """Shared Governor resolution (pr-cycle + batch both call this).
+
+    Returns ``(recommendation, resolved_model, resolved_template,
+    model_name_for_ledger)``:
+
+    * ``ledger_path`` None or ``selection_fn`` None → guard not met →
+      ``(None, None, base_template, DEFAULT_ESTIMATE_LABEL)`` (mirrors the
+      pr_cycle.py:880-883 guard).
+    * ``discovery`` None or tier unmapped → ``resolved_model`` None → template
+      unchanged (identity), ``model_name == DEFAULT_ESTIMATE_LABEL``.
+    * Otherwise the discovered model id is spliced into the template via
+      ``inject_model_flag`` and returned as ``model_name``.
+
+    The Governor still records a recommendation for EVERY Finding reaching this
+    point (not only those routed to the LLM fix backend) — the recommendation
+    ledger is independent of the fix backend. Resolution to a concrete model is
+    a separate concern.
+    """
+    if ledger_path is None or selection_fn is None:
+        return None, None, base_template, DEFAULT_ESTIMATE_LABEL
+    coverage = compute_coverage(
+        finding, derive_rule_family(finding.rule), pattern_store=pattern_store
+    )
+    rec = selection_fn(finding, coverage)
+    record_recommendation(finding, rec, ledger_path, run_id)
+    resolved_model = None
+    if discovery is not None:
+        from bluei.engine.model_discovery import (
+            resolve_model,
+        )  # lazy; avoid top-level cycle
+
+        resolved_model = resolve_model(discovery, rec.tier)
+    from bluei.engine.model_discovery import inject_model_flag
+
+    resolved_template = inject_model_flag(base_template, resolved_model)
+    model_name = resolved_model.model_id if resolved_model else DEFAULT_ESTIMATE_LABEL
+    return rec, resolved_model, resolved_template, model_name

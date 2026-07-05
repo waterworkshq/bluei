@@ -872,29 +872,28 @@ def _process_one_issue(
                     counters.fixes_failed_verification += 1
                     return counters.to_deltas()
 
-                # Model Governor recommendation recording (ADR-0022; alpha.6
-                # identity default). F2: only pattern_store is in scope here
-                # (recipes/bundles not loaded in pr-cycle); compute_coverage
-                # tolerates None for them (default 0). F4: call ctx.selection_fn
-                # (NOT identity_selection directly) so beta.1's swap is a config flip.
-                if (
-                    ctx.governor_ledger_path is not None
-                    and ctx.selection_fn is not None
-                ):
-                    from bluei.engine.model_governor import (
-                        compute_coverage,
-                        record_recommendation,
-                    )
+                # Model Governor resolution (ADR-0022 amendment 1). The helper
+                # records a recommendation for EVERY Finding reaching this point
+                # (not only Claude-routed) AND resolves the recommended tier to
+                # a concrete model, injecting --model into the template. Under
+                # empty operator config (ctx.discovery is None) the template is
+                # returned unchanged and model_name == DEFAULT_ESTIMATE_LABEL —
+                # byte-identical to alpha.6 (AC-P1-5). apply_claude_fix is
+                # unchanged (AC-P1-3): the resolved template reaches it via
+                # ClaudeFixRequest.claude_cmd_template below.
+                from bluei.engine.model_governor import resolve_governed_model
 
-                    _gov_coverage = compute_coverage(
-                        finding,
-                        derive_rule_family(finding.rule),
+                _gov_rec, _gov_resolved, resolved_tmpl, model_name = (
+                    resolve_governed_model(
+                        finding=finding,
+                        selection_fn=ctx.selection_fn,
                         pattern_store=ctx.pattern_store,
+                        discovery=ctx.discovery,
+                        base_template=args.claude_cmd_template,
+                        ledger_path=ctx.governor_ledger_path,
+                        run_id=ctx.run_id,
                     )
-                    _gov_rec = ctx.selection_fn(finding, _gov_coverage)
-                    record_recommendation(
-                        finding, _gov_rec, ctx.governor_ledger_path, ctx.run_id
-                    )
+                )
 
                 if use_claude_engine:
                     rc, claude_output, prompt_file = apply_claude_fix(
@@ -903,7 +902,7 @@ def _process_one_issue(
                             finding=finding,
                             baseline_checks=BASELINE_VALIDATION_CHECKS,
                             target_checks=target_checks,
-                            claude_cmd_template=args.claude_cmd_template,
+                            claude_cmd_template=resolved_tmpl,
                             max_files_changed=args.max_files_changed,
                             max_loc_diff=args.max_loc_diff,
                             log_file=log_file,
@@ -918,7 +917,6 @@ def _process_one_issue(
                             repo_taste=repo_taste,
                         ),
                     )
-                    model_name = "claude-sonnet-4"
                     cost_tracker.record_invocation(
                         model=model_name,
                         input_tokens=3000,

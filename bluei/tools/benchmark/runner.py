@@ -371,6 +371,6 @@ def run_benchmark(
         family_gaps=family_gaps,
         tier_distribution=tier_dist,
         flywheel_score=flywheel,
-        policy_version="alpha.6",
+        policy_version="beta.1",
         generated_at=now_iso(),
     )

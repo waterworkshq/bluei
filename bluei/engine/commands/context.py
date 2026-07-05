@@ -9,12 +9,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from bluei.engine.cost_tracker import CostTracker
-from bluei.engine.model_governor import SelectionFn, identity_selection
+from bluei.engine.model_governor import SelectionFn, identity_selection, select_tier
 from bluei.engine.models import Finding
 from bluei.engine.pattern_store import FixPatternStore
 
 if TYPE_CHECKING:  # pragma: no cover — forward ref only, avoids import cycle
     from bluei.common.models import RepoConfig
+    from bluei.engine.model_discovery import ModelDiscovery
 
 
 @dataclass
@@ -89,13 +90,21 @@ class RunContext:
     # Pattern store
     pattern_store: Optional[FixPatternStore] = None
 
-    # Model Governor (ADR-0022) — selection function injected so beta.1 can swap
-    # identity -> select_tier via config (policy flip, not code edit). Default
-    # is identity_selection (returns tier-2; no behavior change in alpha.6).
-    selection_fn: SelectionFn = field(default_factory=lambda: identity_selection)
+    # Model Governor (ADR-0022 amendment 1) — selection function injected so
+    # the posture is a config flip. Default is select_tier (real tier
+    # recommendations; beta.1). identity_selection remains the explicit
+    # opt-out fallback. The behavior change (actual model downgrade) is gated
+    # on operator tier-config presence — under empty config every tier resolves
+    # to None → template unchanged (byte-identical to alpha.6).
+    selection_fn: SelectionFn = field(default_factory=lambda: select_tier)
     governor_ledger_path: Optional[Path] = (
         None  # mirrors cost_log_path; resolved at cycle start
     )
+    # Model Discovery (ADR-0022 amendment 2). None = identity behavior (empty
+    # operator config → every tier resolves to None → template unchanged).
+    # Wired at cycle start in Phase 3; tests construct ctx with a discovery
+    # directly. Forward-ref string avoids an import cycle with model_governor.
+    discovery: Optional["ModelDiscovery"] = None
 
     # Repo config (resolved once at cycle start) — used by the taste channel
     # to read RepoConfig.framework. Forward-ref string avoids an import cycle.
