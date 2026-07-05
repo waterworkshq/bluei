@@ -60,7 +60,7 @@ class MockModelDiscovery:
     def __init__(self, mapping: Dict[ModelTier, ResolvedModel]) -> None:
         self._mapping = dict(mapping)
 
-    def discover(self, backend: str) -> List[ResolvedModel]:
+    def discover(self) -> List[ResolvedModel]:
         return list(self._mapping.values())
 
 
@@ -237,7 +237,7 @@ def _compute_flywheel_score(
             "input_per_1k": m.input_per_1k,
             "output_per_1k": m.output_per_1k,
         }
-        for m in discovery.discover("benchmark")
+        for m in discovery.discover()
     }
     return FlywheelScore(
         per_finding_usd=per_finding,

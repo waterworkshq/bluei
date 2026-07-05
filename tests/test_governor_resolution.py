@@ -71,7 +71,7 @@ class _FakeDiscovery:
     def __init__(self, models: List[ResolvedModel]):
         self._models = models
 
-    def discover(self, backend: str) -> List[ResolvedModel]:
+    def discover(self) -> List[ResolvedModel]:
         return list(self._models)
 
 

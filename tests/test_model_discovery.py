@@ -76,7 +76,7 @@ class TestResolveModel:
         # resolve_model is typed against the Protocol, not MockModelDiscovery.
         # A bare duck-typed object satisfying discover(backend) must work.
         class _Duck:
-            def discover(self, backend: str) -> List[ResolvedModel]:
+            def discover(self) -> List[ResolvedModel]:
                 return [_resolved(ModelTier.TIER_0)]
 
         out = resolve_model(_Duck(), ModelTier.TIER_0)  # type: ignore[arg-type]
@@ -218,7 +218,7 @@ class TestBackendModelDiscovery:
             lambda backend: (calls.append(backend), {})[1],
         )
         d = BackendModelDiscovery(tier_config={}, backend="claude")
-        assert d.discover("claude") == []
+        assert d.discover() == []
         assert calls == ["claude"]  # queried once, no mappings to validate
 
     def test_available_model_resolved(self, monkeypatch):
@@ -232,7 +232,7 @@ class TestBackendModelDiscovery:
         d = BackendModelDiscovery(
             tier_config={ModelTier.TIER_2: "frontier-id"}, backend="claude"
         )
-        out = d.discover("claude")
+        out = d.discover()
         assert len(out) == 1
         assert out[0].tier == ModelTier.TIER_2
         assert out[0].model_id == "frontier-id"
@@ -246,7 +246,7 @@ class TestBackendModelDiscovery:
             tier_config={ModelTier.TIER_0: "ghost-id"}, backend="claude"
         )
         with caplog.at_level("WARNING", logger="bluei.engine.model_discovery"):
-            out = d.discover("claude")
+            out = d.discover()
         assert out == []
         assert any(
             "unavailable" in r.message and "ghost-id" in r.message
@@ -267,7 +267,7 @@ class TestBackendModelDiscovery:
             },
             backend="claude",
         )
-        out = d.discover("claude")
+        out = d.discover()
         assert len(out) == 1
         assert out[0].tier == ModelTier.TIER_1
         # missing rate defaults to 0.0
@@ -283,7 +283,7 @@ class TestBackendModelDiscovery:
         d = BackendModelDiscovery(
             tier_config={ModelTier.TIER_0: "id-only"}, backend="opencode"
         )
-        out = d.discover("opencode")
+        out = d.discover()
         assert out[0].input_per_1k == 0.0
         assert out[0].output_per_1k == 0.0
 
@@ -292,13 +292,46 @@ class TestBackendModelDiscovery:
         # → resolve_model returns None → inject_model_flag is identity.
         monkeypatch.setattr(md, "_list_backend_models", lambda backend: {})
         d = BackendModelDiscovery(tier_config={}, backend="claude")
-        discovered = d.discover("claude")
+        discovered = d.discover()
         assert discovered == []
         assert resolve_model(d, ModelTier.TIER_2) is None
         template = 'claude --print "hi"'
         assert (
             inject_model_flag(template, resolve_model(d, ModelTier.TIER_2)) == template
         )
+
+    def test_production_discovery_yields_model_through_resolve_model(self, monkeypatch):
+        # M2 regression (Phase 8 B1): the production discovery class MUST yield a
+        # model end-to-end through resolve_model. B1 was resolve_model passing a
+        # hardcoded "benchmark" literal that BackendModelDiscovery honored,
+        # making discover() always query the wrong backend → always []. This test
+        # pins that a real BackendModelDiscovery with a configured backend + a
+        # populated catalog resolves to a non-None model with the flag injected.
+        monkeypatch.setattr(
+            md,
+            "_list_backend_models",
+            lambda backend: (
+                {"claude-sonnet-4": {"input_per_1k": 0.003, "output_per_1k": 0.015}}
+                if backend == "claude"
+                else {}
+            ),
+        )
+        d = BackendModelDiscovery(
+            tier_config={ModelTier.TIER_0: "claude-sonnet-4"}, backend="claude"
+        )
+        resolved = resolve_model(d, ModelTier.TIER_0)
+        assert resolved is not None  # the B1 regression — was always None
+        assert resolved.model_id == "claude-sonnet-4"
+        assert resolved.tier == ModelTier.TIER_0
+        assert resolved.backend == "claude"
+        # And the flag injects end-to-end:
+        tmpl = inject_model_flag("claude --print {prompt_file}", resolved)
+        assert "--model claude-sonnet-4" in tmpl
+        # The opencode backend (unsupported) still resolves to None:
+        d_opencode = BackendModelDiscovery(
+            tier_config={ModelTier.TIER_0: "claude-sonnet-4"}, backend="opencode"
+        )
+        assert resolve_model(d_opencode, ModelTier.TIER_0) is None
 
 
 # ─── _list_backend_models robustness (AC-P2-5 boundary) ────────────────────
@@ -481,7 +514,7 @@ class TestNoRealSubprocess:
         d = BackendModelDiscovery(
             tier_config={ModelTier.TIER_2: "some-id"}, backend="claude"
         )
-        out = d.discover("claude")
+        out = d.discover()
         assert len(out) == 1
         assert subprocess_calls == []  # subprocess.run never reached
 

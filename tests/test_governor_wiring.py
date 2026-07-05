@@ -222,7 +222,7 @@ class _FakeDiscovery:
     def __init__(self, models):
         self._models = models
 
-    def discover(self, backend):
+    def discover(self):
         return list(self._models)
 
 

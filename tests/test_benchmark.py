@@ -334,7 +334,7 @@ class TestFlywheelScore:
             (tier2.out - tier1.out)*300/1000.
         """
         discovery = _mock_discovery_3tier()
-        tier2 = discovery.discover("benchmark")
+        tier2 = discovery.discover()
         t2 = next(m for m in tier2 if m.tier == ModelTier.TIER_2)
         t1 = next(m for m in tier2 if m.tier == ModelTier.TIER_1)
 
@@ -447,8 +447,8 @@ class TestReproducibility:
     def test_mock_discovery_deterministic(self):
         """MockModelDiscovery returns identical results across calls."""
         d = _mock_discovery_3tier()
-        first = d.discover("benchmark")
-        second = d.discover("benchmark")
+        first = d.discover()
+        second = d.discover()
         assert len(first) == len(second)
         for a, b in zip(first, second):
             assert a.tier == b.tier

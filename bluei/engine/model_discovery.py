@@ -26,6 +26,7 @@ This module contains zero vendor model-id literals (AC-P2-3 source-level test).
 from __future__ import annotations
 
 import logging
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,14 +61,19 @@ class ResolvedModel:
 
 
 class ModelDiscovery(Protocol):
-    """Discovery contract: list the models available for a backend.
+    """Discovery contract: list the models available for this discovery's backend.
 
     ``MockModelDiscovery`` (benchmark fixture) and ``BackendModelDiscovery``
-    (real CLI-backed) both satisfy this shape. ``resolve_model`` is typed
-    against this Protocol (B4 fix) so ``engine`` never imports from ``tools``.
+    (real CLI-backed) both satisfy this shape. The discovery object owns its
+    backend (``BackendModelDiscovery.backend``) — ``discover`` takes no backend
+    argument (Phase 8 B1 fix: the previous ``discover(backend)`` signature led
+    ``resolve_model`` to pass a hardcoded ``"benchmark"`` literal that
+    ``BackendModelDiscovery`` honored, silently making production discovery a
+    no-op). ``resolve_model`` is typed against this Protocol (B4 fix) so
+    ``engine`` never imports from ``tools``.
     """
 
-    def discover(self, backend: str) -> List[ResolvedModel]: ...
+    def discover(self) -> List[ResolvedModel]: ...
 
 
 # ─── resolve_model (relocated; discovery param re-typed to Protocol — B4) ────
@@ -77,7 +83,7 @@ def resolve_model(
     discovery: "ModelDiscovery", tier: ModelTier
 ) -> Optional[ResolvedModel]:
     """Pick the discovered model matching the requested tier."""
-    for model in discovery.discover("benchmark"):
+    for model in discovery.discover():
         if model.tier == tier:
             return model
     return None
@@ -99,7 +105,10 @@ def inject_model_flag(template: str, resolved: Optional[ResolvedModel]) -> str:
     """
     if resolved is None or not resolved.model_id:
         return template  # identity behavior — no flag injected
-    flag = f"--model {resolved.model_id}"
+    # m1 (Phase 8): quote the model id — it is spliced into a template later
+    # run via ``bash -l -c``. Operator-trusted + CLI-validated, but defense-in-depth
+    # (the other template fields are shlex.quote'd in apply_claude_fix).
+    flag = f"--model {shlex.quote(resolved.model_id)}"
     stripped = template.lstrip()
     first_token = stripped.split(None, 1)[0] if stripped else ""
     base = first_token.rsplit("/", 1)[-1]
@@ -195,7 +204,10 @@ class BackendModelDiscovery:
     tier_config: Dict[ModelTier, str]
     backend: str
 
-    def discover(self, backend: str) -> List[ResolvedModel]:
+    def discover(self) -> List[ResolvedModel]:
+        backend = (
+            self.backend
+        )  # Phase 8 B1 fix: use the configured backend, not a caller-supplied literal
         available = _list_backend_models(backend)  # Dict[model_id, Dict metadata]
         out: List[ResolvedModel] = []
         for tier, model_id in self.tier_config.items():
