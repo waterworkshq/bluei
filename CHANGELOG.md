@@ -8,7 +8,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.2.0-beta.1] — Stabilization (Act-on-Recommendation)
 
-The first stabilization gate on the ladder to 0.2.0 stable. The Model Governor flips from record-only to **act-on-recommendation**, and model discovery becomes real. C1 ("no live runs before stable") still holds — the flip is live in code, proven via synthetic + mocked-subprocess tests; real-repo measurement lands at rc.1.
+The first stabilization gate on the ladder to 0.2.0 stable. The Model Governor flips from record-only to **act-on-recommendation**, and model discovery becomes real. C1 ("no live runs before stable") still holds — the flip is live in code, proven via synthetic + mocked-subprocess tests; real-repo measurement is future beta work (lands when beta's experimentation reaches live-repo dispatch).
 
 ### Act-on-recommendation flip (ADR-0022 amendment 1)
 
@@ -39,9 +39,9 @@ The first stabilization gate on the ladder to 0.2.0 stable. The Model Governor f
 ### Summary
 
 - **ADR-0022 amended** (2 amendments: flip mechanics; discovery contract). **1 new CONTEXT term** (Model Discovery).
-- 6552 → **6617 tests** (+65 new across 4 execution slices + Phase 8 B1 regression, 0 regressions). All mechanisms proven synthetically only (C1 holds; real-repo measurement at rc.1).
+- 6552 → **6617 tests** (+65 new across 4 execution slices + Phase 8 B1 regression, 0 regressions). All mechanisms proven synthetically only (C1 holds; real-repo measurement is future beta work).
 - **Inert-until-configured posture:** the Governor is live and recording real recommendations; live model downgrades wait for an operator's `model_tiers.yaml`. `apply_claude_fix` unchanged across all slices.
-- Re-deferred to **rc.1** (need live data C1 excludes): validation-stability measurement, validation-failure-history routing signal, file-criticality routing signal.
+- Live-data-dependent features (validation-stability measurement, validation-failure-history routing signal, file-criticality routing signal) are **future beta work** — they land when beta's experimentation reaches live-repo dispatch. (rc has no defined scope; everything fixing/scoping/feature is beta.)
 
 ---
 

@@ -94,11 +94,13 @@ beta.1 shipped (see Delivered above). The beta phase is a long experimentation l
 | **Batch-path guard asymmetry (m3)** | **beta.2+** (patch) | Local `if governor_ledger_path is not None` guard vs the helper's `selection_fn is None` guard — misleading belt-and-suspenders. Drop the local guard or check both. | Phase 8 review; `REMAINING-WORK.md` beta.1-CR-3 |
 | **opencode discovery is a stub** | **beta.N** (when prioritized) | `_list_backend_models("opencode")` returns `{}` (no standard listing command today); `cli.py` loads only the `claude` tier_config. opencode downgrades are identity even with operator config. | Phase 5 research thread; `model_discovery.py` docstring |
 | **Developer-doc audit beyond ARCHITECTURE.md** | **beta.2+** (patch) | `ARCHITECTURE.md` model_governor/model_discovery rows updated for beta.1; other developer docs (FIX_PIPELINE, etc.) may reference the Governor tangentially — sweep when those docs are next edited. | this table |
-| Validation-stability measurement in Benchmark | **rc.1** (live-data) | Needs real model invocation to compare tier-0 vs tier-2 outcomes; C1 excludes live invocation until rc. | PRD AC-P2 risks; ADR-0022 |
-| Validation-failure-history routing signal | **rc.1** (live-data) | Needs live per-family aggregation data; rc.1's live-repo runs produce it. | PRD Q4; ADR-0022 |
-| File-criticality routing signal | **rc.1** (live-data) | Needs live repo context; rc.1's live-repo runs provide it. | PRD Q4; ADR-0022 |
-| Real API token metering | **post-stable** | Estimates kept; benchmark is relative. | PRD C2 |
-| Standalone `bluei savings` CLI | **patch** (whenever) | alpha.1 deferral; redundant with report/dashboard surface. | alpha.1 deferral |
+| Validation-stability measurement in Benchmark | **beta** (live-repo experimentation) | Needs real model invocation to compare tier-0 vs tier-2 outcomes; lands when beta's experimentation reaches live-repo dispatch. | PRD AC-P2 risks; ADR-0022 |
+| Validation-failure-history routing signal | **beta** (live-repo experimentation) | Needs live per-family aggregation data; lands when beta experimentation runs on a live repo. | PRD Q4; ADR-0022 |
+| File-criticality routing signal | **beta** (live-repo experimentation) | Needs live repo context; lands when beta experimentation runs on a live repo. | PRD Q4; ADR-0022 |
+| Real API token metering | **beta** (when prioritized) | Estimates kept; benchmark is relative. | PRD C2 |
+| Standalone `bluei savings` CLI | **beta** (whenever) | alpha.1 deferral; redundant with report/dashboard surface. | alpha.1 deferral |
+
+> **Scoping rule (2026-07-05):** everything fixing, scoping, and feature-related lands in **beta**. rc has **no defined scope** — it is not a planned release with contents; it is a future maturity gate that will be scoped only when beta is mature enough to consider. Do not assign items to rc.
 
 ### Future beta work — code-review-and-fix sprints
 
@@ -113,11 +115,11 @@ After the flywheel arc lands (`alpha.1` through `alpha.6`), stabilization procee
 | Step | Gate |
 |------|------|
 | `0.2.0-beta.1` ✅ | **Delivered.** Governor flipped to act-on-recommendation (`selection_fn` → `select_tier`, behavior gated on operator tier-config); real model discovery (operator-config-validated, mocked-subprocess proof). C1 held — the flywheel is "measurable" via the synthetic corpus + live routing logic in code. First stabilization gate; the feature set is complete in code, proven synthetically. |
-| `0.2.0-beta.2..beta.N` | **Long experimentation + surfacing lifecycle.** Each beta release: (a) code-review-and-fix sprints over the complete deterministic-flywheel feature (the whole alpha.1→beta.1 arc), (b) addressing surfaced issues + the tracked deferrals that don't need live data, (c) hardening. Beta is the vehicle for finding what's wrong before any live-repo commitment. No fixed end — continues until the feature is genuinely robust. |
-| `0.2.0-rc.1` | **Far off.** Gated on the beta being actively dispatched against a live production repo (owner's own) and that dispatch being accepted as safe. First live runs; no data-loss/safety footguns; CLI/config/state schema frozen. **Only at rc does live-data-dependent work begin** — the signals re-deferred from beta.1 (validation-stability, validation-failure-history, file-criticality) land here, not before. |
+| `0.2.0-beta.2..beta.N` | **The active lifecycle — everything fixing/scoping/feature lands here.** Each beta release: (a) code-review-and-fix sprints over the complete deterministic-flywheel feature (the whole alpha.1→beta.1 arc), (b) addressing surfaced issues + tracked deferrals, (c) feature work that becomes feasible as beta's experimentation matures (incl. live-repo experimentation on the owner's own production repo, which unblocks the live-data-dependent routing signals + measurement). Beta is the vehicle for finding and fixing what's wrong. No fixed end. |
+| `0.2.0-rc.1` | **Scope not defined.** rc is a future maturity gate, not a planned release with contents. It will be scoped only when beta is mature enough to consider. **Do not assign items to rc** — everything fix/scoping/feature is beta work. |
 | `0.2.0` (stable) | Docs match reality; no open schema-breaking decisions; the "do not use in production" warning can honestly come off. |
 
-> **Re-scoped 2026-07-05 (beta.1 retrospective).** The earlier framing treated beta.1 → rc.1 as adjacent. Corrected: beta is a long experimentation/surfacing lifecycle; rc is gated on accepted live-repo dispatch and is a long way off. The 3 live-data-dependent deferrals (validation-stability, validation-failure-history, file-criticality) wait for rc, not the next beta.
+> **Re-scoped 2026-07-05 (beta.1 retrospective).** The earlier framing treated beta.1 → rc.1 as adjacent and gave rc a defined scope. Corrected: **everything fixing/scoping/feature lands in beta; rc has no defined scope.** The live-data-dependent features (validation-stability, validation-failure-history, file-criticality) are beta work — they land when beta's experimentation reaches live-repo dispatch, not in a pre-scoped rc.
 
 ---
 
