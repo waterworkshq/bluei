@@ -264,6 +264,30 @@ class TestGapAnalysis:
         gap = result.family_gaps[0]
         assert gap.deterministic_resolved == 0  # self excluded
 
+    def test_f3_proxy_two_patterns_mutual_coverage(self):
+        """CR-3: a family with TWO patterns → both cascade-match each other.
+
+        The F3 self-exclusion (``pr_counts[family] - 1``) is the load-bearing
+        correctness claim: each pattern excludes ITSELF but counts the peer.
+        With two patterns in the same family, both have
+        ``cascade_matched=True`` → ``deterministic_resolved == 2``. A regression
+        that dropped the ``- 1`` would still produce 2 here, but a regression
+        that double-excluded (``- 2``) or skipped the mutual case entirely
+        would produce 0.
+        """
+        manifest = [
+            _make_entry("ruff-b904", "pattern", "pat-a"),
+            _make_entry("ruff-b007", "pattern", "pat-b"),
+        ]
+        with patch(
+            "bluei.tools.benchmark.runner.load_corpus_manifest",
+            return_value=manifest,
+        ):
+            result = run_benchmark(CoveragePolicy(), _mock_discovery_3tier())
+        gap = result.family_gaps[0]
+        assert gap.rule_family == "ruff-b"
+        assert gap.deterministic_resolved == 2  # both match each other
+
     def test_f3_proxy_bundle_uses_pattern_coverage(self):
         """A bundle with a pattern in the same family: cascade_matched=True."""
         manifest = [

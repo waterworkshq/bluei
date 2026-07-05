@@ -344,3 +344,32 @@ class TestResolveGovernedModelWiring:
         assert resolved is None
         assert tmpl == base_template
         assert name == DEFAULT_ESTIMATE_LABEL
+
+    def test_none_ledger_path_via_ctx_is_noop(self, tmp_path, make_finding):
+        # CR-4: the pr-cycle call site passes ``ctx.governor_ledger_path`` to
+        # ``resolve_governed_model``. When the ctx default (None) flows through,
+        # the guard fires: no ledger file, no exception, identity return
+        # ``(None, None, base_template, DEFAULT_ESTIMATE_LABEL)``. This is the
+        # pr-cycle inert-posture contract (the batch equivalent landed in
+        # test_batch_governor.py).
+        finding = make_finding(rule="ruff-b904")
+        base_template = "claude --dangerously-skip-permissions --print"
+        ledger = tmp_path / "governor_recommendations.jsonl"
+
+        ctx = RunContext(args=SimpleNamespace())
+        ctx.governor_ledger_path = None  # the default; pr-cycle passes this
+
+        rec, resolved, tmpl, name = resolve_governed_model(
+            finding=finding,
+            selection_fn=ctx.selection_fn,
+            pattern_store=ctx.pattern_store,
+            discovery=ctx.discovery,
+            base_template=base_template,
+            ledger_path=ctx.governor_ledger_path,  # None flows through
+            run_id=ctx.run_id,
+        )
+        assert rec is None
+        assert resolved is None
+        assert tmpl == base_template
+        assert name == DEFAULT_ESTIMATE_LABEL
+        assert not ledger.exists()  # no ledger file written
