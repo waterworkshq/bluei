@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, TYPE_CHECKING
 from uuid import uuid4
 
 from bluei.engine.models import (
@@ -31,6 +31,10 @@ from bluei.engine.batch_recovery import (
     recover_interrupted_batch,
     _batch_from_record,
 )
+
+if TYPE_CHECKING:
+    from bluei.engine.model_discovery import ModelDiscovery
+    from bluei.engine.model_governor import SelectionFn
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +87,11 @@ def process_batch(
     log_file: Path,
     safety_config: Optional[dict] = None,
     repo_config: Optional[dict] = None,
+    *,
+    selection_fn: Optional[SelectionFn] = None,
+    governor_ledger_path: Optional[Path] = None,
+    run_id: str = "",
+    discovery: Optional[ModelDiscovery] = None,
 ) -> Tuple[bool, Optional[str]]:
     """Process a multi-finding batch: worktree → fixes → PR.
 
@@ -172,6 +181,10 @@ def process_batch(
             repo_path=repo_path,
             args=args,
             log_file=log_file,
+            selection_fn=selection_fn,
+            governor_ledger_path=governor_ledger_path,
+            run_id=run_id,
+            discovery=discovery,
         )
 
         _append_text(
@@ -193,7 +206,16 @@ def process_batch(
             sub_batches = handle_batch_failure(batch, repo_path, args, log_file)
             # Process sub-batches recursively
             for sub_batch in sub_batches:
-                process_batch(sub_batch, repo_path, args, log_file)
+                process_batch(
+                    sub_batch,
+                    repo_path,
+                    args,
+                    log_file,
+                    selection_fn=selection_fn,
+                    governor_ledger_path=governor_ledger_path,
+                    run_id=run_id,
+                    discovery=discovery,
+                )
             return True, "split-and-retried"
         elif (
             not split_warranted

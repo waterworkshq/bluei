@@ -303,6 +303,22 @@ def main() -> int:
 
     issues_data = load_issues(issues_file)
 
+    # Model Discovery (ADR-0022 amendment 2): construct BackendModelDiscovery
+    # from operator-supplied model_tiers.yaml. Absent under the inert default
+    # (C2) → ctx.discovery stays None → identity (template unchanged).
+    from bluei.engine.model_discovery import load_model_tiers, BackendModelDiscovery
+
+    _tiers_path = Path(state_file).parent / "model_tiers.yaml"
+    _tier_config = load_model_tiers(_tiers_path)
+    _backend = "claude"  # the active fix backend (pr-cycle uses the claude path)
+    _discovery = (
+        BackendModelDiscovery(
+            tier_config=_tier_config.get(_backend, {}), backend=_backend
+        )
+        if _tier_config
+        else None
+    )
+
     ctx = RunContext(
         args=args,
         repo_path=repo_path,
@@ -327,6 +343,7 @@ def main() -> int:
         cost_log_path=cost_log_path,
         governor_ledger_path=governor_ledger_path,
         run_id=run_id,
+        discovery=_discovery,
         pattern_store=pattern_store,
         PER_REPO_BASELINE_CHECKS=PER_REPO_BASELINE_CHECKS,
         run_issue_cycle=run_issue_cycle,

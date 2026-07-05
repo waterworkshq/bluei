@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import subprocess
 from pathlib import Path
-from typing import Any, Tuple
+from typing import Any, Optional, Tuple, TYPE_CHECKING
 
 from bluei.engine.models import (
     BatchGroup,
@@ -31,6 +31,10 @@ from bluei.engine.models import (
 from bluei.engine.worktree import (
     create_worktree,
 )
+
+if TYPE_CHECKING:
+    from bluei.engine.model_discovery import ModelDiscovery
+    from bluei.engine.model_governor import SelectionFn
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +84,11 @@ def apply_batch_fixes(
     repo_path: Path,
     args,
     log_file: Path,
+    *,
+    selection_fn: Optional[SelectionFn] = None,
+    governor_ledger_path: Optional[Path] = None,
+    run_id: str = "",
+    discovery: Optional[ModelDiscovery] = None,
 ) -> Tuple[int, int]:
     """Apply all fixes within a shared worktree sequentially.
 
@@ -103,6 +112,10 @@ def apply_batch_fixes(
             repo_path=repo_path,
             args=args,
             log_file=log_file,
+            selection_fn=selection_fn,
+            governor_ledger_path=governor_ledger_path,
+            run_id=run_id,
+            discovery=discovery,
         )
         batch.fix_results[finding.finding_id] = result
 
@@ -136,6 +149,11 @@ def _apply_single_fix(
     repo_path: Path,
     args,
     log_file: Path,
+    *,
+    selection_fn: Optional[SelectionFn] = None,
+    governor_ledger_path: Optional[Path] = None,
+    run_id: str = "",
+    discovery: Optional[ModelDiscovery] = None,
 ) -> FixResult:
     """Apply one fix within a shared batch worktree.
 
@@ -255,6 +273,28 @@ def _apply_single_fix(
     except (subprocess.CalledProcessError, OSError):
         before_commit = None
 
+    # Model Governor resolution (ADR-0022 amendment 1) — mirror pr-cycle M5
+    # (helper before the apply_claude_fix call; consume at ClaudeFixRequest).
+    # Guard: only records when governor_ledger_path is not None (preserves
+    # batch tests that don't pass it). pattern_store=None — the batch path has
+    # no store in scope; coverage counts patterns as 0. apply_claude_fix is
+    # unchanged (AC-P1-3): the resolved template reaches it via
+    # ClaudeFixRequest.claude_cmd_template below.
+    if governor_ledger_path is not None:
+        from bluei.engine.model_governor import resolve_governed_model
+
+        _gov_rec, _gov_resolved, resolved_tmpl, _model_name = resolve_governed_model(
+            finding=finding,
+            selection_fn=selection_fn,
+            pattern_store=None,
+            discovery=discovery,
+            base_template=args.claude_cmd_template,
+            ledger_path=governor_ledger_path,
+            run_id=run_id,
+        )
+    else:
+        resolved_tmpl = args.claude_cmd_template
+
     try:
         rc, output, prompt_file = apply_claude_fix(
             ClaudeFixRequest(
@@ -262,7 +302,7 @@ def _apply_single_fix(
                 finding=finding,
                 baseline_checks=BASELINE_VALIDATION_CHECKS,
                 target_checks=target_checks,
-                claude_cmd_template=args.claude_cmd_template,
+                claude_cmd_template=resolved_tmpl,
                 max_files_changed=args.max_files_changed,
                 max_loc_diff=args.max_loc_diff,
                 log_file=log_file,

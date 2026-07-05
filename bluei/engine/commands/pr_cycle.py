@@ -1455,6 +1455,10 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
                     repo_path=repo_path,
                     args=args,
                     log_file=log_file,
+                    selection_fn=ctx.selection_fn,
+                    governor_ledger_path=ctx.governor_ledger_path,
+                    run_id=ctx.run_id,
+                    discovery=ctx.discovery,
                 )
                 if _success:
                     created_prs += 1
