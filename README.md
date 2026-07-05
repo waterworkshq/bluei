@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/v/release/waterworkshq/bluei" alt="version" />
-  <img src="https://img.shields.io/badge/tests-6616%20passed-brightgreen" alt="tests" />
+  <img src="https://img.shields.io/badge/tests-6617%20passed-brightgreen" alt="tests" />
   <img src="https://img.shields.io/github/license/waterworkshq/bluei" alt="license" />
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey" alt="platform" />
 </p>

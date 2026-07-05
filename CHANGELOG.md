@@ -21,7 +21,7 @@ The first stabilization gate on the ladder to 0.2.0 stable. The Model Governor f
 ### Real model discovery (ADR-0022 amendment 2; CONTEXT "Model Discovery")
 
 - **`bluei/engine/model_discovery.py`** (new) — promotes `ResolvedModel`/`resolve_model` out of `tools/benchmark/` into the runtime engine layer (engine must not depend on tools). Adds the `ModelDiscovery` Protocol, `BackendModelDiscovery` (operator-config-validated against the backend CLI; **no shipped defaults** — nothing rots), `inject_model_flag` (auto-detects the backend from the template's first token), and `load_model_tiers`.
-- **Operator-config-validated.** Discovery queries the `claude`/`opencode` CLI for available models and validates the operator's tier mapping (rejects unavailable models; falls back on mismatch). Empty config → `discover` returns `[]` → identity behavior.
+- **Operator-config-validated.** Discovery queries the `claude`/`opencode` CLI for available models and validates the operator's tier mapping (rejects unavailable models; falls back on mismatch). Empty config → `discover` returns `[]` → identity behavior. The discovery object owns its backend (`BackendModelDiscovery.backend`); `discover()` takes no backend argument.
 - Zero vendor model-id literals ship in the discovery module or any default config (AC-P2-3 source-level test). The CLI listing command (`claude --list-models --output-format json`; opencode unsupported today) is best-effort with a `{}` fallback — the contract is robust to its absence.
 - `MockModelDiscovery` stays in `tools/benchmark/` for Benchmark reproducibility; the benchmark re-imports the promoted types from engine.
 
@@ -39,7 +39,7 @@ The first stabilization gate on the ladder to 0.2.0 stable. The Model Governor f
 ### Summary
 
 - **ADR-0022 amended** (2 amendments: flip mechanics; discovery contract). **1 new CONTEXT term** (Model Discovery).
-- 6552 → **6616 tests** (+64 new across 4 execution slices, 0 regressions). All mechanisms proven synthetically only (C1 holds; real-repo measurement at rc.1).
+- 6552 → **6617 tests** (+65 new across 4 execution slices + Phase 8 B1 regression, 0 regressions). All mechanisms proven synthetically only (C1 holds; real-repo measurement at rc.1).
 - **Inert-until-configured posture:** the Governor is live and recording real recommendations; live model downgrades wait for an operator's `model_tiers.yaml`. `apply_claude_fix` unchanged across all slices.
 - Re-deferred to **rc.1** (need live data C1 excludes): validation-stability measurement, validation-failure-history routing signal, file-criticality routing signal.
 
