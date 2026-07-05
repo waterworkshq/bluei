@@ -65,15 +65,15 @@ alpha.5 shipped (see Delivered above). Items scoped out during grilling (Phase 4
 
 ### Deferred from v0.2.0-alpha.6 (DELIVERED)
 
-alpha.6 shipped (see Delivered above). Items scoped out during grilling (Phase 2) + execution. Each targets `0.2.0-beta.1` (the stabilization gate) and is recorded in the PRD out-of-scope + ADR-0022.
+alpha.6 shipped (see Delivered above). Items scoped out during grilling (Phase 2) + execution. The beta.1 constraint interrogation (Phase 1, 2026-07-05) confirmed C1 ("no live runs before stable") still holds for beta.1 — so items needing live data re-defer to rc.1 (the first live-runs release), while the flip, real discovery, and batch-path wiring land in beta.1 (proven via synthetic/mocked-subprocess tests, not live invocation).
 
 | Deferred item | Target | Why deferred | Recorded in |
 |---------------|--------|--------------|-------------|
 | Act-on-recommendation (live default flip identity → select_tier) | **beta.1** | C3 operator-blind; a behavior change on a system with no operators. alpha.6 parameterizes the call site so the flip is a config change. | ADR-0022; PRD AC-P1-5 |
 | Real model discovery (non-mocked tier→model resolution) | **beta.1** | Needs invocation; alpha.6 ships `MockModelDiscovery` only. | ADR-0022 |
-| Validation-stability measurement in Benchmark | **beta.1** | Needs invocation to compare tier-0 vs tier-2 validation outcomes. | PRD AC-P2 risks |
-| Validation-failure-history routing signal | **beta.1** | C1 — no committed per-family aggregation; needs live data. | PRD Q4 |
-| File-criticality routing signal | **beta.1** | C1 — needs live repo context. | PRD Q4 |
+| Validation-stability measurement in Benchmark | **rc.1** (re-deferred from beta.1) | Needs real model invocation to compare tier-0 vs tier-2 validation outcomes; C1 excludes live invocation until rc.1. | PRD AC-P2 risks; ADR-0022 |
+| Validation-failure-history routing signal | **rc.1** (re-deferred from beta.1) | C1 — no committed per-family aggregation; needs live data, which rc.1's real-repo runs produce. | PRD Q4; ADR-0022 |
+| File-criticality routing signal | **rc.1** (re-deferred from beta.1) | C1 — needs live repo context, which rc.1's real-repo runs provide. | PRD Q4; ADR-0022 |
 | Real API token metering | **post-stable** | C2 — estimates kept; benchmark is relative. | ADR-0022 |
 | T1.2 batch-path Governor wiring | **patch** | `batch_execution._apply_single_fix` calls `apply_claude_fix` but receives no cycle context (`ctx`) — so `selection_fn` + `governor_ledger_path` aren't accessible. Rather than force-fit a ctx parameter through the batch call chain, the pr-cycle path was wired alone. Fix when batch mode is prioritized: thread an optional `selection_fn` + ledger path through `apply_batch_fixes` → `_apply_single_fix`. | `bluei/engine/batch_execution.py:_apply_single_fix` |
 | CR-3 — F3 proxy two-peer mutual-coverage test | **patch** | `tests/test_benchmark.py:test_f3_proxy_excludes_self_for_patterns` docstring claims it covers "a family with TWO patterns: both cascade_matched=True" but the body only asserts the single-pattern self-exclusion half (`deterministic_resolved == 0`). The mutual-coverage case (two patterns → both `cascade_matched` → `det == 2`) is the load-bearing correctness claim of the `- 1` self-exclusion and has no direct assertion. Fix: add a two-pattern manifest variant asserting `gap.deterministic_resolved == 2`. | `tests/test_benchmark.py` (~line 250) |
@@ -88,8 +88,8 @@ After the flywheel arc lands (`alpha.1` through `alpha.6`), stabilization procee
 
 | Step | Gate |
 |------|------|
-| `0.2.0-beta.1` | Feature-complete: Economics shipped (alpha.6 delivered); Governor default flipped to act-on-recommendation; deterministic flywheel measurable on internal repos |
-| `0.2.0-rc.1` | Proven on 2-3 repos you do not own; no data-loss/safety footguns; CLI/config/state schema frozen |
+| `0.2.0-beta.1` | Feature-complete: Economics shipped (alpha.6 delivered); Governor default flipped to act-on-recommendation (`selection_fn` → `select_tier`, behavior gated on operator tier-config); real model discovery (operator-config-validated, mocked-subprocess proof). C1 still holds — the flywheel is "measurable" via the synthetic corpus + live routing logic in code; real-repo measurement lands at rc.1. |
+| `0.2.0-rc.1` | First live runs on real repos (2-3 you do not own); no data-loss/safety footguns; CLI/config/state schema frozen. Unblocks the live-data-dependent signals re-deferred from beta.1 (validation-stability, validation-failure-history, file-criticality). |
 | `0.2.0` (stable) | Docs match reality; no open schema-breaking decisions; the "do not use in production" warning can honestly come off |
 
 ---
