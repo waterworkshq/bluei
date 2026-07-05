@@ -11,15 +11,14 @@ add Patterns/Recipes/Bundles.
 Slice 2 of alpha.6 "Economics".
 """
 
+from bluei.engine.model_discovery import ResolvedModel, resolve_model
 from bluei.tools.benchmark.runner import (
     BenchmarkResult,
     FamilyCoverageGap,
     FindingBenchmark,
     FlywheelScore,
     MockModelDiscovery,
-    ResolvedModel,
     default_mock_discovery,
-    resolve_model,
     run_benchmark,
 )
 

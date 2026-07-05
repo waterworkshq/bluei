@@ -18,6 +18,11 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
 from bluei.engine.corpus_manifest import CorpusEntry, load_corpus_manifest
+from bluei.engine.model_discovery import (
+    ModelDiscovery,
+    ResolvedModel,
+    resolve_model,
+)
 from bluei.engine.model_governor import (
     CoveragePolicy,
     ModelTier,
@@ -35,21 +40,12 @@ _OUT_TOK = 300
 
 
 # ─── Resolver interface (tier → model, mockable) ────────────────────────
-
-
-@dataclass
-class ResolvedModel:
-    """A tier resolved to a concrete invocation.
-
-    Populated by discovery (mocked in alpha.6). beta.1: real CLI discovery.
-    """
-
-    tier: ModelTier
-    backend: str  # "claude" | "opencode" | "deterministic"
-    model_id: str  # from discovery, NOT hardcoded in the Governor
-    input_per_1k: float
-    output_per_1k: float
-    cli_template: Optional[str] = None
+#
+# ``ResolvedModel`` and ``resolve_model`` were promoted to
+# ``bluei.engine.model_discovery`` in beta.1 (Phase 0) so the runtime engine
+# layer can import them without depending on ``tools/`` (layering rule,
+# ADR-0022 amendment 2). ``MockModelDiscovery`` stays here as the benchmark /
+# test fixture — it satisfies the engine ``ModelDiscovery`` Protocol.
 
 
 class MockModelDiscovery:
@@ -99,16 +95,6 @@ def default_mock_discovery() -> MockModelDiscovery:
             ),
         }
     )
-
-
-def resolve_model(
-    discovery: MockModelDiscovery, tier: ModelTier
-) -> Optional[ResolvedModel]:
-    """Pick the discovered model matching the requested tier."""
-    for model in discovery.discover("benchmark"):
-        if model.tier == tier:
-            return model
-    return None
 
 
 # ─── Result schema ─────────────────────────────────────────────────────
