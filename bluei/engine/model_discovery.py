@@ -105,10 +105,12 @@ def inject_model_flag(template: str, resolved: Optional[ResolvedModel]) -> str:
     """
     if resolved is None or not resolved.model_id:
         return template  # identity behavior — no flag injected
-    # m1 (Phase 8): quote the model id — it is spliced into a template later
-    # run via ``bash -l -c``. Operator-trusted + CLI-validated, but defense-in-depth
-    # (the other template fields are shlex.quote'd in apply_claude_fix).
-    flag = f"--model {shlex.quote(resolved.model_id)}"
+    # The id is spliced into a template that apply_claude_fix later runs
+    # through str.format(); brace-escape the id so literal braces survive
+    # .format() rendering. shlex.quote then protects the shell stage. The
+    # rest of the template is NOT touched.
+    safe_id = resolved.model_id.replace("{", "{{").replace("}", "}}")
+    flag = f"--model {shlex.quote(safe_id)}"
     stripped = template.lstrip()
     first_token = stripped.split(None, 1)[0] if stripped else ""
     base = first_token.rsplit("/", 1)[-1]
