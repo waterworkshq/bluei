@@ -97,10 +97,11 @@ def consume_emergent_evidence(
             _logger.debug("campaign fix-pattern proposal failed")
             proposals = []
         if proposals:
-            existing_ids = {r.rule_id for r in store.load()}
+            current = store.load()
+            existing_ids = {r.rule_id for r in current}
             appended = [rule for rule in proposals if rule.rule_id not in existing_ids]
             if appended:
-                store.save(store.load() + appended)
+                store.save(current + appended)
                 for rule in appended:
                     if rule.rule_id not in proposed_rule_ids:
                         proposed_rule_ids.append(rule.rule_id)
