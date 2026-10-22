@@ -62,7 +62,16 @@ install_tool() {
     return 0
   fi
 
-  read -rp "  Install $label? [y/N] " response
+  # Non-interactive shell (CI, piped stdin): skip instead of prompting —
+  # `read` fails on EOF under `set -e`, which would abort bootstrap. bluei
+  # falls back to text scanning for any linter that is absent.
+  if [ ! -t 0 ]; then
+    echo "  Skipped $label (non-interactive shell — bluei will use text-scanning fallback)"
+    return 0
+  fi
+
+  # `|| response=""` treats EOF/error as the default "no" rather than failing.
+  read -rp "  Install $label? [y/N] " response || response=""
   case "$response" in
     y|Y|yes|YES)
       echo "  Installing $tool..."
