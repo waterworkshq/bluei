@@ -329,5 +329,34 @@ class TestWalkSourceFiles:
         assert all(".git" not in f.parts for f in found)
         assert {f.name for f in found} == {"a.py", "c.py", "dep.py"}
 
+    def test_pruning_happens_during_traversal(self, monkeypatch) -> None:
+        # The filesystem-tree tests above cannot distinguish prune-during-walk
+        # from walk-everything-then-filter: both yield the same file set. This
+        # test replaces os.walk with a generator that OBSERVES the dirnames
+        # list after the consumer processed the first tuple: a generator only
+        # resumes after its caller asks for the next value, so any in-place
+        # mutation the consumer made (dirnames[:] = [...] pruning) is visible
+        # then. If walk_source_files filtered after the walk instead, ".git"
+        # would still be present and the fake's second yield would descend
+        # into it — exactly what the old rglob could not prevent.
+        captured: dict = {}
+
+        def fake_walk(root, onerror=None):
+            dirnames = [".git", "sub"]  # a REAL list — os.walk's prune contract
+            yield ("/fake/root", dirnames, ["a.py"])
+            # Resumed only after the consumer processed the first tuple:
+            # if it pruned during traversal, ".git" is already gone here.
+            captured["after_first"] = list(dirnames)
+            yield ("/fake/root/sub", [], ["c.py"])
+
+        monkeypatch.setattr("bluei.engine.utils.os.walk", fake_walk)
+
+        files = walk_source_files(Path("/fake/root"), ".py", {".git"})
+
+        # .git was removed from dirnames BEFORE the walk descended.
+        assert captured["after_first"] == ["sub"]
+        # os.walk order: root's files first, then the subdirectory's.
+        assert files == [Path("/fake/root/a.py"), Path("/fake/root/sub/c.py")]
+
     def test_empty_tree(self, tmp_path: Path) -> None:
         assert walk_source_files(tmp_path, ".py") == []

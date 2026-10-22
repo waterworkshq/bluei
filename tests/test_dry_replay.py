@@ -350,3 +350,69 @@ def test_dry_replay_safe_mode_guard_pinned():
     assert not _guard("active", "orig", None, "src/x.py")
     assert not _guard("active", "orig", object(), "")
     assert _guard("active", "orig", object(), "src/x.py")
+
+
+def test_dry_replay_call_nested_under_paused_guard():
+    """Structural half of the guard pin: the ``run_dry_replay`` CALL node
+    must be nested INSIDE the ``learning_mode != "paused"`` guard's body,
+    not merely appear after it textually.
+
+    The textual-order assertion in test_dry_replay_safe_mode_guard_pinned
+    cannot distinguish "call indented inside the if" from "call later in
+    the function at the same depth". Parsing the real source with the ast
+    module and comparing line spans can — flattening the guard or moving
+    the call out from under it fails here.
+    """
+    import ast
+    import inspect
+
+    from bluei.engine.commands import pr_cycle
+
+    tree = ast.parse(inspect.getsource(pr_cycle._process_one_issue))
+
+    def _body_span(if_node: ast.If):
+        # Expand every body statement recursively (ast.walk includes each
+        # statement itself and all nested nodes) into a (min lineno,
+        # max end_lineno) span covering the whole guarded block.
+        starts, ends = [], []
+        for stmt in if_node.body:
+            for node in ast.walk(stmt):
+                if hasattr(node, "lineno"):
+                    starts.append(node.lineno)
+                if hasattr(node, "end_lineno") and node.end_lineno is not None:
+                    ends.append(node.end_lineno)
+        return min(starts), max(ends)
+
+    guards = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and "learning_mode" in ast.unparse(node.test)
+        and "!=" in ast.unparse(node.test)
+        and "paused" in ast.unparse(node.test)
+    ]
+    assert guards, "dry-replay learning_mode guard not found in _process_one_issue"
+
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "run_dry_replay")
+            or (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "run_dry_replay"
+            )
+        )
+    ]
+    assert calls, "run_dry_replay call not found in _process_one_issue"
+
+    # The call must lie inside the guard's body span (not its orelse, not
+    # after the guarded block).
+    span_start, span_end = _body_span(guards[0])
+    call = calls[0]
+    assert span_start <= call.lineno and call.end_lineno <= span_end, (
+        f"run_dry_replay call (lines {call.lineno}-{call.end_lineno}) must be "
+        f"nested inside the learning_mode guard body "
+        f"(lines {span_start}-{span_end})"
+    )

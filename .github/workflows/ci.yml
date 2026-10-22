@@ -33,7 +33,7 @@ jobs:
     # PATH for the subprocess-spawned CLI.
     - name: Install discovery linters
       run: |
-        uv pip install --python .venv/bin/python ruff
+        uv pip install --python .venv/bin/python "ruff==0.17.2"
         echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
     - name: Run tests
