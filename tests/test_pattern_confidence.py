@@ -40,7 +40,7 @@ def make_pattern(**overrides):
         'failure_count': 0,
         'skip_count': 0,
         'source': 'claude',
-        'created_at': '2026-05-17T00:00:00+00:00',
+        'created_at': datetime.now(timezone.utc).isoformat(),
         'last_used_at': None,
         'last_verified_at': datetime.now(timezone.utc).isoformat(),
         'source_finding_ids': ['finding-abc123'],

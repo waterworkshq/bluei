@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -545,6 +546,12 @@ def test_bluei_emergent_gc_retires_stale(tmp_path) -> None:
     state_dir.mkdir(parents=True)
     import json
 
+    # Ages computed from now: retire_stale_rules uses active_days=60 against
+    # the current clock, so a hardcoded "recent" date eventually goes stale
+    # and the new rule gets retired too.
+    now = datetime.now(timezone.utc)
+    old_updated = (now - timedelta(days=400)).isoformat()
+    new_updated = (now - timedelta(days=1)).isoformat()
     rules_data = {
         "version": 1,
         "rules": [
@@ -558,7 +565,7 @@ def test_bluei_emergent_gc_retires_stale(tmp_path) -> None:
                 "language": "python",
                 "category": "lint",
                 "status": "active",
-                "updated_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": old_updated,
             },
             {
                 "rule_id": "er-new",
@@ -570,7 +577,7 @@ def test_bluei_emergent_gc_retires_stale(tmp_path) -> None:
                 "language": "python",
                 "category": "lint",
                 "status": "active",
-                "updated_at": "2026-05-19T00:00:00+00:00",
+                "updated_at": new_updated,
             },
         ],
     }

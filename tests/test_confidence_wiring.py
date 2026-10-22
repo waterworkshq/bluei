@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -21,6 +22,10 @@ _ADJUSTER = adjust_from_feedback
 
 
 def _make_pattern(**overrides):
+    # Fresh timestamps keep the pattern inside the STALENESS_DAYS=60 window:
+    # adjust_from_feedback zeroes out stale patterns, which would silently
+    # turn the boost/decay assertions below into staleness-skip assertions.
+    recent = datetime.now(timezone.utc).isoformat()
     defaults = {
         "pattern_id": "fp-testconf001",
         "rule": "broad-except",
@@ -34,9 +39,9 @@ def _make_pattern(**overrides):
         "failure_count": 0,
         "skip_count": 0,
         "source": "claude",
-        "created_at": "2026-05-17T00:00:00+00:00",
+        "created_at": recent,
         "last_used_at": None,
-        "last_verified_at": "2026-05-17T00:00:00+00:00",
+        "last_verified_at": recent,
         "source_finding_ids": ["finding-abc123"],
     }
     defaults.update(overrides)

@@ -559,15 +559,25 @@ def test_load_lessons_for_finding_match():
 
 def test_load_lessons_for_finding_multiple_entries_newest_first():
     """Multiple matching entries returned newest-first."""
-    content = """\n## 2026-05-10 | pr-cycle\nfinding_id: fid-abc\n- **Worked:** old approach\n\n## 2026-05-15 | fix-cycle\nfinding_id: fid-other\n- **Worked:** other\n\n## 2026-05-19 | fix-cycle\nfinding_id: fid-abc\n- **Broke:** new failure\n- **Changed:** newer approach\n"""
+    # Dates are computed from now: load_lessons_for_finding drops entries
+    # older than _LESSON_DECAY_DAYS (60), so hardcoded dates go stale.
+    d_old = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%d")
+    d_mid = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d")
+    d_new = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    content = (
+        f"\n## {d_old} | pr-cycle\nfinding_id: fid-abc\n- **Worked:** old approach\n\n"
+        f"## {d_mid} | fix-cycle\nfinding_id: fid-other\n- **Worked:** other\n\n"
+        f"## {d_new} | fix-cycle\nfinding_id: fid-abc\n- **Broke:** new failure\n"
+        f"- **Changed:** newer approach\n"
+    )
     p = _write_lessons(content)
     try:
         result = load_lessons_for_finding("fid-abc", p)
         assert len(result) == 2
         # Newest first
-        assert result[0]["date"] == "2026-05-19"
+        assert result[0]["date"] == d_new
         assert result[0]["broke"] == "new failure"
-        assert result[1]["date"] == "2026-05-10"
+        assert result[1]["date"] == d_old
         assert result[1]["worked"] == "old approach"
     finally:
         p.unlink()
