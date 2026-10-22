@@ -347,5 +347,10 @@ def resolve_governed_model(
     from bluei.engine.model_discovery import inject_model_flag
 
     resolved_template = inject_model_flag(base_template, resolved_model)
+    if resolved_model is not None and resolved_template == base_template:
+        # Injection no-oped (unrecognized backend in the template): the
+        # invocation will run the base template's default model, so the
+        # ledger must not claim the discovered id or discovered pricing.
+        return rec, resolved_model, resolved_template, DEFAULT_ESTIMATE_LABEL
     model_name = resolved_model.model_id if resolved_model else DEFAULT_ESTIMATE_LABEL
     return rec, resolved_model, resolved_template, model_name

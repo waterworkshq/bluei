@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
@@ -16,6 +17,28 @@ from typing import Dict, Optional
 from bluei.engine.jsonl import append_jsonl, read_jsonl
 
 logger = logging.getLogger(__name__)
+
+
+def _usable_discovered_rates(rates: Dict[str, float]) -> bool:
+    """Discovered pricing is used only when the backend supplied complete,
+    sane values: both rates present, finite, and strictly positive.
+
+    Anything else — a missing or zeroed field (no pricing metadata), or a
+    malformed value (negative, NaN, infinite) — falls back to MODEL_RATES:
+    a built-in estimate is safer than a silently undercounted, negative, or
+    non-finite ledger entry.
+    """
+    try:
+        input_rate = float(rates["input_per_1k"])
+        output_rate = float(rates["output_per_1k"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        math.isfinite(input_rate)
+        and math.isfinite(output_rate)
+        and input_rate > 0
+        and output_rate > 0
+    )
 
 # Known model per-token rates (USD per 1K tokens).
 # Extend this dict as new models are added.
@@ -115,19 +138,19 @@ class CostTracker:
             output_tokens: Number of output (completion) tokens received.
             rates: Discovered per-1k pricing override (``input_per_1k`` /
                    ``output_per_1k``), e.g. from a ``ResolvedModel``.  Two
-                   bases exist with explicit precedence: discovered-when-real,
-                   MODEL_RATES otherwise.  An override where BOTH rates are
-                   ``0.0`` means "no pricing metadata" (discovery defaults
-                   missing metadata to 0.0) and falls back to MODEL_RATES —
-                   otherwise the ledger would silently record $0.00.
+                   bases exist with explicit precedence: the override is
+                   used only when BOTH rates are present, finite, and
+                   strictly positive; anything partial or malformed (a
+                   missing/zeroed field means "no pricing metadata",
+                   negative/NaN/inf are rejected) falls back to MODEL_RATES
+                   — a built-in estimate is safer than an undercounted or
+                   non-finite ledger entry.
 
         Returns:
             The computed cost for this single invocation in USD.
         """
         rates_source = "model_rates"
-        if rates is not None and (
-            rates.get("input_per_1k", 0.0) > 0 or rates.get("output_per_1k", 0.0) > 0
-        ):
+        if rates is not None and _usable_discovered_rates(rates):
             rates_source = "discovered"
         else:
             rates = MODEL_RATES.get(model) or MODEL_RATES["default"]

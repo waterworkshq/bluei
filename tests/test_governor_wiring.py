@@ -452,3 +452,56 @@ class TestResolveGovernedModelWiring:
             cost_tracker._log_path.read_text().strip().splitlines()[-1]
         )
         assert entry_empty["rates_source"] == "model_rates"
+
+    def test_pr_cycle_record_invocation_threads_rates(self):
+        # Structural pin of the PRODUCTION call site (pr_cycle._process_one_issue):
+        # the record_invocation call must carry a ``rates=`` keyword whose value
+        # is a conditional expression testing ``_gov_resolved is not None``.
+        # test_call_site_rates_expression above proves the *behavior* of the
+        # expression against a real CostTracker but rebuilds it locally — this
+        # test fails if someone removes or renames the production threading
+        # (e.g. drops ``rates=`` or passes an unconditional dict/None).
+        import ast as pyast
+        import inspect
+
+        from bluei.engine.commands import pr_cycle
+
+        tree = pyast.parse(inspect.getsource(pr_cycle._process_one_issue))
+
+        calls = [
+            node
+            for node in pyast.walk(tree)
+            if isinstance(node, pyast.Call)
+            and (
+                (isinstance(node.func, pyast.Name) and node.func.id == "record_invocation")
+                or (
+                    isinstance(node.func, pyast.Attribute)
+                    and node.func.attr == "record_invocation"
+                )
+            )
+        ]
+        assert len(calls) == 1, "expected exactly one record_invocation call"
+        keywords = {kw.arg: kw.value for kw in calls[0].keywords}
+        assert "rates" in keywords, "record_invocation must thread rates="
+
+        rates_expr = keywords["rates"]
+        assert isinstance(rates_expr, pyast.IfExp), (
+            "rates= must be a conditional expression (dict when resolved, else None)"
+        )
+        test_names = {
+            n.id for n in pyast.walk(rates_expr.test) if isinstance(n, pyast.Name)
+        }
+        assert "_gov_resolved" in test_names, (
+            "the rates conditional must test the Governor-resolved model"
+        )
+        compares_to_none = any(
+            isinstance(n, pyast.Compare)
+            and any(
+                isinstance(c, pyast.Constant) and c.value is None
+                for c in n.comparators
+            )
+            for n in pyast.walk(rates_expr.test)
+        )
+        assert compares_to_none, (
+            "the rates conditional must compare _gov_resolved to None"
+        )

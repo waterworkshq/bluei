@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -414,6 +415,68 @@ class TestRatesOverride:
 
     def test_no_rates_marks_model_rates(self, tracker: CostTracker) -> None:
         tracker.record_invocation("claude-sonnet-4", input_tokens=1000, output_tokens=500)
+        lines = tracker._log_path.read_text().strip().splitlines()
+        entry = json.loads(lines[-1])
+        assert entry["rates_source"] == "model_rates"
+
+    def test_negative_rate_falls_back(self, tracker: CostTracker) -> None:
+        # A negative output rate is malformed pricing metadata, not a rebate:
+        # the built-in MODEL_RATES estimate is used for the given model name.
+        cost = tracker.record_invocation(
+            "claude-sonnet-4",
+            input_tokens=1000,
+            output_tokens=500,
+            rates={"input_per_1k": 0.001, "output_per_1k": -0.5},
+        )
+        # MODEL_RATES["claude-sonnet-4"]: 1000*0.003/1k + 500*0.015/1k = 0.0105
+        assert cost == pytest.approx(0.0105, rel=1e-3)
+        lines = tracker._log_path.read_text().strip().splitlines()
+        entry = json.loads(lines[-1])
+        assert entry["rates_source"] == "model_rates"
+
+    def test_nan_rate_falls_back(self, tracker: CostTracker) -> None:
+        # NaN must never reach the ledger: JSONL has no NaN literal, and a
+        # NaN cost would poison cycle_total (all later comparisons NaN).
+        cost = tracker.record_invocation(
+            "claude-sonnet-4",
+            input_tokens=1000,
+            output_tokens=500,
+            rates={"input_per_1k": 0.001, "output_per_1k": float("nan")},
+        )
+        # MODEL_RATES["claude-sonnet-4"]: 1000*0.003/1k + 500*0.015/1k = 0.0105
+        assert cost == pytest.approx(0.0105, rel=1e-3)
+        lines = tracker._log_path.read_text().strip().splitlines()
+        entry = json.loads(lines[-1])
+        assert entry["rates_source"] == "model_rates"
+        # The persisted cost is a real number — no NaN written to JSONL.
+        assert math.isnan(entry["cost"]) is False
+
+    def test_infinite_rate_falls_back(self, tracker: CostTracker) -> None:
+        # An infinite rate would make every invocation exceed the hard limit.
+        cost = tracker.record_invocation(
+            "claude-sonnet-4",
+            input_tokens=1000,
+            output_tokens=500,
+            rates={"input_per_1k": float("inf"), "output_per_1k": 0.001},
+        )
+        # MODEL_RATES["claude-sonnet-4"]: 1000*0.003/1k + 500*0.015/1k = 0.0105
+        assert cost == pytest.approx(0.0105, rel=1e-3)
+        lines = tracker._log_path.read_text().strip().splitlines()
+        entry = json.loads(lines[-1])
+        assert entry["rates_source"] == "model_rates"
+
+    def test_partial_metadata_falls_back(self, tracker: CostTracker) -> None:
+        # "Complete metadata or fallback": a rates dict missing the output
+        # key is indistinguishable from no metadata — the override requires
+        # BOTH per-1k fields.
+        cost = tracker.record_invocation(
+            "claude-sonnet-4",
+            input_tokens=1000,
+            output_tokens=500,
+            rates={"input_per_1k": 0.001},
+        )
+        # MODEL_RATES["claude-sonnet-4"]: 1000*0.003/1k + 500*0.015/1k = 0.0105
+        assert cost == pytest.approx(0.0105, rel=1e-3)
         lines = tracker._log_path.read_text().strip().splitlines()
         entry = json.loads(lines[-1])
         assert entry["rates_source"] == "model_rates"
