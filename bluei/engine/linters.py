@@ -304,8 +304,11 @@ def discover_python_linter_findings(repo_path: Path, log_file: Path) -> List[Fin
         _append_text(log_file, 'python-discovery: ruff not found, skipping')
         return findings
 
-    # Check if this is a Python repo (has .py files)
-    py_files = list(repo_path.rglob('*.py'))
+    # Check if this is a Python repo (has .py files). Pruned walk — an rglob
+    # would traverse .git/objects and race git maintenance.
+    from bluei.engine.utils import walk_source_files
+
+    py_files = walk_source_files(repo_path, ".py")
     if not py_files:
         return findings
 

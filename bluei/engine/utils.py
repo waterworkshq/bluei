@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shlex
 import shutil
@@ -12,6 +13,33 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 _logger = logging.getLogger(__name__)
+
+
+# --- Source-file enumeration ---
+
+
+def walk_source_files(
+    root: Path, suffix: str, skip_dirs: Optional[set[str]] = None
+) -> List[Path]:
+    """Collect files under ``root`` whose name ends in ``suffix``.
+
+    ``skip_dirs`` (directory names, matched at any depth) are pruned during
+    the traversal; the default prunes ``.git``.
+
+    Callers previously used ``Path.rglob``, which walks into every directory
+    before any filtering — including VCS internals like ``.git/objects``,
+    where git maintenance can delete transient object shards mid-walk and
+    make ``pathlib``'s scandir raise FileNotFoundError. ``os.walk`` both
+    prunes up front and tolerates concurrent filesystem changes.
+    """
+    skip = skip_dirs if skip_dirs is not None else {".git"}
+    collected: List[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for name in filenames:
+            if name.endswith(suffix):
+                collected.append(Path(dirpath) / name)
+    return collected
 
 
 # --- Directive seeding: lesson decay configuration ---

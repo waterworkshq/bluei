@@ -18,6 +18,7 @@ from bluei.engine.utils import (
     load_failure_clusters_for_rule,
     assert_safe_repo,
     branch_suffix,
+    walk_source_files,
 )
 
 
@@ -297,3 +298,36 @@ def test_branch_suffix_truncates_to_32():
 
 def test_branch_suffix_normal():
     assert branch_suffix("Hello World 123") == "hello-world-123"
+
+
+# --- walk_source_files ---
+
+
+class TestWalkSourceFiles:
+    """Pruning source-file enumeration (rglob replacement)."""
+
+    def _tree(self, tmp_path: Path) -> None:
+        (tmp_path / "a.py").write_text("x=1")
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "c.py").write_text("y=2")
+        (tmp_path / ".git" / "objects" / "ae").mkdir(parents=True)
+        (tmp_path / ".git" / "objects" / "ae" / "stray.py").write_text("z=3")
+        (tmp_path / "node_modules").mkdir()
+        (tmp_path / "node_modules" / "dep.py").write_text("w=4")
+
+    def test_prunes_skip_dirs_during_walk(self, tmp_path: Path) -> None:
+        self._tree(tmp_path)
+        found = walk_source_files(
+            tmp_path, ".py", {".git", "node_modules"}
+        )
+        names = {f.name for f in found}
+        assert names == {"a.py", "c.py"}
+
+    def test_git_pruned_by_default(self, tmp_path: Path) -> None:
+        self._tree(tmp_path)
+        found = walk_source_files(tmp_path, ".py")
+        assert all(".git" not in f.parts for f in found)
+        assert {f.name for f in found} == {"a.py", "c.py", "dep.py"}
+
+    def test_empty_tree(self, tmp_path: Path) -> None:
+        assert walk_source_files(tmp_path, ".py") == []
