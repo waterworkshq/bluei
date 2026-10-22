@@ -295,25 +295,58 @@ def test_run_dry_replay_worktree_unchanged_after_multiple_candidates(
 # ---------------------------------------------------------------------------
 
 
-def test_safe_mode_skip_guard_condition():
-    """The Dry Replay phase in _process_one_issue is gated by
+def test_dry_replay_safe_mode_guard_pinned():
+    """Pins the production Dry Replay guard in ``_process_one_issue``.
+
+    The Dry Replay phase in pr_cycle._process_one_issue is gated by
     ``ctx.learning_mode != "paused"``. When paused, the whole block is
-    skipped — no candidate lookup, no file writes. We verify the predicate
-    directly to lock the contract that Phase 7 (SPRT) and the safe-mode
-    ADR rely on.
+    skipped — no candidate lookup, no file writes. This locks the contract
+    that Phase 7 (SPRT) and the safe-mode ADR rely on.
+
+    Source-pinning is used (the ``test_integration_guard_active_only``
+    idiom from test_sprt.py) because driving ``_process_one_issue``
+    end-to-end requires a full RunContext, worktree, pattern store, and
+    GitHub transport — orchestrator-level integration too heavy here. The
+    behavioral half below still evaluates the *actual* guard expression
+    lifted verbatim from the source, so deleting or weakening the guard
+    (e.g. dropping the learning_mode check) fails this test.
     """
+    import inspect
+    import re
+    from types import SimpleNamespace
 
-    # Guard predicate: skip iff learning_mode == "paused"
-    def _would_run_dry_replay(learning_mode, _dr_original_content, pattern_store, path):
-        return (
-            learning_mode != "paused"
-            and _dr_original_content is not None
-            and pattern_store is not None
-            and bool(path)
-        )
+    from bluei.engine.commands import pr_cycle
 
-    assert _would_run_dry_replay("active", "orig", object(), "src/x.py") is True
-    assert _would_run_dry_replay("paused", "orig", object(), "src/x.py") is False
-    assert _would_run_dry_replay("active", None, object(), "src/x.py") is False
-    assert _would_run_dry_replay("active", "orig", None, "src/x.py") is False
-    assert _would_run_dry_replay("active", "orig", object(), "") is False
+    src = inspect.getsource(pr_cycle._process_one_issue)
+
+    # (a) Source pin: the dry-replay block is gated on learning_mode and
+    # the guard precedes the dry-replay machinery it protects.
+    assert 'ctx.learning_mode != "paused"' in src
+    assert "run_dry_replay" in src
+    guard_idx = src.index('ctx.learning_mode != "paused"')
+    dr_idx = src.index("run_dry_replay")
+    assert guard_idx < dr_idx, "guard must precede the dry-replay call it protects"
+
+    # (b) Behavioral half: lift the guard expression verbatim from the
+    # production source and evaluate it against constructed inputs —
+    # paused means skipped.
+    match = re.search(
+        r"if \(\s*ctx\.learning_mode != \"paused\".*?\):", src, re.DOTALL
+    )
+    assert match is not None, "dry-replay guard expression not found"
+    guard_expr = match.group(0)[len("if "):].rstrip(":")
+
+    def _guard(learning_mode, original_content, store, path):
+        namespace = {
+            "ctx": SimpleNamespace(learning_mode=learning_mode),
+            "_dr_original_content": original_content,
+            "pattern_store": store,
+            "finding": SimpleNamespace(path=path),
+        }
+        return eval(guard_expr, {"__builtins__": {}}, namespace)
+
+    assert not _guard("paused", "orig", object(), "src/x.py")
+    assert not _guard("active", None, object(), "src/x.py")
+    assert not _guard("active", "orig", None, "src/x.py")
+    assert not _guard("active", "orig", object(), "")
+    assert _guard("active", "orig", object(), "src/x.py")

@@ -55,6 +55,23 @@ def test_ac_p1_1_rename_tolerant_apply() -> None:
     assert "ValueError" not in result.new_source
 
 
+def test_deep_operator_chain_skips_instead_of_recursion_error() -> None:
+    """Deep operator chains make ``ast.parse`` raise RecursionError (and NUL
+    bytes ValueError); the entry must return its skip result (None) instead of
+    crashing — same defect class as the widened catches in
+    emergent_rules/plugin/graduator templates.
+    """
+    deep = "+".join(["1"] * 20000)
+    normal_pattern = _make_pattern(before="x = 1", after="x = 2")
+
+    # Deep chain as the target file text (first ast.parse site).
+    assert apply_structural_replay(deep, normal_pattern, "python") is None
+
+    # Deep chain inside a pattern snippet (before/after ast.parse site).
+    deep_pattern = _make_pattern(before=deep, after="x = 2")
+    assert apply_structural_replay("x = 1\n", deep_pattern, "python") is None
+
+
 def test_ac_p1_2_evidence_recording(tmp_path: Path) -> None:
     from bluei.engine.models import Finding
     from bluei.engine import pattern_replay as pr

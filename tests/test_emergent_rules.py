@@ -257,6 +257,51 @@ def test_emergent_rule_store_rejects_noisy_shadow_rule(tmp_path) -> None:
     assert reloaded.rejected_reason == "shadow_false_positive_rate"
 
 
+def test_record_shadow_run_zero_findings_stays_tentative(tmp_path) -> None:
+    """A rule that never matched anything must not promote to ACTIVE.
+
+    With zero shadow findings there is no positive evidence at all, so the
+    promotion gate additionally requires ``shadow_findings > 0``. A
+    zero-evidence rule stays TENTATIVE; operators can still force-promote
+    via ``promote_rule``.
+    """
+    store = EmergentRuleStore(tmp_path / "emergent_rules.json")
+    store.save([_rule("er-quiet", status=EmergentRuleStatus.TENTATIVE)])
+
+    for _ in range(3):
+        result = store.record_shadow_run(
+            "er-quiet",
+            matches=0,
+            false_positives=0,
+            min_shadow_runs=3,
+            max_false_positive_rate=0.2,
+        )
+
+    assert result["status"] == "tentative"
+    reloaded = store.load()[0]
+    assert reloaded.status == EmergentRuleStatus.TENTATIVE
+    assert reloaded.shadow_runs == 3
+    assert reloaded.shadow_findings == 0
+
+
+def test_record_shadow_run_promotes_with_real_findings(tmp_path) -> None:
+    """Positive shadow evidence (findings > 0, zero FPs) still promotes ACTIVE."""
+    store = EmergentRuleStore(tmp_path / "emergent_rules.json")
+    store.save([_rule("er-live", status=EmergentRuleStatus.TENTATIVE)])
+
+    for _ in range(3):
+        result = store.record_shadow_run(
+            "er-live",
+            matches=2,
+            false_positives=0,
+            min_shadow_runs=3,
+            max_false_positive_rate=0.2,
+        )
+
+    assert result["status"] == "active"
+    assert store.load()[0].status == EmergentRuleStatus.ACTIVE
+
+
 def test_propose_rules_from_fix_patterns_uses_successful_reuse_as_evidence() -> None:
     proposals = propose_rules_from_fix_patterns(
         [
@@ -628,6 +673,39 @@ def test_retire_stale_proposed_rules(tmp_path) -> None:
     fresh = next(r for r in rules if r.rule_id == "er-fresh-proposed")
     assert stale.status == EmergentRuleStatus.RETIRED
     assert fresh.status == EmergentRuleStatus.PROPOSED
+
+
+def test_retire_stale_rules_handles_naive_timestamps(tmp_path) -> None:
+    """Timezone-naive ``updated_at`` strings must not crash the age math.
+
+    ``datetime.fromisoformat`` happily parses offset-less timestamps while
+    ``now`` is tz-aware; without normalization the subtraction raises
+    TypeError outside the try block. Naive values are normalized to UTC
+    (same pattern as ``_check_staleness`` in pattern_confidence.py).
+    """
+    naive_recent = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    store = EmergentRuleStore(tmp_path / "emergent_rules.json")
+    store.save(
+        [
+            _rule(
+                "er-naive-old",
+                status=EmergentRuleStatus.ACTIVE,
+                updated_at="2026-01-01T00:00:00",
+            ),
+            _rule(
+                "er-naive-recent",
+                status=EmergentRuleStatus.ACTIVE,
+                updated_at=naive_recent,
+            ),
+        ]
+    )
+    result = store.retire_stale_rules(active_days=60)
+    assert result["retired"] == 1
+    rules = store.load()
+    old = next(r for r in rules if r.rule_id == "er-naive-old")
+    recent = next(r for r in rules if r.rule_id == "er-naive-recent")
+    assert old.status == EmergentRuleStatus.RETIRED
+    assert recent.status == EmergentRuleStatus.ACTIVE
 
 
 # ── Tests extracted from test_phase5_modules_remaining.py ──

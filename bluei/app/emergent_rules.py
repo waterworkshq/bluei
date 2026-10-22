@@ -402,6 +402,7 @@ class EmergentRuleStore:
             )
             if (
                 rule.shadow_runs >= min_shadow_runs
+                and rule.shadow_findings > 0
                 and rule.false_positive_rate <= max_false_positive_rate
             ):
                 rule.status = EmergentRuleStatus.ACTIVE
@@ -609,6 +610,8 @@ class EmergentRuleStore:
                 updated_dt = datetime.fromisoformat(updated)
             except (ValueError, TypeError):
                 continue
+            if updated_dt.tzinfo is None:
+                updated_dt = updated_dt.replace(tzinfo=timezone.utc)
             age_days = (now - updated_dt).days
             if rule.status == EmergentRuleStatus.ACTIVE and age_days > active_days:
                 rule.status = EmergentRuleStatus.RETIRED

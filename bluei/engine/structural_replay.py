@@ -67,13 +67,13 @@ def apply_structural_replay(
 
     try:
         target_tree = ast.parse(file_text)
-    except SyntaxError:
+    except (SyntaxError, ValueError, RecursionError):
         return None
 
     try:
         before_tree = ast.parse(pattern.before_snippet)
         after_tree = ast.parse(pattern.after_snippet)
-    except SyntaxError:
+    except (SyntaxError, ValueError, RecursionError):
         return None
 
     if not before_tree.body or not after_tree.body:
@@ -300,7 +300,7 @@ def _normalize_import_text(text: str) -> str:
         parsed = ast.parse(text)
         if parsed.body and isinstance(parsed.body[0], (ast.Import, ast.ImportFrom)):
             return ast.unparse(parsed.body[0])
-    except SyntaxError:
+    except (SyntaxError, ValueError, RecursionError):
         pass
     return text.strip()
 
