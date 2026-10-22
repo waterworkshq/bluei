@@ -12,7 +12,7 @@ The first code-review-and-fix sprint of the beta lifecycle. Two pillars: every t
 
 ### Cost ledger honors discovered pricing
 
-- **`record_invocation` rates override.** The cost ledger previously looked up only the hardcoded `MODEL_RATES` table, so once the Governor routes to a discovered model the ledger would charge the default rate — silently erasing the savings signal the whole 0.2.0 arc built toward. An optional rates override now flows from the resolved model at the pr-cycle call site. Explicit precedence: discovered rates when at least one is non-zero; `MODEL_RATES` otherwise (discovery defaults missing pricing metadata to `0.0`, which must not record `$0.00`). Rows gain an additive `rates_source` key; rows written before beta.2 read as `model_rates`. With no operator tier-config the ledger is unchanged.
+- **`record_invocation` rates override.** The cost ledger previously looked up only the hardcoded `MODEL_RATES` table, so once the Governor routes to a discovered model the ledger would charge the default rate — silently erasing the savings signal the whole 0.2.0 arc built toward. An optional rates override now flows from the resolved model at the pr-cycle call site. Explicit precedence: the override applies only when both rates are present, finite, and strictly positive — partial metadata, zeros (no pricing metadata), or malformed values (negative/NaN/inf) fall back to `MODEL_RATES`, which is safer than an undercounted or non-finite ledger entry. Rows gain an additive `rates_source` key; rows written before beta.2 read as `model_rates`. With no operator tier-config the ledger is unchanged.
 
 ### Guard and injection hardening
 
@@ -23,7 +23,7 @@ The first code-review-and-fix sprint of the beta lifecycle. Two pillars: every t
 
 ### Review-driven fixes (pattern heart)
 
-The sprint's two fresh-context reviews produced 9 HIGH-severity claims; every claim was independently verified against the code before disposition — 7 confirmed, 1 rejected (the `patterns exclude` CLI writer the reviewer's search missed), 1 split. Confirmed and fixed in-release:
+The sprint's two fresh-context reviews produced 9 HIGH-severity claims; every claim was independently verified against the code before disposition — 8 confirmed (one split into the in-release fix above plus a deferred design half), 1 rejected (the `patterns exclude` CLI writer the reviewer's search missed). Confirmed and fixed in-release:
 
 - **`retire_stale_rules` crashed on timezone-naive timestamps** — the aware-minus-naive age subtraction sat outside the parse guard; `emergent gc` and every emergent-observe run would crash on a hand-edited state file. Naive timestamps now normalize to UTC.
 - **The emergent-rule promotion gate was structurally open.** No producer populates `negative_examples`, and promotion required only `shadow_runs >= 3` with `false_positive_rate <= max` — a rule that had never matched anything (zero findings, zero false positives, rate exactly 0.0) auto-promoted to ACTIVE and began emitting real findings. Promotion now requires at least one shadow finding; the manual promote path is unchanged.
