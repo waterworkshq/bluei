@@ -104,6 +104,7 @@ class CostTracker:
         model: str,
         input_tokens: int = 0,
         output_tokens: int = 0,
+        rates: Optional[Dict[str, float]] = None,
     ) -> float:
         """Record one model invocation and return its computed cost.
 
@@ -112,11 +113,24 @@ class CostTracker:
                    to the ``"default"`` entry in MODEL_RATES if not found.
             input_tokens: Number of input (prompt) tokens sent.
             output_tokens: Number of output (completion) tokens received.
+            rates: Discovered per-1k pricing override (``input_per_1k`` /
+                   ``output_per_1k``), e.g. from a ``ResolvedModel``.  Two
+                   bases exist with explicit precedence: discovered-when-real,
+                   MODEL_RATES otherwise.  An override where BOTH rates are
+                   ``0.0`` means "no pricing metadata" (discovery defaults
+                   missing metadata to 0.0) and falls back to MODEL_RATES —
+                   otherwise the ledger would silently record $0.00.
 
         Returns:
             The computed cost for this single invocation in USD.
         """
-        rates = MODEL_RATES.get(model) or MODEL_RATES["default"]
+        rates_source = "model_rates"
+        if rates is not None and (
+            rates.get("input_per_1k", 0.0) > 0 or rates.get("output_per_1k", 0.0) > 0
+        ):
+            rates_source = "discovered"
+        else:
+            rates = MODEL_RATES.get(model) or MODEL_RATES["default"]
         input_rate = rates.get("input_per_1k", MODEL_RATES["default"]["input_per_1k"])
         output_rate = rates.get(
             "output_per_1k", MODEL_RATES["default"]["output_per_1k"]
@@ -138,6 +152,7 @@ class CostTracker:
             "cost": round(invocation_cost, 6),
             "cycle_total_so_far": round(self._cycle_cost, 6),
             "run_id": self._run_id,
+            "rates_source": rates_source,
         }
         try:
             append_jsonl(self._log_path, entry)

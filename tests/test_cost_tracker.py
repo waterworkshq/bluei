@@ -377,3 +377,64 @@ class TestLoadHistoryCorruptLine:
         log_path.write_text('{"model":"x","cost":1}\nBROKEN\n{"model":"y","cost":2}\n')
         entries = CostTracker.load_history(log_path)
         assert len(entries) == 2
+
+
+class TestRatesOverride:
+    """Discovered per-1k rates override vs MODEL_RATES fallback (beta.x)."""
+
+    def test_discovered_rates_override(self, tracker: CostTracker) -> None:
+        cost = tracker.record_invocation(
+            "some-model",
+            input_tokens=1000,
+            output_tokens=1000,
+            rates={"input_per_1k": 0.0005, "output_per_1k": 0.001},
+        )
+        # input: 1000 * 0.0005 / 1000 = 0.0005
+        # output: 1000 * 0.001 / 1000 = 0.001
+        # total: 0.0015 (unknown model name must NOT trigger the default fallback)
+        assert cost == pytest.approx(0.0015, rel=1e-3)
+        lines = tracker._log_path.read_text().strip().splitlines()
+        entry = json.loads(lines[-1])
+        assert entry["rates_source"] == "discovered"
+
+    def test_zero_discovered_rates_fall_back(self, tracker: CostTracker) -> None:
+        # BOTH rates 0.0 == "no pricing metadata" (discovery defaults missing
+        # rates to 0.0) → MODEL_RATES fallback, not a silent $0.00 ledger row.
+        cost = tracker.record_invocation(
+            "claude-sonnet-4",
+            input_tokens=1000,
+            output_tokens=0,
+            rates={"input_per_1k": 0.0, "output_per_1k": 0.0},
+        )
+        # MODEL_RATES["claude-sonnet-4"] input: 1000 * 0.003 / 1000 = 0.003
+        assert cost == pytest.approx(0.003, rel=1e-3)
+        lines = tracker._log_path.read_text().strip().splitlines()
+        entry = json.loads(lines[-1])
+        assert entry["rates_source"] == "model_rates"
+
+    def test_no_rates_marks_model_rates(self, tracker: CostTracker) -> None:
+        tracker.record_invocation("claude-sonnet-4", input_tokens=1000, output_tokens=500)
+        lines = tracker._log_path.read_text().strip().splitlines()
+        entry = json.loads(lines[-1])
+        assert entry["rates_source"] == "model_rates"
+
+    def test_old_rows_without_rates_source_still_summarize(self, tmp_path: Path) -> None:
+        # rates_source is additive: rows written before the key existed (old
+        # shape) must still load and summarize — summary() reads with .get().
+        log_path = tmp_path / "cost_log.jsonl"
+        tracker = CostTracker(log_path=log_path)
+        old_row = {
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "model": "claude-sonnet-4",
+            "input_tokens": 1000,
+            "output_tokens": 0,
+            "cost": 0.003,
+            "cycle_total_so_far": 0.003,
+            "run_id": "r",
+        }
+        with log_path.open("a") as fh:
+            fh.write(json.dumps(old_row) + "\n")
+        s = CostTracker.summary(log_path)  # classmethod — takes log_path, not self
+        assert s["total_invocations"] == 1
+        assert s["total_cost"] == pytest.approx(0.003, rel=1e-3)
+        assert s["per_model"]["claude-sonnet-4"]["count"] == 1
