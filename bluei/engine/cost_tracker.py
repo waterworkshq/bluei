@@ -152,6 +152,12 @@ class CostTracker:
         rates_source = "model_rates"
         if rates is not None and _usable_discovered_rates(rates):
             rates_source = "discovered"
+            # Validation coerced the values; normalize them so numeric
+            # strings from discovery metadata don't reach the arithmetic.
+            rates = {
+                "input_per_1k": float(rates["input_per_1k"]),
+                "output_per_1k": float(rates["output_per_1k"]),
+            }
         else:
             rates = MODEL_RATES.get(model) or MODEL_RATES["default"]
         input_rate = rates.get("input_per_1k", MODEL_RATES["default"]["input_per_1k"])

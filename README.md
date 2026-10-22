@@ -13,7 +13,7 @@
   <a href="https://bluei.dev">bluei.dev</a>
 </h3>
 
-> **⚠️ Pre-release software.** This is `v0.2.0-beta.2` — the beta hardening lifecycle (first review-and-fix sprint delivered). Still pre-release with the "do not use in production" warning in effect (C1: no live runs before 0.2.0 stable). Use for evaluation, testing, and contributions only. Production-ready releases will follow (`0.2.0-rc` → `0.2.0` stable).
+> **⚠️ Pre-release software.** This is `v0.2.0-beta.2` — the beta hardening lifecycle (first review-and-fix sprint delivered). Still pre-release with the "do not use in production" warning in effect (C1: no live runs before 0.2.0 stable). Use for evaluation, testing, and contributions only. Production-ready releases will follow (`0.2.0-rc.1` → `0.2.0` stable).
 
 # bluei — Trust the silence
 

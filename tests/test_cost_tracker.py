@@ -501,3 +501,18 @@ class TestRatesOverride:
         assert s["total_invocations"] == 1
         assert s["total_cost"] == pytest.approx(0.003, rel=1e-3)
         assert s["per_model"]["claude-sonnet-4"]["count"] == 1
+
+    def test_numeric_string_rates_normalized(self, tracker: CostTracker) -> None:
+        # Discovery metadata can carry numeric strings; validation accepts
+        # them, and the arithmetic must receive floats, not the raw strings.
+        cost = tracker.record_invocation(
+            "some-model",
+            input_tokens=1000,
+            output_tokens=1000,
+            rates={"input_per_1k": "0.001", "output_per_1k": "0.002"},
+        )
+        assert cost == pytest.approx(0.003, rel=1e-6)
+        import json as _json
+
+        last = tracker._log_path.read_text().strip().splitlines()[-1]
+        assert _json.loads(last)["rates_source"] == "discovered"
