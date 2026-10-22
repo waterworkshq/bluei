@@ -6,6 +6,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.2.0-beta.2] — Review-and-Fix (Sprint 1: Pattern Heart)
+
+The first code-review-and-fix sprint of the beta lifecycle. Two pillars: every tracked code-quality deferral small enough to land now, and the first deep fresh-context review of the pattern-learning core — the Flywheel Ledger/cascade/pattern-court domain and the detection/structural domain — which surfaced and fixed three more defects the test suite could not see.
+
+### Cost ledger honors discovered pricing
+
+- **`record_invocation` rates override.** The cost ledger previously looked up only the hardcoded `MODEL_RATES` table, so once the Governor routes to a discovered model the ledger would charge the default rate — silently erasing the savings signal the whole 0.2.0 arc built toward. An optional rates override now flows from the resolved model at the pr-cycle call site. Explicit precedence: discovered rates when at least one is non-zero; `MODEL_RATES` otherwise (discovery defaults missing pricing metadata to `0.0`, which must not record `$0.00`). Rows gain an additive `rates_source` key; rows written before beta.2 read as `model_rates`. With no operator tier-config the ledger is unchanged.
+
+### Guard and injection hardening
+
+- **Batch path guard symmetry.** `_apply_single_fix` called the shared Governor-resolution helper behind a local `governor_ledger_path` wrapper that checked only one of the two conditions the helper guards internally. The helper now owns the no-op path unconditionally.
+- **Model ids survive template formatting.** `inject_model_flag` splices the discovered id into a command template that `apply_claude_fix` later runs through `str.format()` — a brace in an id raised an uncaught `ValueError` or mis-substituted a format field. Ids are brace-escaped for the format stage before `shlex.quote` protects the shell stage; `apply_claude_fix` itself is unchanged.
+- **Structural scan recursion safety.** `ast.parse` itself raises `RecursionError` on adversarial input (e.g. a long flat operator chain) — previously uncaught at every structural-scan parse site, so the error propagated through the scan path. `RecursionError` is now caught alongside `SyntaxError`/`ValueError` at all eight parse sites (runtime scan, snippet helpers, graduated plugin, generator template, structural replay), skipping the source as before. Defense-in-depth: the subtree walker is depth-capped at 128 levels — above the tokenizer's ~100-level indentation maximum, a provable no-op on all parseable input — with behavioral parity pinned across its three copies.
+- **Campaign evidence** loads the emergent-rule store once per pass (was twice).
+
+### Review-driven fixes (pattern heart)
+
+The sprint's two fresh-context reviews produced 9 HIGH-severity claims; every claim was independently verified against the code before disposition — 7 confirmed, 1 rejected (the `patterns exclude` CLI writer the reviewer's search missed), 1 split. Confirmed and fixed in-release:
+
+- **`retire_stale_rules` crashed on timezone-naive timestamps** — the aware-minus-naive age subtraction sat outside the parse guard; `emergent gc` and every emergent-observe run would crash on a hand-edited state file. Naive timestamps now normalize to UTC.
+- **The emergent-rule promotion gate was structurally open.** No producer populates `negative_examples`, and promotion required only `shadow_runs >= 3` with `false_positive_rate <= max` — a rule that had never matched anything (zero findings, zero false positives, rate exactly 0.0) auto-promoted to ACTIVE and began emitting real findings. Promotion now requires at least one shadow finding; the manual promote path is unchanged.
+- **A tautological safety test** asserted the dry-replay safe-mode guard against its own local copy of the predicate — no production code exercised, no regression protection. Replaced with a source-and-behavior pin.
+
+### Deferred with rationale (roadmap)
+
+Verified but deferred to the beta.3 "B1 Neighborhood" sprint (governor/discovery/cost + governance/learn domains) or a scoped design slice: SPRT per-family calibration is dead wiring (`rule_family` never threaded); dry replay applies candidates literal-only while live replay has a structural fallback (the SPRT evidence stream is empty for the seeded population); Structural Replay's binding-completeness gate is tautological by construction; populating negative-example evidence at proposal time; the standalone mainline replay path ignores the governance overlay and records only HIT outcomes. All are latent under the no-live-runs constraint (empty evidence streams, no operators) and each needs design work rather than an in-release patch.
+
+### Beta sprint slicing (recorded)
+
+Each beta release reviews a slice of the complete arc deeply: **beta.3 = governor/discovery/cost + governance/learn** (where the one historical B1-class failure lived), **beta.4 = seeds/foundry/hatchery/benchmark**, **beta.5 = campaigns/review/reports + core plumbing/CLI**.
+
+- 6617 → **6638 tests** (+21, 0 regressions). `apply_claude_fix` byte-identical throughout.
+- Zero ADRs (fixes and hardening; nothing architecture-level). C1 holds — no live runs.
+
+---
+
 ## [0.2.0-beta.1] — Stabilization (Act-on-Recommendation)
 
 The first stabilization gate on the ladder to 0.2.0 stable. The Model Governor flips from record-only to **act-on-recommendation**, and model discovery becomes real. C1 ("no live runs before stable") still holds — the flip is live in code, proven via synthetic + mocked-subprocess tests; real-repo measurement is future beta work (lands when beta's experimentation reaches live-repo dispatch).

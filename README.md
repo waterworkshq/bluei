@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/v/release/waterworkshq/bluei" alt="version" />
-  <img src="https://img.shields.io/badge/tests-6617%20passed-brightgreen" alt="tests" />
+  <img src="https://img.shields.io/badge/tests-6638%20passed-brightgreen" alt="tests" />
   <img src="https://img.shields.io/github/license/waterworkshq/bluei" alt="license" />
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey" alt="platform" />
 </p>
@@ -350,6 +350,7 @@ Key design principles:
 | v0.2.0-alpha.5 "Repo Native" | Delivered | Repo Taste Profile (framework-matched prompt-context), Campaign Lab (Learning Objective + evidence routing via injected consumer, zero governance writes), plugin-skeleton generator (self-contained DiscoveryPlugin packs), AST STRUCTURAL detection (ADR-0021 fulfillment, Python-only). Zero new ADRs (integration release). 6463 tests. |
 | v0.2.0-alpha.6 "Economics" | Delivered | Model Governor (ADR-0022 — tier-selection function, inert identity default, no hardcoded model ids), Benchmark Harness (internal dev tool, per-family coverage gap analysis + Flywheel Score over 130-entry corpus, `bluei benchmark` CLI), user-facing "$ avoided" statistic. Ships inert — no live downgrades until beta.1. 6552 tests. |
 | v0.2.0-beta.1 "Stabilization" | Delivered | Governor flips to act-on-recommendation (`selection_fn` → `select_tier`; real tier recommendations); tier resolved to a concrete model via new `engine/model_discovery.py` (`BackendModelDiscovery`, operator-config-validated against the claude/opencode CLI, no shipped defaults) and injected into the command template at the call site (shared `resolve_governed_model` helper). Behavior gated on operator `model_tiers.yaml` — under C2 (no operators) invocation is byte-identical to alpha.6. Batch path wired symmetrically (T1.2); cycle-start constructs discovery. `apply_claude_fix` unchanged. CR-3/4/5 test hardening. ADR-0022 amended; "Model Discovery" CONTEXT term. 6617 tests. C1 holds — real-repo measurement at rc.1. |
+| v0.2.0-beta.2 "Review-and-Fix (Sprint 1: Pattern Heart)" | Delivered | First code-review-and-fix sprint of the beta lifecycle: cost ledger honors discovered model pricing (`rates_source`, explicit precedence); batch Governor guard delegated to the shared helper; model ids brace-escaped at injection; structural scan recursion safety (RecursionError caught at all eight parse sites, walker depth-capped, 3-site parity pinned); two fresh-context deep reviews of the pattern heart (ledger/cascade/pattern court + detection/structural) — 9 HIGH claims, 7 verified (1 rejected), 3 fixed in-release (retire timezone-naive crash, structurally-open emergent promotion gate now requiring shadow findings, tautological safe-mode test replaced). Deferred with rationale → beta.3. Sprint slicing recorded (beta.3 = D5+D2, beta.4 = D3, beta.5 = D6+D7). 6638 tests. Zero ADRs. C1 holds. |
 
 See [Roadmap](docs/meta/ROADMAP.md) for release boundaries and the planning seed map.
 

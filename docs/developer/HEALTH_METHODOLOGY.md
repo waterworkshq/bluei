@@ -389,9 +389,17 @@ Each invocation is a JSONL line:
   "input_tokens": 4500,
   "output_tokens": 1200,
   "cost": 0.0315,
-  "cycle_total_so_far": 0.2415
+  "cycle_total_so_far": 0.2415,
+  "rates_source": "model_rates"
 }
 ```
+
+`rates_source` (beta.2) records which pricing basis produced the cost:
+`"model_rates"` (the built-in `MODEL_RATES` table) or `"discovered"`
+(per-1k pricing resolved from backend model discovery — used when the
+Governor routes to a discovered model and discovery returned real
+pricing). Rows written before beta.2 carry no key and read as
+`model_rates`.
 
 ### Pattern Replay Savings
 

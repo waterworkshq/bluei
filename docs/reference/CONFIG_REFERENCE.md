@@ -198,6 +198,8 @@ The Sequential Probability Ratio Test (ADR-0012) uses operator-facing risk toler
 HITs push LLR positive (toward promote); FAILs push it negative (toward demote) at ~2.7× the weight. LLR is recomputed from durable stores on every check — no stored accumulator.
 
 > **Per-family calibration (alpha.3):** `p_healthy`/`p_broken` can be overridden per rule family by `bluei/engine/seeded_patterns/calibration.yaml`, produced by the synthetic calibration harness. Families with degenerate variation distributions (insufficient structural variance) fall back to the defaults above. `alpha`/`beta` are never overridden (risk tolerances, not empirical). The calibration file is read inline by `sprt.py` — no config key needed.
+>
+> **Wiring note (beta.2 review):** the runtime SPRT call does not yet thread the rule family through, so per-family calibration is not consulted in production today. Defaults apply until the family threading lands (tracked in the roadmap).
 
 ## Cost Tracking
 
