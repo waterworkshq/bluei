@@ -805,7 +805,11 @@ def _scan_structural(
             snippet_src = ""
         if not snippet_src.strip():
             continue
-        sub_hash = compute_structural_hash(snippet_src, "python")
+        try:
+            sub_hash = compute_structural_hash(snippet_src, "python")
+        except Exception:
+            # RecursionError on deep-but-parseable input; skip this subtree.
+            continue
         is_match = sub_hash == target_hash
         if not is_match and canonical:
             try:
@@ -1269,13 +1273,18 @@ def extract_detection_ast(snippet: str, language: str) -> Optional[str]:
         ast.parse(snippet)
     except (SyntaxError, ValueError, RecursionError):
         return None
-    blob = {
-        "hash": compute_structural_hash(snippet, "python"),
-        "nodes": extract_node_sequence(snippet, "python"),
-        "operators": extract_operator_sequence(snippet, "python"),
-        "canonical_snippet": snippet,
-        "language": "python",
-    }
+    try:
+        blob = {
+            "hash": compute_structural_hash(snippet, "python"),
+            "nodes": extract_node_sequence(snippet, "python"),
+            "operators": extract_operator_sequence(snippet, "python"),
+            "canonical_snippet": snippet,
+            "language": "python",
+        }
+    except Exception:
+        # Parsing succeeded but hashing/extracting recursed too deep
+        # (deep-but-parseable input); treat as unfingerprintable.
+        return None
     return json.dumps(blob)
 
 

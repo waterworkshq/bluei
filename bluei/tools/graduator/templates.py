@@ -329,7 +329,11 @@ class Plugin(DiscoveryPlugin):
                     snippet_src = ""
                 if not snippet_src.strip():
                     continue
-                sub_hash = compute_structural_hash(snippet_src, "python")
+                try:
+                    sub_hash = compute_structural_hash(snippet_src, "python")
+                except Exception:
+                    # RecursionError on deep-but-parseable input; skip.
+                    continue
                 is_match = sub_hash == target_hash
                 if not is_match and canonical:
                     try:
