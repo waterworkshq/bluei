@@ -310,10 +310,19 @@ def test_standalone_miss_defers_to_cascade_exactly_once(tmp_path):
         )
         return True
 
+    def fake_replay(**kwargs):
+        # record_outcome=True: a real miss records its own MISS internally
+        # (ADR-0004 three-way recording) — mirror that so the exactly-once
+        # store update below is actually asserted, not assumed.
+        if kwargs.get("record_outcome", True):
+            store.record_replay_outcome(pid, ReplayOutcome.MISS)
+        return (False, None)
+
     with _neutralize_post_fix():
         with (
             patch(
-                "bluei.engine.commands.pr_cycle.try_replay", return_value=(False, None)
+                "bluei.engine.commands.pr_cycle.try_replay",
+                side_effect=fake_replay,
             ) as mock_replay,
             patch(
                 "bluei.engine.lifecycle.apply_cascade_fix",
@@ -322,7 +331,7 @@ def test_standalone_miss_defers_to_cascade_exactly_once(tmp_path):
         ):
             _process_one_issue(ctx, 0, issue, finding, {})
 
-    # standalone used internal three-way recording (mock defers; nothing recorded)
+    # standalone used internal three-way recording with record_outcome=True
     assert mock_replay.call_args.kwargs["record_outcome"] is True
 
     # cascade received the shared accumulator + ledger_path + cycle
@@ -335,12 +344,15 @@ def test_standalone_miss_defers_to_cascade_exactly_once(tmp_path):
     assert len(ctx.ledger_records) == 1
     assert ctx.ledger_records[0]["via"] == "cascade"
 
-    # standalone recorded nothing on the pattern store (miss/fail → no update)
+    # standalone's MISS recorded exactly once on the pattern store
+    # (skip_count +1, used stamp; success/failure untouched); the cascade
+    # mock records nothing, so any second update would show up here.
     pattern = store.get_pattern(pid)
     assert pattern is not None
     assert pattern.success_count == before_succ
-    assert pattern.skip_count == before_skip
     assert pattern.failure_count == before_fail
+    assert pattern.skip_count == before_skip + 1
+    assert pattern.last_used_at is not None
 
 
 # ── exactly-once: standalone-fail→cascade = one record, no standalone update ─
@@ -498,3 +510,90 @@ def test_standalone_hit_record_carries_measured_latency(tmp_path):
 
     rec = ctx.ledger_records[0]
     assert rec["latency_ms"] == 250  # (100.25 - 100.0) * 1000
+
+
+# ── fail-closed: a pattern-resolution failure must not bypass governance ─────
+
+
+def test_resolve_failure_fails_closed_skips_standalone_replay(tmp_path):
+    """A transient _resolve_pattern failure must not land in the replay
+    branch (that branch would run the standalone replay WITHOUT the
+    governance check). The replay is skipped entirely and visibly, and the
+    cascade/LLM path proceeds (its pattern stage consults governance
+    independently)."""
+    store = FixPatternStore(tmp_path / "patterns.jsonl")
+    pid = store.append(_pattern())
+    store._rebuild_from_disk()
+
+    ctx = _build_ctx(tmp_path, store)
+    finding = _finding(rule="broad-except", refactor_class="cascade_fix")
+    issue = {
+        "issue_id": "i1",
+        "finding_id": "f001",
+        "status": "open",
+        "rule": "broad-except",
+    }
+
+    with _neutralize_post_fix():
+        with (
+            # pr_cycle imports _resolve_pattern function-locally from
+            # pattern_replay — patch the source-module attribute.
+            patch(
+                "bluei.engine.pattern_replay._resolve_pattern",
+                side_effect=RuntimeError("transient resolution failure"),
+            ),
+            patch("bluei.engine.commands.pr_cycle.try_replay") as mock_replay,
+            patch("bluei.engine.commands.pr_cycle._append_text") as mock_log,
+            patch(
+                "bluei.engine.lifecycle.apply_cascade_fix", return_value=True
+            ) as mock_cascade,
+        ):
+            _process_one_issue(ctx, 0, issue, finding, {})  # must not raise
+
+    # fail closed: the standalone replay never ran
+    mock_replay.assert_not_called()
+    # the skip is visible in the log with the fail-closed reason
+    # (_append_text's first arg is the log path; the message is second)
+    assert any(
+        "pattern-replay-skip" in str(c.args[1])
+        and "reason=resolve_failed_fail_closed" in str(c.args[1])
+        for c in mock_log.call_args_list
+        if len(c.args) > 1
+    )
+    # the never-attempted candidate must not enter the cascade's attempted set
+    assert mock_cascade.call_args.kwargs["attempted_pattern_ids"] is None
+
+
+def test_governance_skip_excludes_unattempted_candidate_from_cascade_set(tmp_path):
+    """attempted_pattern_ids semantics: when the governance gate SKIPS the
+    standalone replay, the candidate pattern was never attempted — its id
+    must NOT be passed to the cascade (the cascade's pattern stage is free
+    to attempt it under its own governance consult)."""
+    store = FixPatternStore(tmp_path / "patterns.jsonl")
+    pid = store.append(_pattern())
+    store._rebuild_from_disk()
+
+    ctx = _build_ctx(
+        tmp_path, store, governance_state={f"pattern:{pid}": "paused"}
+    )
+    finding = _finding(rule="broad-except", refactor_class="cascade_fix")
+    issue = {
+        "issue_id": "i1",
+        "finding_id": "f001",
+        "status": "open",
+        "rule": "broad-except",
+    }
+
+    with _neutralize_post_fix():
+        with (
+            patch("bluei.engine.commands.pr_cycle.try_replay") as mock_replay,
+            patch(
+                "bluei.engine.lifecycle.apply_cascade_fix", return_value=True
+            ) as mock_cascade,
+        ):
+            _process_one_issue(ctx, 0, issue, finding, {})
+
+    # governance-inactive pattern → standalone replay skipped
+    mock_replay.assert_not_called()
+    # skipped ⇒ never attempted ⇒ the candidate id is NOT in the set
+    assert mock_cascade.call_args.kwargs["attempted_pattern_ids"] is None

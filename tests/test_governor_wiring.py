@@ -560,3 +560,20 @@ class TestResolveGovernedModelWiring:
         assert compares_to_none, (
             "the rates conditional must compare _gov_resolved to None"
         )
+        # Both BRANCHES of the conditional are pinned: the body must build
+        # the rates dict from the resolved model's pricing (attribute reads
+        # on _gov_resolved), and the orelse must be a bare None constant —
+        # a non-None orelse would leak discovered pricing past the no-op.
+        assert isinstance(rates_expr.body, pyast.Dict), (
+            "the rates conditional's body must build the discovered-rates dict"
+        )
+        body_names = {
+            n.id for n in pyast.walk(rates_expr.body) if isinstance(n, pyast.Name)
+        }
+        assert "_gov_resolved" in body_names, (
+            "the rates dict must be built from the resolved model's pricing"
+        )
+        assert (
+            isinstance(rates_expr.orelse, pyast.Constant)
+            and rates_expr.orelse.value is None
+        ), "the rates conditional's orelse must be a bare None constant"

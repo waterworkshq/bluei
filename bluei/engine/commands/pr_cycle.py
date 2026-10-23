@@ -735,6 +735,13 @@ def _process_one_issue(
         replay_pid: Optional[str] = None
         replay_pattern_hint: Optional[str] = None
         _gov_candidate: Optional[Any] = None
+        # Fail-closed tracking: a pattern-resolution failure must not silently
+        # take the "no candidate" path (that path RUNS the standalone replay,
+        # bypassing the governance check). _standalone_attempted records
+        # whether the replay actually ran — a skipped replay never attempted
+        # its candidate, so the id must not enter attempted_pattern_ids below.
+        _gov_resolve_failed = False
+        _standalone_attempted = False
 
         if pattern_store is not None:
             from bluei.engine.governance import (
@@ -754,7 +761,21 @@ def _process_one_issue(
                 _gov_candidate = _resolve_pattern(finding, pattern_store, log_file)
             except Exception:
                 _gov_candidate = None
-            if _gov_candidate is not None and not is_governance_active(
+                _gov_resolve_failed = True
+            if _gov_resolve_failed:
+                # Fail closed: a transient resolution failure must not bypass
+                # the governance check by landing in the replay branch. Skip
+                # the standalone replay entirely and fall through to the
+                # cascade/LLM, whose pattern stage consults governance
+                # independently.
+                _append_text(
+                    log_file,
+                    (
+                        f"pattern-replay-skip: rule={finding.rule} "
+                        f"reason=resolve_failed_fail_closed"
+                    ),
+                )
+            elif _gov_candidate is not None and not is_governance_active(
                 format_asset_ref("pattern", _gov_candidate.pattern_id),
                 ctx.governance_state,
             ):
@@ -767,6 +788,7 @@ def _process_one_issue(
                     ),
                 )
             else:
+                _standalone_attempted = True
                 _replay_t0 = time.monotonic()
                 # record_outcome: try_replay's internal three-way recording
                 # (HIT/MISS/FAILURE per ADR-0004) is authoritative on the
@@ -840,17 +862,23 @@ def _process_one_issue(
                     run_id=ctx.run_id,
                     cost_tracker=ctx.cost_tracker,
                     governance_state=ctx.governance_state,
-                    # The standalone replay already attempted (and recorded)
-                    # this pattern for the finding — the cascade's pattern
-                    # stage must not re-attempt and double-record it. The
-                    # gate-resolved candidate is the reliable id source:
-                    # try_replay returns the pid only on some outcomes
-                    # (a snippet-not-found MISS records internally but
-                    # returns None).
+                    # The standalone replay attempted (and recorded) this
+                    # pattern for the finding when it actually RAN — the
+                    # cascade's pattern stage must not re-attempt and
+                    # double-record it. The gate-resolved candidate id counts
+                    # ONLY when the standalone replay was attempted (the
+                    # governance/resolve-failure skips never tried the
+                    # pattern, so the cascade stage is free to attempt it);
+                    # it is the reliable id source because try_replay
+                    # returns the pid only on some outcomes (a
+                    # snippet-not-found MISS records internally but returns
+                    # None).
                     attempted_pattern_ids={
                         pid
                         for pid in (
-                            getattr(_gov_candidate, "pattern_id", None),
+                            getattr(_gov_candidate, "pattern_id", None)
+                            if _standalone_attempted
+                            else None,
                             replay_pid,
                         )
                         if pid
