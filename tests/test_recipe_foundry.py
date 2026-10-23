@@ -205,8 +205,8 @@ class TestRunFoundryGateOpen:
         cb = lambda prompt: _fenced(GOOD_YAML)  # noqa: E731
         staged = tmp_path / "staged"
         approvals = tmp_path / "approval_records.jsonl"
-        # C1 (ADR-0007): write_producing defaults gate_closed now; the
-        # gate-open write path requires explicit operator config.
+        # Explicit gate_open_audit config (same as the build-time default —
+        # pinned here so an explicit value is honored end-to-end).
         config = {
             "learning": {
                 "asset_classes": {"recipe": {"write_producing": "gate_open_audit"}}
@@ -285,10 +285,12 @@ class TestRunFoundryGateClosed:
         assert snap["source_pattern_id"] == "seed-ruff-b904"
 
 
-class TestRunFoundryDefaultHoldsGateClosed:
-    def test_empty_config_queues_pending(self, tmp_path):
-        # C1 (ADR-0007): unconfigured write_producing resolves gate_closed —
-        # the Foundry queues pending approval instead of writing.
+class TestRunFoundryDefaultGateOpen:
+    def test_empty_config_auto_promotes(self, tmp_path):
+        # ADR-0007 refinement (runtime/build-time axis) + ADR-0020: the
+        # Foundry is a BUILD-TIME curated pipeline — the human commit that
+        # runs it IS the approval, so unconfigured write_producing defaults
+        # gate_open_audit HERE (the runtime promoter stays gate-closed).
         pattern = _make_pattern()
         cb = lambda prompt: _fenced(GOOD_YAML)  # noqa: E731
         staged = tmp_path / "staged"
@@ -307,14 +309,14 @@ class TestRunFoundryDefaultHoldsGateClosed:
                 approval_records_path=approvals,
             )
 
-        assert summary.queued_pending == 1
-        assert summary.written == 0
-        assert summary.auto_promoted == 0
+        assert summary.written == 1
+        assert summary.auto_promoted == 1
+        assert summary.queued_pending == 0
         assert summary.held_paused == 0
-        assert not staged.exists() or not list(staged.glob("*.yaml"))
+        assert len(list(staged.glob("*.yaml"))) == 1
         records = list(read_jsonl(approvals))
         assert len(records) == 1
-        assert records[0]["decision"] == "pending_approval"
+        assert records[0]["decision"] == "auto_promote"
 
 
 class TestRunFoundryPausedHold:
@@ -376,7 +378,18 @@ class TestRunFoundryPausedHold:
                 [],
                 llm_callback=cb,
                 staged_dir=staged,
-                config={"learning": {"mode": "audit_only"}},
+                # Explicit gate_open_audit per-class config so the audit_only
+                # CEILING is actually exercised: unconfigured write_producing
+                # defaults gate_open_audit at this build-time gate, which
+                # would pass the ceiling assertions without it doing anything.
+                config={
+                    "learning": {
+                        "mode": "audit_only",
+                        "asset_classes": {
+                            "recipe": {"write_producing": "gate_open_audit"}
+                        },
+                    }
+                },
                 approval_records_path=approvals,
             )
 

@@ -376,7 +376,13 @@ def promote_pattern_to_recipe(
     if not check_promotion_eligibility(pattern):
         return PromotionResult.NOT_ELIGIBLE
 
-    policy = resolve_policy(config, "pattern", "write_producing")
+    # Runtime promoter (ADR-0007 refinement): unconfigured write_producing
+    # stays GATE-CLOSED — nothing writes at runtime without an explicit
+    # operator gate. (Build-time curated pipelines, e.g. the Foundry, pass
+    # their own gate-open default — the human commit is the approval.)
+    policy = resolve_policy(
+        config, "pattern", "write_producing", default="gate_closed"
+    )
     asset_ref = format_asset_ref("pattern", pattern.pattern_id)
 
     if policy == "paused":

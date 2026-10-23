@@ -222,6 +222,76 @@ def test_resolve_policy_audit_only_keeps_gate_closed():
     assert resolve_policy(config, "pattern", "write_producing") == "gate_closed"
 
 
+def test_resolve_policy_unknown_value_falls_back_to_effective_default(caplog):
+    """A typo'd per-class value must not be returned as-is: both gate sites
+    treat anything unrecognized as gate-OPEN (fail-open on typos). It now
+    falls back to the effective default with a warning — the per-transition
+    table default when no caller default was provided (fail closed at
+    runtime), the caller's default when one was (build-time gates)."""
+    import logging
+
+    config = {
+        "learning": {
+            "asset_classes": {
+                "pattern": {"write_producing": "banana"},
+                "recipe": {"write_producing": "banana"},
+            }
+        }
+    }
+    with caplog.at_level(logging.WARNING, logger="bluei.engine.governance"):
+        # runtime table default for write_producing is gate_closed
+        assert resolve_policy(config, "pattern", "write_producing") == "gate_closed"
+        # the caller-provided default is the fallback at build-time gates
+        assert (
+            resolve_policy(
+                config, "recipe", "write_producing", default="gate_open_audit"
+            )
+            == "gate_open_audit"
+        )
+    # both resolutions warned about the raw value
+    assert caplog.text.count("banana") == 2
+
+
+def test_resolve_policy_default_kwarg_overrides_per_transition_table():
+    """ADR-0007 runtime/build-time refinement: ``default`` overrides the
+    per-transition table for UNCONFIGURED values — runtime promoters pass
+    gate_closed, build-time curated pipelines (the Foundry, ADR-0020) pass
+    gate_open_audit (the human commit is the approval)."""
+    # runtime: unconfigured write_producing stays closed (explicit default)
+    assert (
+        resolve_policy({}, "pattern", "write_producing", default="gate_closed")
+        == "gate_closed"
+    )
+    # build-time: unconfigured write_producing OPENS despite the table default
+    assert (
+        resolve_policy({}, "recipe", "write_producing", default="gate_open_audit")
+        == "gate_open_audit"
+    )
+    # and the caller default can close a transition the table would open
+    assert (
+        resolve_policy({}, "pattern", "in_place_mutation", default="gate_closed")
+        == "gate_closed"
+    )
+    # explicit operator config still beats ANY default
+    cfg = {
+        "learning": {
+            "asset_classes": {"pattern": {"write_producing": "gate_closed"}}
+        }
+    }
+    assert (
+        resolve_policy(cfg, "pattern", "write_producing", default="gate_open_audit")
+        == "gate_closed"
+    )
+    # the learning-mode ceiling still applies on top of a caller default
+    audit_cfg = {"learning": {"mode": "audit_only"}}
+    assert (
+        resolve_policy(
+            audit_cfg, "recipe", "write_producing", default="gate_open_audit"
+        )
+        == "gate_closed"
+    )
+
+
 # --- ApprovalRecord + PromotionResult --------------------------------------
 
 

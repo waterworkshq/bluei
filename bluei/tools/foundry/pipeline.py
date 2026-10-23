@@ -2,12 +2,15 @@
 
 For each Pattern: propose_recipe -> resolve_policy(config, "recipe",
 "write_producing"):
-  - gate_closed (the default for unconfigured ``write_producing``, ADR-0007):
-    append pending_approval with proposed_recipe_yaml cached in
-    evidence_snapshot (ADR-0020 carve-out from ADR-0007 — Foundry is a
-    trusted author; does NOT call has_bundle_reference).
-  - gate_open_audit (explicit config only): write YAML to staged_dir +
-    append auto_promote.
+  - gate_closed (explicit config): append pending_approval with
+    proposed_recipe_yaml cached in evidence_snapshot (ADR-0020 carve-out
+    from ADR-0007 — Foundry is a trusted author; does NOT call
+    has_bundle_reference).
+  - gate_open_audit (the default for unconfigured ``write_producing`` at
+    this BUILD-TIME gate — the human commit that runs the pipeline IS the
+    approval, per the ADR-0007 refinement + ADR-0020; the RUNTIME promoter
+    stays gate-closed by default): write YAML to staged_dir + append
+    auto_promote.
   - paused (learning.mode=paused): hard hold (ADR-0013) — no YAML, no
     pending record; counted in ``summary.held_paused``.
 """
@@ -84,7 +87,13 @@ def run_foundry(
         summary.proposed += 1
         recipe_id = proposal.parsed.id
         asset_ref = format_asset_ref("recipe", recipe_id)
-        policy = resolve_policy(config, "recipe", "write_producing")
+        # Build-time gate (ADR-0007 refinement + ADR-0020): the Foundry is a
+        # curated pipeline — the human commit that runs it IS the approval,
+        # so unconfigured write_producing defaults gate-open-with-audit
+        # here (the runtime promoter stays gate-closed by default).
+        policy = resolve_policy(
+            config, "recipe", "write_producing", default="gate_open_audit"
+        )
 
         if policy == "paused":
             # ADR-0013 kill switch: paused is a HARD HOLD — strictly stronger

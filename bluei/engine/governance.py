@@ -21,9 +21,12 @@ for every asset_ref (default ``"active"``).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
+
+_logger = logging.getLogger(__name__)
 
 
 class PromotionResult(str, Enum):
@@ -165,8 +168,20 @@ def resolve_learning_mode(config: Dict[str, Any]) -> str:
 _TRANSITION_DEFAULTS: Dict[str, str] = {"write_producing": "gate_closed"}
 _DEFAULT_TRANSITION_POLICY = "gate_open_audit"
 
+# Raw per-class config values are only honored when exactly one of these two
+# gate policies. Anything else (e.g. a typo like "gate_clsoed") would
+# otherwise be returned as-is and treated as gate-OPEN by the gate sites —
+# validation here makes the resolution fail safe instead of fail open.
+_KNOWN_GATE_POLICIES = frozenset({"gate_closed", "gate_open_audit"})
 
-def resolve_policy(config: Dict[str, Any], asset_class: str, transition: str) -> str:
+
+def resolve_policy(
+    config: Dict[str, Any],
+    asset_class: str,
+    transition: str,
+    *,
+    default: Optional[str] = None,
+) -> str:
     """Resolve the effective policy for a per-class transition (DESIGN.md §E.2).
 
     Returns ``"gate_closed"``, ``"gate_open_audit"``, or ``"paused"``. The
@@ -175,18 +190,53 @@ def resolve_policy(config: Dict[str, Any], asset_class: str, transition: str) ->
     * ``paused`` → every transition is paused.
     * ``audit_only`` → gate-open transitions are forced to gate-closed.
     * otherwise → the per-class transition value. Unconfigured transitions
-      default per-transition (ADR-0007): ``write_producing`` →
-      ``gate_closed`` (a write-producing promotion never defaults open),
-      every other transition → ``gate_open_audit``.
+      fall back to ``default`` when the caller provided one, else to the
+      per-transition table (ADR-0007): ``write_producing`` →
+      ``gate_closed`` (a runtime write-producing promotion never defaults
+      open), every other transition → ``gate_open_audit``.
+
+    The ``default`` keyword implements the ADR-0007 refinement (runtime vs
+    build-time): the RUNTIME promoter passes ``default="gate_closed"`` — no
+    write without an explicit gate — while build-time curated pipelines
+    (the Foundry) pass ``default="gate_open_audit"``: the human commit that
+    runs the pipeline IS the approval (ADR-0020). An explicit per-class
+    config value always wins over any default.
+
+    Raw per-class values that are not exactly ``"gate_closed"`` or
+    ``"gate_open_audit"`` are rejected with a warning and fall back to the
+    effective default (fail closed at runtime) — an unrecognized string
+    must not silently behave as gate-open.
     """
     mode = resolve_learning_mode(config)
     if mode == "paused":
         return "paused"
+
+    table_default = _TRANSITION_DEFAULTS.get(transition, _DEFAULT_TRANSITION_POLICY)
+    effective_default = table_default
+    if default is not None:
+        if default in _KNOWN_GATE_POLICIES:
+            effective_default = default
+        else:
+            _logger.warning(
+                "resolve_policy: caller passed unknown default %r for %s/%s; "
+                "using per-transition default %r",
+                default,
+                asset_class,
+                transition,
+                table_default,
+            )
+
     class_cfg = config.get("learning", {}).get("asset_classes", {}).get(asset_class, {})
-    raw = class_cfg.get(
-        transition,
-        _TRANSITION_DEFAULTS.get(transition, _DEFAULT_TRANSITION_POLICY),
-    )
+    raw = class_cfg.get(transition, effective_default)
+    if raw not in _KNOWN_GATE_POLICIES:
+        _logger.warning(
+            "resolve_policy: unknown policy %r for %s/%s; falling back to %r",
+            raw,
+            asset_class,
+            transition,
+            effective_default,
+        )
+        raw = effective_default
     if mode == "audit_only" and raw == "gate_open_audit":
         return "gate_closed"
     return raw

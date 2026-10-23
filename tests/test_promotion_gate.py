@@ -333,7 +333,18 @@ class TestPausedHardHold:
             pat,
             "python",
             staged,
-            config={"learning": {"mode": "audit_only"}},
+            # Explicit gate_open_audit per-class config so the audit_only
+            # CEILING is actually exercised: unconfigured write_producing
+            # already defaults gate_closed (C1), which would pass these
+            # assertions without the ceiling doing anything.
+            config={
+                "learning": {
+                    "mode": "audit_only",
+                    "asset_classes": {
+                        "pattern": {"write_producing": "gate_open_audit"}
+                    },
+                }
+            },
             repo_state_dir=tmp_path / "state",
             approval_records_path=records_path,
         )
