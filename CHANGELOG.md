@@ -22,7 +22,7 @@ The fourth and final domain slice of the beta review ladder: campaigns/review/re
 
 Campaign learning-objective routing is production-unreachable (the CLI never passes one; the consumer is dead wiring; the learning report is never persisted) — a product-surface decision recommended for the dogfooding gate. Also deferred: the dependency-ordered planner silently yielding arbitrary order; the review-feedback confidence loop being driven only by a test stub; campaign evidence failures swallowed; the promotion min-repos gate satisfiable by five worktrees of one repository; the gate-closed pattern→recipe promotion dead end; and the recorded minors.
 
-- 6755 → **6793 tests** (+38, 0 regressions). Zero ADRs. C1 holds — no live runs.
+- 6755 → **6819 tests** (+64, 0 regressions). Zero ADRs. C1 holds — no live runs.
 
 ---
 
