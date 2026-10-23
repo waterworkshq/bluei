@@ -109,6 +109,7 @@ def process_batch(
     discovery: Optional[ModelDiscovery] = None,
     cost_tracker: Optional["object"] = None,
     is_split_child: bool = False,
+    pr_budget: Optional[list] = None,
 ) -> Tuple[bool, Optional[str]]:
     """Process a multi-finding batch: worktree → fixes → PR.
 
@@ -123,6 +124,12 @@ def process_batch(
     skipped — sibling sub-batches of one split intentionally produce
     multiple PRs for the same rule; that check guards against a LATER
     cycle re-opening a recent PR, not against same-run siblings.
+
+    ``pr_budget`` is an optional single-element list holding the remaining
+    PR slots for the run; when present, the split loop stops launching
+    sub-batches once it is exhausted, so one split cannot overshoot the
+    cycle's PR caps. Children share the same holder, so nested splits
+    draw from the same budget.
     """
     from bluei.engine.git_ops import git_commit_all, git_push_branch
     from bluei.engine.state import _append_text, save_batch_record
@@ -255,8 +262,15 @@ def process_batch(
             # produced a PR. Reporting success when every sub-batch failed
             # (e.g. each timed out) makes the cycle count a PR that was
             # never created and can consume the PR cap for nothing.
-            sub_results = [
-                process_batch(
+            sub_results = []
+            for sub_batch in sub_batches:
+                if pr_budget is not None and pr_budget[0] <= 0:
+                    _append_text(
+                        log_file,
+                        f"batch-skip: {sub_batch.batch_id} reason=pr-budget-exhausted",
+                    )
+                    continue
+                _ok, _detail = process_batch(
                     sub_batch,
                     repo_path,
                     args,
@@ -269,14 +283,22 @@ def process_batch(
                     discovery=discovery,
                     cost_tracker=cost_tracker,
                     is_split_child=True,
+                    pr_budget=pr_budget,
                 )
-                for sub_batch in sub_batches
-            ]
+                sub_results.append((_ok, _detail))
+                if pr_budget is not None and _ok:
+                    # Nested splits report their own PR count — draw them
+                    # all from the shared budget.
+                    pr_budget[0] -= parse_pr_count(_detail)
             if sub_results and any(ok for ok, _detail in sub_results):
                 # Carry the number of PRs the sub-batches actually created
-                # ("split-and-retried:N") so the cycle's PR accounting counts
-                # them all, not one.
-                n_prs = sum(1 for ok, _detail in sub_results if ok)
+                # ("split-and-retried:N", counting nested splits) so the
+                # cycle's PR accounting counts them all, not one.
+                n_prs = sum(
+                    parse_pr_count(_detail)
+                    for ok, _detail in sub_results
+                    if ok
+                )
                 return True, f"split-and-retried:{n_prs}"
             batch.status = BatchStatus.FAILED.value
             _append_text(

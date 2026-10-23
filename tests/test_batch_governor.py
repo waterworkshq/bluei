@@ -750,3 +750,99 @@ class TestSplitPrAccounting:
         for _b, sc, rc in seen:
             assert sc == {"mode": "strict"}
             assert rc == {"base_branch": "develop"}
+
+
+class TestNestedSplitBudget:
+    def test_nested_split_pr_counts_propagate(self, tmp_path, make_finding):
+        # A child that itself splits reports "split-and-retried:2"; the
+        # parent must count those two PRs, not one.
+        from bluei.engine.batch_pr import process_batch
+        from bluei.engine.models import BatchGroup
+
+        finding = make_finding(rule="ruff-b904", safe_to_autofix=False)
+        parent = BatchGroup(
+            batch_id="parent7", rule_pattern="ruff-b904", findings=[finding] * 6
+        )
+        sub_a = BatchGroup(
+            batch_id="n7-a", rule_pattern="ruff-b904", findings=[finding] * 3
+        )
+        sub_b = BatchGroup(
+            batch_id="n7-b", rule_pattern="ruff-b904", findings=[finding] * 3
+        )
+        args = _make_args()
+        args.dry_run = True
+
+        def _apply(batch, **kwargs):
+            return (1, 5) if batch.batch_id == "parent7" else (3, 0)
+
+        with patch("bluei.engine.batch_pr._create_worktree", return_value=True), patch(
+            "bluei.engine.batch_pr.apply_batch_fixes", side_effect=_apply
+        ), patch(
+            "bluei.engine.batch_pr.should_split_batch",
+            side_effect=lambda batch, max_depth=3: batch.batch_id == "parent7",
+        ), patch(
+            "bluei.engine.batch_pr.handle_batch_failure",
+            return_value=[sub_a, sub_b],
+        ), patch(
+            # Child A itself split and made 2 PRs; child B made 1.
+            "bluei.engine.batch_pr.process_batch",
+            side_effect=[(True, "split-and-retried:2"), (True, "dry-run-pr-simulated")],
+        ):
+            ok, detail = process_batch(
+                batch=parent,
+                repo_path=tmp_path,
+                args=args,
+                log_file=tmp_path / "log.txt",
+            )
+
+        assert ok is True
+        assert detail == "split-and-retried:3"
+
+    def test_budget_stops_later_sub_batches(self, tmp_path, make_finding):
+        # One remaining PR slot: the first sub-batch consumes it, the second
+        # is skipped rather than overshooting the run's cap.
+        from bluei.engine.batch_pr import process_batch
+        from bluei.engine.models import BatchGroup
+
+        finding = make_finding(rule="ruff-b904", safe_to_autofix=False)
+        parent = BatchGroup(
+            batch_id="parent8", rule_pattern="ruff-b904", findings=[finding] * 6
+        )
+        sub_a = BatchGroup(
+            batch_id="n8-a", rule_pattern="ruff-b904", findings=[finding] * 3
+        )
+        sub_b = BatchGroup(
+            batch_id="n8-b", rule_pattern="ruff-b904", findings=[finding] * 3
+        )
+        args = _make_args()
+        args.dry_run = True
+
+        def _apply(batch, **kwargs):
+            return (1, 5) if batch.batch_id == "parent8" else (3, 0)
+
+        with patch("bluei.engine.batch_pr._create_worktree", return_value=True), patch(
+            "bluei.engine.batch_pr.apply_batch_fixes", side_effect=_apply
+        ), patch(
+            "bluei.engine.batch_pr.should_split_batch",
+            side_effect=lambda batch, max_depth=3: batch.batch_id == "parent8",
+        ), patch(
+            "bluei.engine.batch_pr.handle_batch_failure",
+            return_value=[sub_a, sub_b],
+        ), patch(
+            "bluei.engine.git_ops.git_commit_all", return_value="ok"
+        ), patch(
+            "bluei.engine.git_ops.git_push_branch", return_value=True
+        ):
+            ok, detail = process_batch(
+                batch=parent,
+                repo_path=tmp_path,
+                args=args,
+                log_file=tmp_path / "log.txt",
+                pr_budget=[1],
+            )
+
+        assert ok is True
+        assert detail == "split-and-retried:1"
+        log = (tmp_path / "log.txt").read_text()
+        assert "n8-a" in log and "pr-budget-exhausted" in log
+        assert "would create PR for n8-b" not in log

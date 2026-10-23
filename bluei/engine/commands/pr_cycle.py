@@ -1535,6 +1535,12 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
                 if not ok:
                     blocked_reasons.append(reason)
                     break
+                _pr_budget = [
+                    min(
+                        args.max_prs_per_run - created_prs,
+                        args.open_prs_cap - open_prs,
+                    )
+                ]
                 _success, _detail = _process_batch(
                     batch=_bg,
                     repo_path=repo_path,
@@ -1545,6 +1551,7 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
                     run_id=ctx.run_id,
                     discovery=ctx.discovery,
                     cost_tracker=ctx.cost_tracker,
+                    pr_budget=_pr_budget,
                 )
                 if _success:
                     # A split success can represent several sub-batch PRs —
