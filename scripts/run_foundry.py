@@ -139,7 +139,10 @@ def main(config: Optional[Dict[str, Any]] = None) -> int:
         bundles=bundles,
         llm_callback=callback,
         staged_dir=staged_dir,
-        config={},
+        # The loaded config carries the governance posture — pass it through
+        # so learning.mode and promotion policies hold; an empty config here
+        # would silently resolve every gate to its permissive default.
+        config=config,
         approval_records_path=None,
     )
 

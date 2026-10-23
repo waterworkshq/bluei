@@ -104,3 +104,34 @@ class TestMainGate:
         monkeypatch.setattr(script, "load_seeded_patterns", _boom)
         monkeypatch.setattr(script, "make_claude_callback", _boom)
         assert script.main(config={}) == 0
+
+
+class TestGovernanceConfigPassthrough:
+    def test_main_passes_loaded_config_to_pipeline(self, script, monkeypatch):
+        # An empty config at the pipeline call silently resolves every
+        # governance gate to its permissive default — learning.mode=paused
+        # or a gate_closed policy would not hold. The loaded config must
+        # flow through.
+        paused_cfg = {"learning": {"mode": "paused"}}
+
+        captured = {}
+
+        class _Summary:
+            proposed = written = rejected = held_paused = auto_promoted = 0
+            rejected_topics = []
+
+        def _fake_run_foundry(**kwargs):
+            captured.update(kwargs)
+            summary = _Summary()
+            summary.written = 1  # productive run -> exit 0
+            return summary
+
+        monkeypatch.setattr(script, "load_seeded_patterns", lambda: [])
+        monkeypatch.setattr(script, "load_bundles", lambda: [])
+        monkeypatch.setattr(script, "resolve_author_cmd_template", lambda c: "cmd {prompt}")
+        monkeypatch.setattr(script, "make_claude_callback", lambda t: None)
+        monkeypatch.setattr(script, "run_foundry", _fake_run_foundry)
+
+        rc = script.main(config=paused_cfg)
+        assert rc == 0
+        assert captured["config"] == paused_cfg

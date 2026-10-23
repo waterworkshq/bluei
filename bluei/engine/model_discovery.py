@@ -26,6 +26,7 @@ This module contains zero vendor model-id literals (AC-P2-3 source-level test).
 from __future__ import annotations
 
 import logging
+import math
 import shlex
 import subprocess
 from dataclasses import dataclass, field
@@ -248,13 +249,25 @@ class BackendModelDiscovery:
             if model_id in available:
                 meta = available[model_id]
                 try:
+                    input_rate = float(meta.get("input_per_1k", 0.0))
+                    output_rate = float(meta.get("output_per_1k", 0.0))
+                    if not (
+                        math.isfinite(input_rate)
+                        and input_rate >= 0
+                        and math.isfinite(output_rate)
+                        and output_rate >= 0
+                    ):
+                        # float("nan")/float("inf")/negatives PARSE fine but
+                        # poison every consumer of the rates; treat them as
+                        # malformed metadata like any other bad value.
+                        raise ValueError("non-finite or negative rate")
                     out.append(
                         ResolvedModel(
                             tier=tier,
                             backend=backend,
                             model_id=model_id,
-                            input_per_1k=float(meta.get("input_per_1k", 0.0)),
-                            output_per_1k=float(meta.get("output_per_1k", 0.0)),
+                            input_per_1k=input_rate,
+                            output_per_1k=output_rate,
                         )
                     )
                 except (ValueError, TypeError, KeyError):
