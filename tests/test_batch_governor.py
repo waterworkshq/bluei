@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -308,13 +309,15 @@ class TestBatchCostLedger:
         assert result.error == "cost-limit"
         assert result.fix_method == "claude"
 
-    def test_timeout_records_invocation_cost_and_returns_failure(
+    def test_timeout_records_invocation_cost_and_aborts_batch(
         self, tmp_path, make_finding
     ):
         # A timed-out Claude subprocess DID launch — its invocation cost must
-        # reach the ledger even though the call raised, and the existing
-        # FAILED claude-exception handling is preserved (no uncaught
-        # TimeoutExpired — it is not an OSError subclass).
+        # reach the ledger even though the call raised. The timeout then
+        # RE-RAISES: a killed fix can leave partial edits in the shared
+        # worktree, so the batch must abort rather than let a later finding
+        # commit them (TimeoutExpired is not an OSError subclass, so it is
+        # matched explicitly).
         import subprocess as _sp
 
         from bluei.engine.cost_tracker import CostTracker
@@ -327,19 +330,18 @@ class TestBatchCostLedger:
             "bluei.engine.lifecycle.apply_claude_fix",
             side_effect=_sp.TimeoutExpired(cmd="claude", timeout=120),
         ):
-            result = _apply_single_fix(
-                finding=finding,
-                worktree_path=tmp_path,
-                repo_path=tmp_path,
-                args=_make_args(),
-                log_file=tmp_path / "log.txt",
-                cost_tracker=tracker,
-            )
+            with pytest.raises(_sp.TimeoutExpired):
+                _apply_single_fix(
+                    finding=finding,
+                    worktree_path=tmp_path,
+                    repo_path=tmp_path,
+                    args=_make_args(),
+                    log_file=tmp_path / "log.txt",
+                    cost_tracker=tracker,
+                )
 
-        assert result.status == "failed"
-        assert result.error.startswith("claude-exception:")
-        assert result.fix_method == "claude"
         rows = _read_ledger(cost_log)
         assert len(rows) == 1
         assert rows[0]["input_tokens"] == 3000
         assert rows[0]["output_tokens"] == 300
+        assert "aborting batch" in (tmp_path / "log.txt").read_text()

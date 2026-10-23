@@ -357,9 +357,18 @@ def _apply_single_fix(
         subprocess.TimeoutExpired,
     ) as exc:
         # The subprocess DID launch (a TimeoutExpired is a killed live
-        # subprocess) — record the invocation cost before returning the
-        # failure, so a timed-out call does not vanish from the ledger.
+        # subprocess) — record the invocation cost first, so a timed-out
+        # call does not vanish from the ledger. Then RE-RAISE timeouts:
+        # a killed fix can leave partial edits in the shared worktree, and
+        # letting the batch continue would risk a later finding committing
+        # them. Other exceptions keep the per-finding failure return.
         _record_invocation_cost()
+        if isinstance(exc, subprocess.TimeoutExpired):
+            _append_text(
+                log_file,
+                f"batch-fix: claude timeout for {finding.finding_id[:8]}; aborting batch",
+            )
+            raise
         _append_text(
             log_file, f"batch-fix: claude exception for {finding.finding_id[:8]}: {exc}"
         )

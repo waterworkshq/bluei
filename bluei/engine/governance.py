@@ -228,7 +228,9 @@ def resolve_policy(
 
     class_cfg = config.get("learning", {}).get("asset_classes", {}).get(asset_class, {})
     raw = class_cfg.get(transition, effective_default)
-    if raw not in _KNOWN_GATE_POLICIES:
+    # isinstance first: a YAML list/mapping is unhashable and would raise
+    # TypeError on the membership test instead of taking the fallback.
+    if not isinstance(raw, str) or raw not in _KNOWN_GATE_POLICIES:
         _logger.warning(
             "resolve_policy: unknown policy %r for %s/%s; falling back to %r",
             raw,

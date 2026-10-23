@@ -340,3 +340,13 @@ def test_promotion_result_enum_values():
     assert PromotionResult.PROMOTED.value == "promoted"
     # str Enum — usable as a string.
     assert PromotionResult.PROMOTED == "promoted"
+
+
+def test_resolve_policy_unhashable_value_falls_back_no_exception():
+    # YAML can deliver a list or mapping where a policy string belongs; the
+    # membership test must not raise TypeError on unhashable values.
+    config = {"learning": {"asset_classes": {"pattern": {"write_producing": []}}}}
+    assert (
+        resolve_policy(config, "pattern", "write_producing", default="gate_closed")
+        == "gate_closed"
+    )
