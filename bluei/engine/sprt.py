@@ -92,12 +92,18 @@ def _sprt_params(
 
     Order of precedence (highest first):
       1. Per-family calibrated p_healthy/p_broken from calibration.yaml
-         (only when non-degenerate).
+         (only when non-degenerate AND sane: ``0 < p_broken < p_healthy < 1``).
       2. learning.sprt config overrides.
       3. _DEFAULTS (ADR-0012 hand-picked).
 
     alpha/beta always come from config/defaults (risk tolerances, not
     empirical). Only p_healthy/p_broken are calibrated per-family.
+
+    Sanity guard: a calibration entry is only honored when
+    ``0 < p_broken < p_healthy < 1``. Equal values (e.g. 0.5/0.5) zero the
+    LLR contributions forever; extremes (1.0/0.0) raise ZeroDivisionError /
+    math domain errors in ``math.log``. Both are treated as degenerate →
+    defaults. The chained comparison also rejects NaN and infinities.
     """
     section = config.get("learning", {}).get("sprt", {})
     params = {k: float(section.get(k, d)) for k, d in _DEFAULTS.items()}
@@ -105,8 +111,18 @@ def _sprt_params(
     if rule_family:
         entry = _load_calibration().get(rule_family)
         if entry and not entry.get("degenerate"):
-            params["p_healthy"] = float(entry.get("p_healthy", params["p_healthy"]))
-            params["p_broken"] = float(entry.get("p_broken", params["p_broken"]))
+            try:
+                p_healthy = float(entry.get("p_healthy"))
+                p_broken = float(entry.get("p_broken"))
+            except (TypeError, ValueError):
+                p_healthy = p_broken = None
+            if (
+                p_healthy is not None
+                and p_broken is not None
+                and 0 < p_broken < p_healthy < 1
+            ):
+                params["p_healthy"] = p_healthy
+                params["p_broken"] = p_broken
     return params
 
 
@@ -179,7 +195,7 @@ def run_sprt_check(
     dry_replay_path: Path,
     approval_records_path: Path,
     config: Dict[str, Any],
-    rule_family: Optional[str] = None,
+    pattern_families: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
     """Check SPRT for each Pattern. Returns ApprovalRecord dicts to append.
 
@@ -188,19 +204,15 @@ def run_sprt_check(
     is crossed, returns an ApprovalRecord dict with the full evidence
     snapshot. Patterns that don't cross a boundary are skipped.
 
-    ``rule_family`` (optional) threads the Pattern's family through to
-    ``_sprt_params`` so a non-degenerate calibration entry can override
-    p_healthy/p_broken. When None (or the family is degenerate/absent),
-    falls back to config/defaults.
+    ``pattern_families`` (optional) maps pattern_id → rule_family so each
+    Pattern's SPRT params are resolved independently: a non-degenerate,
+    sane calibration entry for that family overrides p_healthy/p_broken for
+    that Pattern only. Patterns absent from the map (or whose family is
+    degenerate/absent, or whose calibration entry fails the sanity range)
+    fall back to config/defaults.
     """
-    params = _sprt_params(config, rule_family)
-    alpha = params["alpha"]
-    beta = params["beta"]
-    p_healthy = params["p_healthy"]
-    p_broken = params["p_broken"]
-
-    A = math.log((1 - beta) / alpha)
-    B = math.log(beta / (1 - alpha))
+    if pattern_families is None:
+        pattern_families = {}
 
     records = read_jsonl(approval_records_path, skip_errors=True)
 
@@ -208,6 +220,15 @@ def run_sprt_check(
     for pattern_id in pattern_ids:
         if not pattern_id:
             continue
+        params = _sprt_params(config, pattern_families.get(pattern_id))
+        alpha = params["alpha"]
+        beta = params["beta"]
+        p_healthy = params["p_healthy"]
+        p_broken = params["p_broken"]
+
+        A = math.log((1 - beta) / alpha)
+        B = math.log(beta / (1 - alpha))
+
         llr, hits, fails = compute_llr(
             pattern_id,
             dry_replay_path,

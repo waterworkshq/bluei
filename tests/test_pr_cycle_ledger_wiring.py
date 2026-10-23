@@ -194,17 +194,26 @@ def test_standalone_hit_emits_one_ledger_record_and_records_hit(tmp_path):
     assert before is not None
     succ_before = before.success_count
 
+    def _replay_record_hit(**kwargs):
+        # Mimic record_outcome=True semantics: internal three-way recording
+        # is authoritative — a successful replay records its own HIT.
+        if kwargs.get("record_outcome", True):
+            store.record_replay_outcome(pid, ReplayOutcome.HIT)
+        return (True, pid)
+
     with _neutralize_post_fix():
         with (
             patch(
-                "bluei.engine.commands.pr_cycle.try_replay", return_value=(True, pid)
+                "bluei.engine.commands.pr_cycle.try_replay",
+                side_effect=lambda **kw: _replay_record_hit(**kw),
             ) as mock_replay,
             patch("bluei.engine.lifecycle.apply_cascade_fix") as mock_cascade,
         ):
             _process_one_issue(ctx, 0, issue, finding, {})
 
-    # record_outcome=False passed to standalone try_replay (defers internal recording)
-    assert mock_replay.call_args.kwargs["record_outcome"] is False
+    # record_outcome=True passed to standalone try_replay — internal
+    # three-way recording (HIT/MISS/FAILURE per ADR-0004) is authoritative.
+    assert mock_replay.call_args.kwargs["record_outcome"] is True
 
     # exactly one ledger record, standalone-replay shape
     assert len(ctx.ledger_records) == 1
@@ -313,8 +322,8 @@ def test_standalone_miss_defers_to_cascade_exactly_once(tmp_path):
         ):
             _process_one_issue(ctx, 0, issue, finding, {})
 
-    # standalone deferred recording
-    assert mock_replay.call_args.kwargs["record_outcome"] is False
+    # standalone used internal three-way recording (mock defers; nothing recorded)
+    assert mock_replay.call_args.kwargs["record_outcome"] is True
 
     # cascade received the shared accumulator + ledger_path + cycle
     call_kwargs = mock_cascade.call_args.kwargs
@@ -340,11 +349,13 @@ def test_standalone_miss_defers_to_cascade_exactly_once(tmp_path):
 
 
 def test_standalone_fail_then_cascade_records_exactly_once_on_store(tmp_path):
-    """When standalone replay fails (validation failure), the standalone path
-    records nothing (record_outcome=False) and the cascade records the one
-    authoritative outcome via its own try_replay(record_outcome=True). Here the
-    cascade's record is represented by the fake cascade appending one row; the
-    store must reflect exactly one update attributable to the cascade only."""
+    """When standalone replay fails (validation failure), the standalone path's
+    outcome is recorded internally (record_outcome=True) and the cascade
+    records the one authoritative outcome via its own
+    try_replay(record_outcome=True). Here the standalone try_replay is mocked
+    to a no-record miss; the cascade's record is represented by the fake
+    cascade appending one row; the store must reflect exactly one update
+    attributable to the cascade only."""
     store = FixPatternStore(tmp_path / "patterns.jsonl")
     pid = store.append(_pattern())
     store._rebuild_from_disk()
@@ -451,6 +462,8 @@ def test_standalone_and_cascade_record_shapes_are_field_identical(tmp_path):
 
 def test_standalone_hit_record_carries_measured_latency(tmp_path):
     """latency_ms is the measured try_replay duration, not a hardcoded sentinel."""
+    from bluei.engine import pattern_replay as _pr
+
     store = FixPatternStore(tmp_path / "patterns.jsonl")
     pid = store.append(_pattern())
     store._rebuild_from_disk()
@@ -463,6 +476,13 @@ def test_standalone_hit_record_carries_measured_latency(tmp_path):
         "rule": "broad-except",
     }
 
+    # Warm the resolver cache so the governance gate's _resolve_pattern (run
+    # before the timed replay) is a cache hit consuming exactly ONE
+    # time.monotonic call. pr_cycle.time IS the global time module, so the
+    # patch below sees every monotonic call in the flow.
+    _pr._clear_pattern_cache()
+    _pr._resolve_pattern(finding, store, tmp_path / "warmup.log")
+
     with _neutralize_post_fix():
         with (
             patch(
@@ -471,7 +491,7 @@ def test_standalone_hit_record_carries_measured_latency(tmp_path):
             patch("bluei.engine.lifecycle.apply_cascade_fix"),
             patch(
                 "bluei.engine.commands.pr_cycle.time.monotonic",
-                side_effect=[100.0, 100.25],
+                side_effect=[100.0, 100.0, 100.25],
             ),
         ):
             _process_one_issue(ctx, 0, issue, finding, {})

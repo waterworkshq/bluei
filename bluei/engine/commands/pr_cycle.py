@@ -50,7 +50,6 @@ from bluei.engine.utils import (
 from bluei.engine.reforge import RefactorClass
 from bluei.engine.git_utils import get_branch
 from bluei.engine.pattern_replay import try_replay
-from bluei.engine.pattern_store import ReplayOutcome
 from bluei.engine.guideline_loader import load_authoritative_guidelines
 from bluei.engine.repo_taste_loader import load_repo_taste
 from bluei.engine.rule_family import derive_rule_family
@@ -737,56 +736,87 @@ def _process_one_issue(
         replay_pattern_hint: Optional[str] = None
 
         if pattern_store is not None:
-            _replay_t0 = time.monotonic()
-            replayed, replay_pid = try_replay(
-                worktree_path=worktree_path,
-                finding=finding,
-                store=pattern_store,
-                baseline_checks=PER_REPO_BASELINE_CHECKS,
-                log_file=log_file,
-                record_outcome=False,
+            from bluei.engine.governance import (
+                format_asset_ref,
+                is_governance_active,
             )
-            _replay_latency_ms = int((time.monotonic() - _replay_t0) * 1000)
-            if replayed:
-                replay_succeeded = True
-                # record_outcome=False deferred all internal recording; record HIT explicitly
-                if replay_pid is not None:
-                    pattern_store.record_replay_outcome(replay_pid, ReplayOutcome.HIT)
+            from bluei.engine.pattern_replay import _resolve_pattern
+
+            # Governance gate (ADR-0008): consult the SAME projection the
+            # cascade's PatternReplayCascadeStage.can_handle consults before
+            # replaying a pattern. The pattern the standalone try_replay
+            # would resolve must be ACTIVE — a PAUSED/RETIRED pattern must
+            # not auto-replay on the mainline. All candidate patterns
+            # excluded → skip the standalone replay entirely (fall through
+            # to the cascade/LLM path below).
+            try:
+                _gov_candidate = _resolve_pattern(finding, pattern_store, log_file)
+            except Exception:
+                _gov_candidate = None
+            if _gov_candidate is not None and not is_governance_active(
+                format_asset_ref("pattern", _gov_candidate.pattern_id),
+                ctx.governance_state,
+            ):
                 _append_text(
                     log_file,
-                    f"pattern-replay-savings: pattern_id={replay_pid} rule={finding.rule}",
+                    (
+                        f"pattern-replay-skip: rule={finding.rule} "
+                        f"pattern_id={_gov_candidate.pattern_id} "
+                        f"reason=governance_inactive"
+                    ),
                 )
-                saved = cost_tracker.estimate_invocation_cost(
-                    "claude-sonnet-4",
-                    input_tokens=4000,
-                    output_tokens=2000,
+            else:
+                _replay_t0 = time.monotonic()
+                # record_outcome=True: try_replay's internal three-way
+                # recording (HIT/MISS/FAILURE per ADR-0004) is authoritative
+                # — mainline MISS/FAILURE reach failure_count/last_failed_at
+                # instead of being silently dropped.
+                replayed, replay_pid = try_replay(
+                    worktree_path=worktree_path,
+                    finding=finding,
+                    store=pattern_store,
+                    baseline_checks=PER_REPO_BASELINE_CHECKS,
+                    log_file=log_file,
+                    record_outcome=True,
                 )
-                cost_tracker.record_pattern_replay_savings(
-                    model="claude-sonnet-4",
-                    saved_cost=saved,
-                    pattern_id=replay_pid or "",
-                    rule=finding.rule,
-                )
-                ctx.ledger_records.append(
-                    {
-                        "cycle": args.run_phase,
-                        "finding_id": finding.finding_id,
-                        "rule": finding.rule,
-                        "stages_tried": [],
-                        "final_stage": "pattern-replay",
-                        "outcome": "resolved_deterministic",
-                        "via": "standalone-replay",
-                        "pattern_id": replay_pid,
-                        "latency_ms": _replay_latency_ms,
-                        "timestamp": now_iso(),
-                    }
-                )
-            elif replay_pid is not None:
-                from bluei.engine.pattern_replay import format_pattern_hint
+                _replay_latency_ms = int((time.monotonic() - _replay_t0) * 1000)
+                if replayed:
+                    replay_succeeded = True
+                    _append_text(
+                        log_file,
+                        f"pattern-replay-savings: pattern_id={replay_pid} rule={finding.rule}",
+                    )
+                    saved = cost_tracker.estimate_invocation_cost(
+                        "claude-sonnet-4",
+                        input_tokens=4000,
+                        output_tokens=2000,
+                    )
+                    cost_tracker.record_pattern_replay_savings(
+                        model="claude-sonnet-4",
+                        saved_cost=saved,
+                        pattern_id=replay_pid or "",
+                        rule=finding.rule,
+                    )
+                    ctx.ledger_records.append(
+                        {
+                            "cycle": args.run_phase,
+                            "finding_id": finding.finding_id,
+                            "rule": finding.rule,
+                            "stages_tried": [],
+                            "final_stage": "pattern-replay",
+                            "outcome": "resolved_deterministic",
+                            "via": "standalone-replay",
+                            "pattern_id": replay_pid,
+                            "latency_ms": _replay_latency_ms,
+                            "timestamp": now_iso(),
+                        }
+                    )
+                elif replay_pid is not None:
+                    from bluei.engine.pattern_replay import format_pattern_hint
 
-                pattern = pattern_store.get_pattern(replay_pid)
-                if pattern is not None:
-                    replay_pattern_hint = format_pattern_hint(pattern)
+                    pattern = pattern_store.get_pattern(replay_pid)
+                    if pattern is not None:
+                        replay_pattern_hint = format_pattern_hint(pattern)
 
         if not replay_succeeded:
             if getattr(finding, "refactor_class", "") == "cascade_fix":
@@ -1529,8 +1559,30 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
                 set(r.get("pattern_id") for r in _dr_records if r.get("pattern_id"))
             )
 
+            # Per-pattern rule families (ADR-0012 calibration): thread each
+            # Pattern's stored family through to run_sprt_check so SPRT uses
+            # per-family calibrated p_healthy/p_broken where a sane,
+            # non-degenerate calibration entry exists. Missing patterns or
+            # empty families map to None → config/defaults.
+            _pattern_families: Dict[str, Optional[str]] = {}
+            if ctx.pattern_store is not None:
+                for _pid in _pattern_ids:
+                    try:
+                        _pat = ctx.pattern_store.get_pattern(_pid)
+                    except Exception:
+                        _pat = None
+                    _pattern_families[_pid] = (
+                        (getattr(_pat, "rule_family", "") or None)
+                        if _pat is not None
+                        else None
+                    )
+
             _new_records = run_sprt_check(
-                _pattern_ids, _dr_path, _ar_path, load_global_config()
+                _pattern_ids,
+                _dr_path,
+                _ar_path,
+                load_global_config(),
+                pattern_families=_pattern_families,
             )
 
             # Only write decisions in active mode; audit_only computes but
