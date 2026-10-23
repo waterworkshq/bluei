@@ -18,6 +18,8 @@ def enrich_health_with_cost(
     health_summary: Dict[str, Any],
     cost_log_path: Optional[Path] = None,
     total_runs: int = 0,
+    cycle_cost_usd: Optional[float] = None,
+    cycle_invocations: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Augment *health_summary* with cost metrics if cost data is available.
 
@@ -28,9 +30,19 @@ def enrich_health_with_cost(
         cost_log_path: Path to a ``cost_log.jsonl`` file written by
                        ``CostTracker``.  If ``None`` or the file does not
                        exist, no cost metrics are added.
-        total_runs: Total number of runs to use as the denominator for
-                    ``avg_cost_per_run``.  If 0 or less, the count of
-                    invocations from the cost log is used instead.
+        total_runs: Legacy denominator override for ``avg_cost_per_run``
+                    (applies to the all-log total). Superseded by the
+                    per-cycle pair below; kept for direct callers/tests.
+        cycle_cost_usd: Per-cycle cost, e.g. ``CostTracker.cycle_total()``.
+                        When supplied with ``cycle_invocations``,
+                        ``avg_cost_per_run`` is computed per-cycle (cycle
+                        cost ÷ cycle invocations). This keeps the numerator
+                        and denominator in the same scope — the previous
+                        production call divided the ALL-HISTORY log total by
+                        THIS cycle's invocation count, inflating the average
+                        ~N× after N cycles (D7-H5).
+        cycle_invocations: Per-cycle invocation count, e.g.
+                           ``CostTracker.cycle_invocation_count()``.
 
     Returns:
         The augmented *health_summary* (same reference, for chaining).
@@ -68,13 +80,25 @@ def enrich_health_with_cost(
         rec["count"] += 1
         rec["cost"] += e.get("cost", 0.0)
 
-    denominator = total_runs if total_runs > 0 else total_invocations
-    avg_cost = round(total_cost / denominator, 6) if denominator > 0 else 0.0
+    if cycle_invocations is not None or cycle_cost_usd is not None:
+        # Per-cycle semantics (D7-H5): numerator and denominator from the
+        # SAME scope — this cycle's cost ÷ this cycle's invocations.
+        cyc_cost = float(cycle_cost_usd or 0.0)
+        cyc_runs = int(cycle_invocations or 0)
+        avg_cost = round(cyc_cost / max(cyc_runs, 1), 6)
+    else:
+        # Legacy path: all-log average with an optional caller-supplied
+        # denominator (numerator and denominator are both all-history here).
+        denominator = total_runs if total_runs > 0 else total_invocations
+        avg_cost = round(total_cost / denominator, 6) if denominator > 0 else 0.0
 
     cost_info: Dict[str, Any] = {
         "total_cost": round(total_cost, 6),
         "total_invocations": total_invocations,
         "avg_cost_per_run": avg_cost,
+        # Explicitly-cumulative figure (all-history log total) so the
+        # per-cycle average above never has to carry it implicitly (D7-H5).
+        "cumulative_cost_all_runs": round(total_cost, 6),
         "per_model": {
             m: {"count": v["count"], "cost": round(v["cost"], 6)}
             for m, v in per_model.items()

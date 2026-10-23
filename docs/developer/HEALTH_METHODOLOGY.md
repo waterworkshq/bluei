@@ -423,7 +423,11 @@ affect `cycle_total()`, soft-warn, or hard-limit thresholds.
 `bluei/engine/health.py:enrich_health_with_cost()` reads `cost_log.jsonl` and
 adds a `cost` key to any health summary dict with:
 
-- `total_cost`, `total_invocations`, `avg_cost_per_run`
+- `total_cost`, `total_invocations`, `cumulative_cost_all_runs` (all-history
+  figures from the log)
+- `avg_cost_per_run` — per-cycle when the caller supplies
+  `cycle_cost_usd`/`cycle_invocations` (cycle cost ÷ cycle invocations, as
+  finalize does); legacy all-log average otherwise
 - `per_model` breakdown
 
 ---

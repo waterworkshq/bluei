@@ -66,13 +66,22 @@ def commit_partial_batch(
     batch: BatchGroup,
     log_file: Path,
     safety_config: Optional[dict] = None,
+    dry_run: bool = False,
 ) -> bool:
     """Commit partial results for successful findings.
 
-    The worktree already has the successful fixes applied.
-    Commits only those changes, pushes the branch, and creates a PR.
+    The worktree already has the successful fixes applied. Stages only the
+    files touched by successful findings, commits, and pushes the batch
+    branch. It does NOT create a PR: the failed findings of this batch are
+    re-queued as split sub-batches by the caller (``handle_batch_failure`` →
+    ``split_batch``), and each sub-batch that succeeds opens its own PR.
 
-    Returns True if partial PR was created successfully.
+    ``dry_run=True`` threads through to the git helpers so a dry-run cycle
+    never commits or pushes for real (D7-H-2: both operations previously
+    hard-coded ``dry_run=False`` — a dry-run split REALLY pushed to origin).
+
+    Returns True if the partial commit+push (or its dry-run simulation)
+    succeeded.
     """
     from bluei.engine.git_ops import git_commit_all, git_push_branch
     from bluei.engine.state import _append_text
@@ -89,9 +98,16 @@ def commit_partial_batch(
     # Stage only the files touched by successful findings
     from bluei.engine.utils import run_capture, run_no_capture
 
-    successful_files = sorted({f.path for f in successful_findings})
-    for filepath in successful_files:
-        run_no_capture(["git", "add", filepath], cwd=batch.worktree_path)
+    if not dry_run:
+        successful_files = sorted({f.path for f in successful_findings})
+        for filepath in successful_files:
+            run_no_capture(["git", "add", filepath], cwd=batch.worktree_path)
+    else:
+        _append_text(
+            log_file,
+            f"batch-partial: dry-run — would commit {len(successful_findings)} "
+            f"successful fixes for {batch.batch_id}",
+        )
 
     commit_message = (
         f"fix: resolve {len(successful_findings)} {batch.rule_pattern} findings "
@@ -101,7 +117,7 @@ def commit_partial_batch(
         batch.worktree_path,
         commit_message,
         log_file=log_file,
-        dry_run=False,
+        dry_run=dry_run,
     )
     if commit_result == "no_changes":
         _append_text(
@@ -113,7 +129,7 @@ def commit_partial_batch(
         batch.worktree_path,
         batch.branch,
         log_file=log_file,
-        dry_run=False,
+        dry_run=dry_run,
         safety_config=safety_config,
     )
     if not pushed:
@@ -282,6 +298,7 @@ def handle_batch_failure(
     repo_path: Path,
     args: Any,
     log_file: Path,
+    safety_config: Optional[dict] = None,
 ) -> List[BatchGroup]:
     """Main failure handler for a batch with excessive fix failures.
 
@@ -310,9 +327,22 @@ def handle_batch_failure(
         else:
             failed_findings.append(f)
 
-    # Commit successful fixes if any
+    # Commit successful fixes if any (D7-H-2: thread the cycle's dry_run —
+    # a dry-run split must not commit/push for real — and log the outcome
+    # the return value used to swallow silently).
     if successful_findings:
-        commit_partial_batch(successful_findings, batch, log_file)
+        partial_ok = commit_partial_batch(
+            successful_findings,
+            batch,
+            log_file,
+            safety_config=safety_config,
+            dry_run=getattr(args, "dry_run", True),
+        )
+        _append_text(
+            log_file,
+            f"batch-partial-commit: {'ok' if partial_ok else 'skipped/failed'} "
+            f"for {batch.batch_id} ({len(successful_findings)} successful fixes)",
+        )
 
     # Split failed findings into sub-batches
     sub_batches = split_batch(batch, repo_path, args, log_file)

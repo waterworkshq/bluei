@@ -259,9 +259,35 @@ def run_finalize_phase(*args, **kwargs) -> int:
             enrich_health_with_cost(
                 status_data,
                 cost_log_path=cost_log_path,
-                total_runs=max(claude_invocations, 1),
+                # D7-H5: numerator and denominator must share a scope — the
+                # cycle's own cost ÷ the cycle's own recorded invocations.
+                # (Previously the ALL-HISTORY log total was divided by THIS
+                # cycle's claude_invocations, inflating avg_cost_per_run
+                # ~N× after N cycles; the cumulative total remains visible
+                # as cost.cumulative_cost_all_runs.)
+                cycle_cost_usd=round(cost_tracker.cycle_total(), 6),
+                cycle_invocations=cost_tracker.cycle_invocation_count(),
             )
-            status_data["flywheel_ledger"] = flywheel_ledger
+            existing_ledger = status_data.get("flywheel_ledger")
+            if (
+                flywheel_ledger["findings_attempted"] == 0
+                and isinstance(existing_ledger, dict)
+                and int(existing_ledger.get("findings_attempted") or 0) > 0
+            ):
+                # D6-H3 (ledger-loss half): a finalize with no ledger
+                # counters this cycle (e.g. the merge-cycle phase, which
+                # reaches run_finalize_phase without processing findings)
+                # must NOT overwrite the previous fix-cycle's populated
+                # ledger with a zeroed block — read-modify-write keeps the
+                # existing one. The [DONE] suffix below still reports this
+                # cycle's (zero) numbers; only the durable artifact keeps
+                # the last real ledger.
+                logger.debug(
+                    "finalize: preserving existing flywheel_ledger "
+                    "(this cycle produced no ledger counters)"
+                )
+            else:
+                status_data["flywheel_ledger"] = flywheel_ledger
             status_file.write_text(
                 json.dumps(status_data, indent=2, sort_keys=True) + "\n"
             )

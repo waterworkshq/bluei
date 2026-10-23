@@ -6,6 +6,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.2.0-beta.5] — Review-and-Fix (Sprint 4: Surfaces)
+
+The fourth and final domain slice of the beta review ladder: campaigns/review/reports + core plumbing/CLI. With this sprint, every domain of the 0.2.0 arc has been deep-reviewed at least once.
+
+### Review-driven fixes (two fresh-context reviews; 2 CRITICAL + 9 HIGH, all verified, 5 fixed / rest deferred with rationale)
+
+- **Live PR creation no longer crashes on repository configs** (CRITICAL, reproduced by execution): a `RepoConfig` dataclass reached base-branch resolution where a mapping was expected — the first PR of any live run on a configured repo raised and discarded the verified fix. Resolution is now shape-tolerant.
+- **The runtime safety gates are live** (HIGH): the cycle context never carried a safety config, so every gate read an always-absent value and defaulted permissive — and the split-chain "forwarding" added earlier passed a structurally-None value through in production while tests fed it dicts. Both PR and merge-only cycles load the repository policy; normal batch and partial-recovery pushes forward it. Invalid stored configuration fails closed rather than silently clearing the policy.
+- **Dry runs no longer push real branches** (HIGH): batch partial-commit forced `dry_run=False` — a dry run could commit and push a remote branch; the outcome was also silently discarded. The flag is threaded, the misleading docstring claim removed, the result logged.
+- **Average cost per run is per-cycle** (HIGH): the figure divided an all-history cumulative total by one cycle's invocation count, inflating without bound. Both terms are now per-cycle; the cumulative total lives under its own explicit key.
+- **Merge-cycle finalizes preserve a populated flywheel ledger** (HIGH): a zero-counter finalize overwrote a populated ledger block with zeros; the producer also gains its first direct tests.
+
+### Deferred with rationale (roadmap)
+
+Campaign learning-objective routing is production-unreachable (the CLI never passes one; the consumer is dead wiring; the learning report is never persisted) — a product-surface decision recommended for the dogfooding gate. Also deferred: the dependency-ordered planner silently yielding arbitrary order; the review-feedback confidence loop being driven only by a test stub; campaign evidence failures swallowed; the promotion min-repos gate satisfiable by five worktrees of one repository; the gate-closed pattern→recipe promotion dead end; and the recorded minors.
+
+- 6755 → **6819 tests** (+64, 0 regressions). Zero ADRs. C1 holds — no live runs.
+
+---
+
 ## [0.2.0-beta.4] — Review-and-Fix (Sprint 3: Seed Factory)
 
 The third hardening sprint: the seeds/foundry/hatchery/benchmark domain's first deep review, plus the discovery and governance items deferred from sprint 2.

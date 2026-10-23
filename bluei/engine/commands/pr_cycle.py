@@ -326,7 +326,10 @@ def _finalize_pr_for_issue(
     args: Any,
     state: Dict[str, Any],
     safety_config: Optional[Dict[str, Any]] = None,
-    repo_config: Optional[Dict[str, Any]] = None,
+    # D7-C-1: receives the RepoConfig DATACLASS from RunContext.repo_config;
+    # resolve_base_branch (via create_or_update_github_pr) accepts both
+    # dict and dataclass shapes.
+    repo_config: Any = None
 ) -> FinalizeResult:
     """Commit, push, create PR, and link to issue after a successful fix verification.
 
@@ -1387,6 +1390,65 @@ def _process_one_issue(
     return counters.to_deltas()
 
 
+def _project_repo_safety(ctx: "RunContext") -> None:
+    """Match registered checkout paths, preserving injected policy; fail closed."""
+    if getattr(ctx, "safety_config", None) is not None:
+        return
+    config = getattr(ctx, "repo_config", None)
+    if config is not None:
+        ctx.safety_config = config.safety
+        return
+
+    import logging
+    import yaml
+
+    from bluei.app.config import ConfigManager
+
+    try:
+        manager = ConfigManager()
+        checkout = ctx.repo_path.resolve()
+        # registry.yaml retains identity even when its config is missing/broken.
+        try:
+            with (manager.workspace / "registry.yaml").open() as stream:
+                registry = yaml.safe_load(stream)
+        except FileNotFoundError:
+            registry = {"repos": []}
+        identities = {}
+        for entry in registry["repos"]:
+            name, path = entry["name"], Path(entry["path"]).resolve()
+            if name in identities and identities[name] != path:
+                raise ValueError(f"Conflicting registration identity for {name}")
+            identities[name] = path
+        registered_names = {name for name, path in identities.items() if path == checkout}
+
+        matches = {}
+        for name in manager.list_repo_configs():
+            # Registry identity proves these configs unrelated even when broken.
+            if name in identities and identities[name] != checkout:
+                continue
+            # Unmapped configs can still be config-only aliases of this checkout;
+            # inspect them to detect ambiguity, failing closed if unreadable.
+            candidate = manager.load_repo_config(name)
+            if candidate is None or not isinstance(candidate.safety, dict):
+                raise ValueError(f"Cannot load registration {name}")
+            if Path(candidate.path).resolve() == checkout:
+                matches[name] = candidate
+        if len(matches) > 1 or (registered_names and registered_names != set(matches)):
+            raise ValueError("Missing or ambiguous checkout registration")
+        config = next(iter(matches.values()), None)
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError, yaml.YAMLError) as exc:
+        # Unknown identity is not permission to borrow a same-basename policy.
+        ctx.safety_config = {"mode": "observe", "block_push": True}
+        logging.getLogger(__name__).warning(
+            "repository safety: cannot resolve registration for %s; "
+            "using fail-closed observe policy: %s", ctx.repo_path, exc,
+        )
+        return
+
+    ctx.repo_config = config
+    ctx.safety_config = config.safety if config is not None else None
+
+
 def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
     """Run the PR cycle: queue candidates, apply fixes, create PRs."""
     if args:
@@ -1458,17 +1520,8 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
     )
     ctx.governance_state = project_governance_state(_approval_records)
 
-    # Repo Taste Profile (ADR-0017 principle): resolve the repo's
-    # RepoConfig.framework once at cycle start so the taste channel can read
-    # it per-finding without re-loading the YAML. Function-local import
-    # mirrors the load_global_config import below (no enforce_architecture
-    # violation; pr_cycle is already an app.config consumer).
-    try:
-        from bluei.app.config import ConfigManager
-
-        ctx.repo_config = ConfigManager().load_repo_config(ctx.repo_path.name)
-    except Exception:
-        ctx.repo_config = None
+    # Share repository identity and safety policy with merge-only cycles.
+    _project_repo_safety(ctx)
 
     # Learning mode (ADR-0013): resolve the global tri-state ceiling once at
     # cycle start. Defaults to ``active`` when no config.yaml is present.
@@ -1555,6 +1608,8 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
                     repo_path=repo_path,
                     args=args,
                     log_file=log_file,
+                    safety_config=ctx.safety_config,
+                    repo_config=ctx.repo_config,
                     selection_fn=ctx.selection_fn,
                     governor_ledger_path=ctx.governor_ledger_path,
                     run_id=ctx.run_id,

@@ -12,7 +12,7 @@ import logging
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import Any, Optional, Tuple, TYPE_CHECKING
 from uuid import uuid4
 
 from bluei.engine.models import (
@@ -101,7 +101,9 @@ def process_batch(
     args,
     log_file: Path,
     safety_config: Optional[dict] = None,
-    repo_config: Optional[dict] = None,
+    # D7-C-1/H-1: production passes the RepoConfig DATACLASS stored on
+    # RunContext.repo_config; resolve_base_branch accepts both shapes.
+    repo_config: Any = None,
     *,
     selection_fn: Optional[SelectionFn] = None,
     governor_ledger_path: Optional[Path] = None,
@@ -256,7 +258,9 @@ def process_batch(
         split_warranted = should_split_batch(batch, max_depth=max_depth)
         if split_warranted and getattr(args, "batch_pr_split_on_failure", True):
             batch.retry_count += 1
-            sub_batches = handle_batch_failure(batch, repo_path, args, log_file)
+            sub_batches = handle_batch_failure(
+                batch, repo_path, args, log_file, safety_config=safety_config
+            )
             # Process sub-batches recursively; propagate their results —
             # "split-and-retried" is success only if at least one sub-batch
             # produced a PR. Reporting success when every sub-batch failed
