@@ -5,6 +5,8 @@ Data layer for the Operator Control Plane. Holds:
 * ``AssetRef`` helpers — canonical ``"<asset_class>:<asset_id>"`` string form.
 * ``ApprovalRecord`` — append-only decision event written to
   ``state/approval_records.jsonl``.
+* ``_read_trail`` — governance JSONL trail reader that counts skipped
+  (torn/invalid) lines and warns loudly instead of silently dropping them.
 * ``PromotionResult`` — outcome enum consumed by promotion gates.
 * ``project_governance_state`` — read-time projection of the ApprovalRecord
   trail (most-recent-wins per asset_ref).
@@ -21,9 +23,11 @@ for every asset_ref (default ``"active"``).
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 _logger = logging.getLogger(__name__)
@@ -92,9 +96,63 @@ _DECISION_TO_STATE: Dict[str, str] = {
     "pause": "paused",
     "resume": "active",
     "retire": "retired",
+    # ``demote`` = soft demotion (operator vocabulary, CONTEXT.md/ADR-0008;
+    # ADR-0012: "demote sets Governance State → PAUSED only") — a demoted
+    # asset stays eligible for re-promotion, unlike ``retire``.
+    "demote": "paused",
     "auto_demote": "paused",
     "auto_promote": "active",
 }
+
+
+def _read_trail(path: Path) -> tuple[List[Dict[str, Any]], int]:
+    """Read a governance JSONL trail, counting lines that could not be read.
+
+    ``read_jsonl(..., skip_errors=True)`` silently drops torn/corrupt lines
+    (e.g. a crash mid-append leaves a half-written line) — the newest
+    decision can then vanish from the projection with no signal (fail-open).
+    This reader keeps the same robustness semantics — valid lines are still
+    processed, the caller never crashes on a bad trail — but makes the
+    condition visible: it returns ``(records, skipped_count)`` and logs a
+    loud warning whenever ``skipped_count > 0``.
+
+    A line is counted as skipped when it is non-blank and either fails
+    ``json.loads`` (torn/corrupt) or parses to a non-dict payload (shape
+    validation — an ApprovalRecord is a JSON object; a bare string/number
+    would make the projection's ``r.get(...)`` raise). Blank lines are
+    ignored, not counted. A missing or unreadable file returns ``([], 0)``.
+
+    Whether a skipped trail should fail CLOSED (halt the cycle) is a
+    deferred design decision; this half only removes the silence.
+    """
+    if not path.exists():
+        return [], 0
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return [], 0
+    records: List[Dict[str, Any]] = []
+    skipped = 0
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            skipped += 1
+            continue
+        if not isinstance(rec, dict):
+            skipped += 1
+            continue
+        records.append(rec)
+    if skipped:
+        _logger.warning(
+            "governance trail %s: skipped %d unreadable line(s) — decisions "
+            "in the skipped portion are NOT applied",
+            path,
+            skipped,
+        )
+    return records, skipped
 
 
 def project_governance_state(records: List[Dict[str, Any]]) -> Dict[str, str]:

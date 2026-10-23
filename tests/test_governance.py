@@ -7,6 +7,7 @@ trail: empty projection, all assets default to ACTIVE.
 from bluei.engine.governance import (
     ApprovalRecord,
     PromotionResult,
+    _read_trail,
     find_sprt_reset_boundary,
     format_asset_ref,
     is_governance_active,
@@ -74,6 +75,103 @@ def test_project_governance_state_skips_missing_fields():
     ]
     state = project_governance_state(records)
     assert state == {"pattern:a": "active"}
+
+
+def test_project_governance_state_demote_maps_to_paused():
+    # b4 fix 1 (D2-H2): ``demote`` is documented operator vocabulary
+    # (CONTEXT.md / ADR-0008; ADR-0012: "demote sets Governance State →
+    # PAUSED only" — soft demotion, the asset stays eligible for
+    # re-promotion). Before the mapping existed, a demote record was a
+    # silent projection no-op.
+    records = [
+        {"asset_ref": "pattern:a", "decision": "approve", "timestamp": "t1"},
+        {"asset_ref": "pattern:a", "decision": "demote", "timestamp": "t2"},
+    ]
+    assert project_governance_state(records) == {"pattern:a": "paused"}
+
+
+def test_project_governance_state_resume_and_approve_win_over_older_demote():
+    # Recency still governs once demote is mapped: a later resume/approve
+    # re-activates a demoted asset.
+    resumed = [
+        {"asset_ref": "pattern:a", "decision": "demote", "timestamp": "t1"},
+        {"asset_ref": "pattern:a", "decision": "resume", "timestamp": "t2"},
+    ]
+    assert project_governance_state(resumed) == {"pattern:a": "active"}
+    reapproved = [
+        {"asset_ref": "pattern:a", "decision": "demote", "timestamp": "t1"},
+        {"asset_ref": "pattern:a", "decision": "approve", "timestamp": "t2"},
+    ]
+    assert project_governance_state(reapproved) == {"pattern:a": "active"}
+
+
+# --- Trail reading (torn-line visibility, b4 fix 2 / D2-H2) -----------------
+
+
+def test_read_trail_warns_on_torn_line_and_keeps_valid_records(tmp_path, caplog):
+    # read_jsonl(skip_errors=True) silently dropped torn lines — a crash
+    # mid-append could hide the NEWEST decision with no signal. _read_trail
+    # counts the skipped lines and logs a loud warning instead.
+    import json
+    import logging
+
+    trail = tmp_path / "approval_records.jsonl"
+    trail.write_text(
+        json.dumps({"asset_ref": "pattern:a", "decision": "approve"})
+        + "\n"
+        + '{"asset_ref": "pattern:a", "decision": "pause"'  # torn mid-append
+        + "\n"
+        + json.dumps({"asset_ref": "pattern:a", "decision": "pause"})
+        + "\n",
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.WARNING, logger="bluei.engine.governance"):
+        records, skipped = _read_trail(trail)
+    assert skipped == 1
+    assert len(records) == 2
+    # The valid pause (the newest readable decision) still wins the projection.
+    assert project_governance_state(records) == {"pattern:a": "paused"}
+    assert any(
+        "skipped 1 unreadable line" in r.message for r in caplog.records
+    )
+    assert any(str(trail) in r.message for r in caplog.records)
+
+
+def test_read_trail_clean_file_no_warning(tmp_path, caplog):
+    import logging
+
+    trail = tmp_path / "approval_records.jsonl"
+    trail.write_text(
+        '{"asset_ref": "pattern:a", "decision": "approve"}\n\n'
+        '{"asset_ref": "pattern:b", "decision": "pause"}\n',
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.WARNING, logger="bluei.engine.governance"):
+        records, skipped = _read_trail(trail)
+    assert skipped == 0
+    assert len(records) == 2  # blank lines are ignored, not counted as skipped
+    assert not any("governance trail" in r.message for r in caplog.records)
+
+
+def test_read_trail_missing_file_returns_empty(tmp_path):
+    records, skipped = _read_trail(tmp_path / "does_not_exist.jsonl")
+    assert records == []
+    assert skipped == 0
+
+
+def test_read_trail_non_dict_json_counts_as_skipped(tmp_path):
+    # Shape validation: a line that parses as JSON but is not an object is
+    # not a valid ApprovalRecord — counted as skipped instead of being fed
+    # to the projection (where r.get(...) would raise AttributeError).
+    import json
+
+    trail = tmp_path / "approval_records.jsonl"
+    trail.write_text(
+        json.dumps(["not", "a", "record"]) + "\n", encoding="utf-8"
+    )
+    records, skipped = _read_trail(trail)
+    assert records == []
+    assert skipped == 1
 
 
 # --- is_governance_active ---------------------------------------------------
