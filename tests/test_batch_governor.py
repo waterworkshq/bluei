@@ -560,3 +560,76 @@ class TestSplitSoloSubBatch:
         )
         assert ok is False
         assert detail == "solo-delegated"
+
+
+class TestSplitChildDedupExemption:
+    def test_sibling_sub_batch_not_skipped_as_duplicate(self, tmp_path, make_finding):
+        # The rule-wide duplicate-PR check must not skip a split sibling:
+        # after one sub-batch opens its PR, the next sub-batch (same rule)
+        # would always look like a duplicate and be dropped, leaving its
+        # findings unprocessed. Split children are exempt; the check still
+        # guards top-level batches against a later cycle re-opening a PR.
+        from bluei.engine.batch_pr import process_batch
+        from bluei.engine.models import BatchGroup
+
+        finding = make_finding(rule="ruff-b904", safe_to_autofix=False)
+        parent = BatchGroup(
+            batch_id="parent4", rule_pattern="ruff-b904", findings=[finding] * 6
+        )
+        sub_a = BatchGroup(
+            batch_id="sib-a", rule_pattern="ruff-b904", findings=[finding] * 3
+        )
+        sub_b = BatchGroup(
+            batch_id="sib-b", rule_pattern="ruff-b904", findings=[finding] * 3
+        )
+        args = _make_args()
+        args.dry_run = False  # dedup path only runs live
+
+        def _apply(batch, **kwargs):
+            return (1, 5) if batch.batch_id == "parent4" else (3, 0)
+
+        created = []
+        dup = {"number": 99, "title": "old", "url": "u"}
+        dup_lookups = []
+        with patch("bluei.engine.batch_pr._create_worktree", return_value=True), patch(
+            "bluei.engine.batch_pr.apply_batch_fixes", side_effect=_apply
+        ), patch(
+            "bluei.engine.batch_pr.should_split_batch",
+            side_effect=lambda batch, max_depth=3: batch.batch_id == "parent4",
+        ), patch(
+            "bluei.engine.batch_pr.handle_batch_failure",
+            return_value=[sub_a, sub_b],
+        ), patch(
+            # First consultation (the top-level parent) finds no open PR;
+            # every later consultation would find one — so if a split child
+            # wrongly consulted the check, it would be skipped and its PR
+            # missing from `created`.
+            "bluei.engine.gh.find_batch_pr_by_rule",
+            side_effect=lambda *a, **k: dup_lookups.append(1) or (dup if len(dup_lookups) > 1 else None),
+        ), patch(
+            "bluei.engine.gh.get_origin_url",
+            return_value="https://github.com/o/r.git",
+        ), patch(
+            "bluei.engine.gh.parse_github_repo", return_value=("o", "r")
+        ), patch(
+            "bluei.engine.git_ops.git_commit_all", return_value="ok"
+        ), patch(
+            "bluei.engine.git_ops.git_push_branch", return_value=True
+        ), patch(
+            "bluei.engine.batch_pr.create_batch_pr",
+            side_effect=lambda batch, *a, **k: created.append(batch.batch_id)
+            or {"number": 1, "url": "u"},
+        ):
+            ok, detail = process_batch(
+                batch=parent,
+                repo_path=tmp_path,
+                args=args,
+                log_file=tmp_path / "log.txt",
+            )
+
+        assert ok is True
+        # Both siblings created PRs — neither was skipped as a duplicate.
+        assert created == ["sib-a", "sib-b"]
+        # Only the top-level parent consulted the duplicate check.
+        assert len(dup_lookups) == 1
+        assert "batch-skip-duplicate" not in (tmp_path / "log.txt").read_text()
