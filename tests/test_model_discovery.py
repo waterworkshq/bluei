@@ -147,6 +147,48 @@ class TestInjectModelFlag:
         assert out == ""
 
 
+class TestInjectModelFlagBraceEscaping:
+    """Brace-carrying model ids must survive the later str.format() stage.
+
+    The returned template is rendered by apply_claude_fix via
+    ``template.format(prompt_file=..., finding_id=..., rule=..., path=...)``
+    (bluei/engine/lifecycle.py:316-321). Literal braces in the id must be
+    escaped at injection time or that render raises KeyError (balanced) /
+    ValueError (unbalanced).
+    """
+
+    TEMPLATE = "claude --dangerously-skip-permissions --print"
+
+    def test_brace_carrying_id_survives_format(self):
+        out = inject_model_flag(self.TEMPLATE, _resolved(model_id="weird{id}-model"))
+        # Exactly the render lifecycle.py performs — no KeyError.
+        rendered = out.format(
+            prompt_file="x",
+            finding_id="f",
+            rule="r",
+            path="p",
+        )
+        assert "weird{id}-model" in rendered
+
+    def test_unbalanced_brace_id_does_not_raise(self):
+        # Pre-fix this raised ValueError ("Single '{' encountered") at render.
+        out = inject_model_flag(self.TEMPLATE, _resolved(model_id="has{brace"))
+        rendered = out.format(
+            prompt_file="x",
+            finding_id="f",
+            rule="r",
+            path="p",
+        )
+        assert "has{brace" in rendered
+
+    def test_plain_id_unchanged(self):
+        out = inject_model_flag(self.TEMPLATE, _resolved(model_id="claude-3-5-haiku"))
+        assert (
+            out == "claude --model claude-3-5-haiku --dangerously-skip-permissions --print"
+        )
+        assert "{{" not in out and "}}" not in out
+
+
 # ─── load_model_tiers (AC-P2-2) ────────────────────────────────────────────
 
 

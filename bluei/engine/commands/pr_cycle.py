@@ -921,6 +921,12 @@ def _process_one_issue(
                         model=model_name,
                         input_tokens=3000,
                         output_tokens=300,
+                        rates={
+                            "input_per_1k": _gov_resolved.input_per_1k,
+                            "output_per_1k": _gov_resolved.output_per_1k,
+                        }
+                        if _gov_resolved is not None
+                        else None,
                     )
                     if rc != 0:
                         run_status = "fix-failed-verification:claude-command-failed"

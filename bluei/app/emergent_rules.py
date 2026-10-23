@@ -402,6 +402,7 @@ class EmergentRuleStore:
             )
             if (
                 rule.shadow_runs >= min_shadow_runs
+                and rule.shadow_findings > 0
                 and rule.false_positive_rate <= max_false_positive_rate
             ):
                 rule.status = EmergentRuleStatus.ACTIVE
@@ -609,6 +610,8 @@ class EmergentRuleStore:
                 updated_dt = datetime.fromisoformat(updated)
             except (ValueError, TypeError):
                 continue
+            if updated_dt.tzinfo is None:
+                updated_dt = updated_dt.replace(tzinfo=timezone.utc)
             age_days = (now - updated_dt).days
             if rule.status == EmergentRuleStatus.ACTIVE and age_days > active_days:
                 rule.status = EmergentRuleStatus.RETIRED
@@ -725,6 +728,11 @@ def scan_shadow_rules(
 
 
 _STRUCTURAL_SUBTREE_CAP = 200
+# Depth cap for the structural-subtree walker: 128 exceeds the tokenizer's
+# ~100-level indent maximum, so any input that parses has shallower nesting —
+# the cap is provably a no-op on parseable source and only bounds the walker
+# when handed a programmatically-constructed (never-parsed) deep AST.
+_STRUCTURAL_DEPTH_CAP = 128
 
 
 def _iter_structural_subtrees(tree: ast.AST) -> List[ast.AST]:
@@ -735,12 +743,14 @@ def _iter_structural_subtrees(tree: ast.AST) -> List[ast.AST]:
     call line). Container nodes (FunctionDef/ClassDef) are descended into but
     NOT emitted themselves, so a function wrapping a violation does not
     double-match alongside its body. Bounded by ``_STRUCTURAL_SUBTREE_CAP``
-    per file (DESIGN 4.6).
+    per file (DESIGN 4.6) and ``_STRUCTURAL_DEPTH_CAP`` nesting levels.
     """
     subtrees: List[ast.AST] = []
     container_kinds = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
-    def _walk_body(body: list) -> None:
+    def _walk_body(body: list, depth: int = 0) -> None:
+        if depth > _STRUCTURAL_DEPTH_CAP:
+            return
         for node in body:
             if len(subtrees) >= _STRUCTURAL_SUBTREE_CAP:
                 _logger.debug(
@@ -749,7 +759,7 @@ def _iter_structural_subtrees(tree: ast.AST) -> List[ast.AST]:
                 )
                 return
             if isinstance(node, container_kinds):
-                _walk_body(list(getattr(node, "body", [])))
+                _walk_body(list(getattr(node, "body", [])), depth + 1)
                 continue
             subtrees.append(node)
 
@@ -784,7 +794,7 @@ def _scan_structural(
     threshold = get_fuzzy_threshold(rule.rule_id)
     try:
         tree = ast.parse(text)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError):
         return []
     relative_path = path.relative_to(root).as_posix()
     matches: List[ShadowRuleMatch] = []
@@ -795,7 +805,11 @@ def _scan_structural(
             snippet_src = ""
         if not snippet_src.strip():
             continue
-        sub_hash = compute_structural_hash(snippet_src, "python")
+        try:
+            sub_hash = compute_structural_hash(snippet_src, "python")
+        except Exception:
+            # RecursionError on deep-but-parseable input; skip this subtree.
+            continue
         is_match = sub_hash == target_hash
         if not is_match and canonical:
             try:
@@ -1200,7 +1214,7 @@ def extract_detection_regex(snippet: str, language: str) -> str:
     if is_python:
         try:
             tree = ast.parse(snippet)
-        except (SyntaxError, ValueError):
+        except (SyntaxError, ValueError, RecursionError):
             return ""
         for node in ast.walk(tree):
             if isinstance(node, ast.Name) and node.id not in _PYTHON_SKIP_NAMES:
@@ -1257,15 +1271,20 @@ def extract_detection_ast(snippet: str, language: str) -> Optional[str]:
         return None
     try:
         ast.parse(snippet)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError):
         return None
-    blob = {
-        "hash": compute_structural_hash(snippet, "python"),
-        "nodes": extract_node_sequence(snippet, "python"),
-        "operators": extract_operator_sequence(snippet, "python"),
-        "canonical_snippet": snippet,
-        "language": "python",
-    }
+    try:
+        blob = {
+            "hash": compute_structural_hash(snippet, "python"),
+            "nodes": extract_node_sequence(snippet, "python"),
+            "operators": extract_operator_sequence(snippet, "python"),
+            "canonical_snippet": snippet,
+            "language": "python",
+        }
+    except Exception:
+        # Parsing succeeded but hashing/extracting recursed too deep
+        # (deep-but-parseable input); treat as unfingerprintable.
+        return None
     return json.dumps(blob)
 
 

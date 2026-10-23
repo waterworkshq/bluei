@@ -25,6 +25,7 @@ from types import SimpleNamespace
 from typing import List
 
 from bluei.engine.commands.context import RunContext
+from bluei.engine.cost_tracker import CostTracker
 from bluei.engine.model_discovery import ResolvedModel
 from bluei.engine.model_governor import (
     DEFAULT_ESTIMATE_LABEL,
@@ -373,3 +374,134 @@ class TestResolveGovernedModelWiring:
         assert tmpl == base_template
         assert name == DEFAULT_ESTIMATE_LABEL
         assert not ledger.exists()  # no ledger file written
+
+    def test_call_site_rates_expression(self, tmp_path, make_finding):
+        # pr_cycle.py:920 call site — record_invocation receives the discovered
+        # per-1k rates via the exact conditional expression below. This test
+        # replicates that wiring end-to-end against a real CostTracker:
+        #   * resolved discovery → rates dict → JSONL row rates_source
+        #     "discovered";
+        #   * empty config (discovery=None → resolved None) → expression
+        #     yields None → MODEL_RATES fallback anchored at
+        #     DEFAULT_ESTIMATE_LABEL → rates_source "model_rates".
+        finding = make_finding(rule="ruff-b904")
+        family = derive_rule_family(finding.rule)
+        ledger = tmp_path / "governor_recommendations.jsonl"
+        base_template = "claude --dangerously-skip-permissions --print"
+
+        store = _FakeStore([_FakePattern(family) for _ in range(4)])
+
+        # Discovered half — same shape as test_tier0_discovery_injects_model_flag
+        _, _gov_resolved, _, model_name = resolve_governed_model(
+            finding=finding,
+            selection_fn=select_tier,
+            pattern_store=store,
+            discovery=_FakeDiscovery([_tier0_claude_model()]),
+            base_template=base_template,
+            ledger_path=ledger,
+            run_id="run-rates",
+        )
+        assert _gov_resolved is not None
+
+        # The exact rates expression from the pr-cycle call site.
+        rates = (
+            {
+                "input_per_1k": _gov_resolved.input_per_1k,
+                "output_per_1k": _gov_resolved.output_per_1k,
+            }
+            if _gov_resolved is not None
+            else None
+        )
+
+        cost_tracker = CostTracker(log_path=tmp_path / "cost_log.jsonl")
+        cost_tracker.record_invocation(
+            model=model_name, input_tokens=3000, output_tokens=300, rates=rates
+        )
+        entry = json.loads(
+            cost_tracker._log_path.read_text().strip().splitlines()[-1]
+        )
+        assert entry["rates_source"] == "discovered"
+
+        # Empty-config half: discovery=None → resolved None → expression None.
+        _, _gov_resolved_empty, _, model_name_empty = resolve_governed_model(
+            finding=finding,
+            selection_fn=select_tier,
+            pattern_store=store,
+            discovery=None,
+            base_template=base_template,
+            ledger_path=ledger,
+            run_id="run-rates-empty",
+        )
+        assert _gov_resolved_empty is None
+
+        rates_empty = (
+            {
+                "input_per_1k": _gov_resolved_empty.input_per_1k,
+                "output_per_1k": _gov_resolved_empty.output_per_1k,
+            }
+            if _gov_resolved_empty is not None
+            else None
+        )
+        assert rates_empty is None
+        assert model_name_empty == DEFAULT_ESTIMATE_LABEL
+
+        cost_tracker.record_invocation(
+            model=model_name_empty, input_tokens=3000, output_tokens=300, rates=rates_empty
+        )
+        entry_empty = json.loads(
+            cost_tracker._log_path.read_text().strip().splitlines()[-1]
+        )
+        assert entry_empty["rates_source"] == "model_rates"
+
+    def test_pr_cycle_record_invocation_threads_rates(self):
+        # Structural pin of the PRODUCTION call site (pr_cycle._process_one_issue):
+        # the record_invocation call must carry a ``rates=`` keyword whose value
+        # is a conditional expression testing ``_gov_resolved is not None``.
+        # test_call_site_rates_expression above proves the *behavior* of the
+        # expression against a real CostTracker but rebuilds it locally — this
+        # test fails if someone removes or renames the production threading
+        # (e.g. drops ``rates=`` or passes an unconditional dict/None).
+        import ast as pyast
+        import inspect
+
+        from bluei.engine.commands import pr_cycle
+
+        tree = pyast.parse(inspect.getsource(pr_cycle._process_one_issue))
+
+        calls = [
+            node
+            for node in pyast.walk(tree)
+            if isinstance(node, pyast.Call)
+            and (
+                (isinstance(node.func, pyast.Name) and node.func.id == "record_invocation")
+                or (
+                    isinstance(node.func, pyast.Attribute)
+                    and node.func.attr == "record_invocation"
+                )
+            )
+        ]
+        assert len(calls) == 1, "expected exactly one record_invocation call"
+        keywords = {kw.arg: kw.value for kw in calls[0].keywords}
+        assert "rates" in keywords, "record_invocation must thread rates="
+
+        rates_expr = keywords["rates"]
+        assert isinstance(rates_expr, pyast.IfExp), (
+            "rates= must be a conditional expression (dict when resolved, else None)"
+        )
+        test_names = {
+            n.id for n in pyast.walk(rates_expr.test) if isinstance(n, pyast.Name)
+        }
+        assert "_gov_resolved" in test_names, (
+            "the rates conditional must test the Governor-resolved model"
+        )
+        compares_to_none = any(
+            isinstance(n, pyast.Compare)
+            and any(
+                isinstance(c, pyast.Constant) and c.value is None
+                for c in n.comparators
+            )
+            for n in pyast.walk(rates_expr.test)
+        )
+        assert compares_to_none, (
+            "the rates conditional must compare _gov_resolved to None"
+        )

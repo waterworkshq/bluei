@@ -27,6 +27,15 @@ jobs:
     - name: Bootstrap
       run: ./scripts/bootstrap.sh
 
+    # The discovery/e2e tests exercise the real onboard→scan pipeline, whose
+    # Python preflight requires ruff on PATH (runners have none of the
+    # optional linters). Install into the venv and put the venv's bin dir on
+    # PATH for the subprocess-spawned CLI.
+    - name: Install discovery linters
+      run: |
+        uv pip install --python .venv/bin/python "ruff==0.17.2"
+        echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
     - name: Run tests
       run: |
         PYTHONPATH=. .venv/bin/python -m pytest tests/ -q \

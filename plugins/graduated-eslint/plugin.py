@@ -46,6 +46,9 @@ _AST_BLOB = None
 _EVIDENCE_COUNT = 14
 
 _STRUCTURAL_SUBTREE_CAP = 200
+# 128 exceeds the tokenizer's ~100-level indent max → provably a no-op on
+# parseable source; only bounds hand-constructed deep ASTs.
+_STRUCTURAL_DEPTH_CAP = 128
 _CONTAINER_KINDS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 
@@ -64,12 +67,14 @@ def _iter_shadow_files(root: Path, file_glob: str) -> List[Path]:
 def _iter_structural_subtrees(tree: ast.AST) -> List[ast.AST]:
     subtrees: List[ast.AST] = []
 
-    def _walk_body(body: list) -> None:
+    def _walk_body(body: list, depth: int = 0) -> None:
+        if depth > _STRUCTURAL_DEPTH_CAP:
+            return
         for node in body:
             if len(subtrees) >= _STRUCTURAL_SUBTREE_CAP:
                 return
             if isinstance(node, _CONTAINER_KINDS):
-                _walk_body(list(getattr(node, "body", [])))
+                _walk_body(list(getattr(node, "body", [])), depth + 1)
                 continue
             subtrees.append(node)
 
@@ -166,7 +171,7 @@ class Plugin(DiscoveryPlugin):
                 continue
             try:
                 tree = ast.parse(text)
-            except (SyntaxError, ValueError):
+            except (SyntaxError, ValueError, RecursionError):
                 continue
             relative_path = path.relative_to(root).as_posix()
             for subtree in _iter_structural_subtrees(tree):
@@ -176,7 +181,11 @@ class Plugin(DiscoveryPlugin):
                     snippet_src = ""
                 if not snippet_src.strip():
                     continue
-                sub_hash = compute_structural_hash(snippet_src, "python")
+                try:
+                    sub_hash = compute_structural_hash(snippet_src, "python")
+                except Exception:
+                    # RecursionError on deep-but-parseable input; skip.
+                    continue
                 is_match = sub_hash == target_hash
                 if not is_match and canonical:
                     try:

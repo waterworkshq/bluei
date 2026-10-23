@@ -649,7 +649,17 @@ class TestDiscoverPythonLinterFindingsFallbacks:
             }
         ]
         good = [_ruff("B007", 3, str(tmp_path / PY), "valid")]
-        mr.return_value = MagicMock(returncode=1, stdout=json.dumps(bad + good))
+
+        def _dispatch(args, **kwargs):
+            # The ruff-availability gate probes `which ruff` through this same
+            # patched subprocess.run. Answer the probe so the test does not
+            # depend on ruff living at ~/.local/bin (it previously passed only
+            # on machines where it did), then serve the ruff payload.
+            if args and args[0] == "which":
+                return MagicMock(returncode=0, stdout="/usr/bin/ruff\n")
+            return MagicMock(returncode=1, stdout=json.dumps(bad + good))
+
+        mr.side_effect = _dispatch
         f = discover_python_linter_findings(tmp_path, _log(tmp_path))
         assert len(f) == 1 and f[0].snippet == "valid"
 

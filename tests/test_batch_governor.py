@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from bluei.engine.batch_execution import _apply_single_fix
 from bluei.engine.model_discovery import ResolvedModel
-from bluei.engine.model_governor import ModelTier, TierRecommendation
+from bluei.engine.model_governor import ModelTier, TierRecommendation, select_tier
 
 
 # --- fakes (mirror test_governor_wiring.py) ---
@@ -121,4 +121,76 @@ class TestBatchGovernorWiring:
             )
 
         assert not ledger.exists()
+        assert result is not None
+
+    def test_guard_delegation_none_ledger_with_selection_fn(self, tmp_path, make_finding):
+        # The deleted local ``if governor_ledger_path is not None:`` wrapper
+        # used to intercept exactly this shape (selection_fn present, ledger
+        # None). Now _apply_single_fix calls resolve_governed_model
+        # unconditionally and the helper's internal guard owns the no-op:
+        # no exception, no ledger file, and apply_claude_fix receives the
+        # base template unchanged. (test_no_kwargs_no_ledger_no_exception
+        # covers both-None; this covers ledger-None-with-selection-fn.)
+        finding = make_finding(rule="ruff-b904", safe_to_autofix=False)
+        ledger = tmp_path / "governor_recommendations.jsonl"
+        log_file = tmp_path / "log.txt"
+        args = _make_args()
+
+        captured = {}
+
+        def _capture(req):
+            captured["tmpl"] = req.claude_cmd_template
+            return (0, "claude output", None)
+
+        with patch("bluei.engine.lifecycle.apply_claude_fix", side_effect=_capture):
+            result = _apply_single_fix(
+                finding=finding,
+                worktree_path=tmp_path,
+                repo_path=tmp_path,
+                args=args,
+                log_file=log_file,
+                selection_fn=select_tier,
+                governor_ledger_path=None,
+                run_id="run-batch-guard",
+                discovery=None,
+            )
+
+        assert not ledger.exists()
+        assert result is not None
+        assert captured["tmpl"] == args.claude_cmd_template
+
+    def test_none_ledger_calls_helper_directly(self, tmp_path, make_finding):
+        # Delegation proof, not just outcome: the deleted local
+        # ``if governor_ledger_path is not None:`` wrapper would have kept
+        # resolve_governed_model UNCALLED under ledger=None. Production now
+        # calls the helper unconditionally (the helper's own guard owns the
+        # no-op), so the mock must be hit exactly once even with
+        # governor_ledger_path=None. _apply_single_fix imports the function
+        # inside its body at call time, so patching the source module
+        # attribute intercepts it.
+        finding = make_finding(rule="ruff-b904", safe_to_autofix=False)
+        log_file = tmp_path / "log.txt"
+        args = _make_args()
+
+        gov_mock = MagicMock(
+            return_value=(None, None, args.claude_cmd_template, "claude-sonnet-4")
+        )
+
+        with patch("bluei.engine.lifecycle.apply_claude_fix", return_value=(0, "out", None)):
+            with patch(
+                "bluei.engine.model_governor.resolve_governed_model", gov_mock
+            ):
+                result = _apply_single_fix(
+                    finding=finding,
+                    worktree_path=tmp_path,
+                    repo_path=tmp_path,
+                    args=args,
+                    log_file=log_file,
+                    selection_fn=select_tier,
+                    governor_ledger_path=None,
+                    run_id="run-batch-delegation",
+                    discovery=None,
+                )
+
+        gov_mock.assert_called_once()
         assert result is not None

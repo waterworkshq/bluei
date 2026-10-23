@@ -295,25 +295,124 @@ def test_run_dry_replay_worktree_unchanged_after_multiple_candidates(
 # ---------------------------------------------------------------------------
 
 
-def test_safe_mode_skip_guard_condition():
-    """The Dry Replay phase in _process_one_issue is gated by
+def test_dry_replay_safe_mode_guard_pinned():
+    """Pins the production Dry Replay guard in ``_process_one_issue``.
+
+    The Dry Replay phase in pr_cycle._process_one_issue is gated by
     ``ctx.learning_mode != "paused"``. When paused, the whole block is
-    skipped — no candidate lookup, no file writes. We verify the predicate
-    directly to lock the contract that Phase 7 (SPRT) and the safe-mode
-    ADR rely on.
+    skipped — no candidate lookup, no file writes. This locks the contract
+    that Phase 7 (SPRT) and the safe-mode ADR rely on.
+
+    Source-pinning is used (the ``test_integration_guard_active_only``
+    idiom from test_sprt.py) because driving ``_process_one_issue``
+    end-to-end requires a full RunContext, worktree, pattern store, and
+    GitHub transport — orchestrator-level integration too heavy here. The
+    behavioral half below still evaluates the *actual* guard expression
+    lifted verbatim from the source, so deleting or weakening the guard
+    (e.g. dropping the learning_mode check) fails this test.
     """
+    import inspect
+    import re
+    from types import SimpleNamespace
 
-    # Guard predicate: skip iff learning_mode == "paused"
-    def _would_run_dry_replay(learning_mode, _dr_original_content, pattern_store, path):
-        return (
-            learning_mode != "paused"
-            and _dr_original_content is not None
-            and pattern_store is not None
-            and bool(path)
+    from bluei.engine.commands import pr_cycle
+
+    src = inspect.getsource(pr_cycle._process_one_issue)
+
+    # (a) Source pin: the dry-replay block is gated on learning_mode and
+    # the guard precedes the dry-replay machinery it protects.
+    assert 'ctx.learning_mode != "paused"' in src
+    assert "run_dry_replay" in src
+    guard_idx = src.index('ctx.learning_mode != "paused"')
+    dr_idx = src.index("run_dry_replay")
+    assert guard_idx < dr_idx, "guard must precede the dry-replay call it protects"
+
+    # (b) Behavioral half: lift the guard expression verbatim from the
+    # production source and evaluate it against constructed inputs —
+    # paused means skipped.
+    match = re.search(
+        r"if \(\s*ctx\.learning_mode != \"paused\".*?\):", src, re.DOTALL
+    )
+    assert match is not None, "dry-replay guard expression not found"
+    guard_expr = match.group(0)[len("if "):].rstrip(":")
+
+    def _guard(learning_mode, original_content, store, path):
+        namespace = {
+            "ctx": SimpleNamespace(learning_mode=learning_mode),
+            "_dr_original_content": original_content,
+            "pattern_store": store,
+            "finding": SimpleNamespace(path=path),
+        }
+        return eval(guard_expr, {"__builtins__": {}}, namespace)
+
+    assert not _guard("paused", "orig", object(), "src/x.py")
+    assert not _guard("active", None, object(), "src/x.py")
+    assert not _guard("active", "orig", None, "src/x.py")
+    assert not _guard("active", "orig", object(), "")
+    assert _guard("active", "orig", object(), "src/x.py")
+
+
+def test_dry_replay_call_nested_under_paused_guard():
+    """Structural half of the guard pin: the ``run_dry_replay`` CALL node
+    must be nested INSIDE the ``learning_mode != "paused"`` guard's body,
+    not merely appear after it textually.
+
+    The textual-order assertion in test_dry_replay_safe_mode_guard_pinned
+    cannot distinguish "call indented inside the if" from "call later in
+    the function at the same depth". Parsing the real source with the ast
+    module and comparing line spans can — flattening the guard or moving
+    the call out from under it fails here.
+    """
+    import ast
+    import inspect
+
+    from bluei.engine.commands import pr_cycle
+
+    tree = ast.parse(inspect.getsource(pr_cycle._process_one_issue))
+
+    def _body_span(if_node: ast.If):
+        # Expand every body statement recursively (ast.walk includes each
+        # statement itself and all nested nodes) into a (min lineno,
+        # max end_lineno) span covering the whole guarded block.
+        starts, ends = [], []
+        for stmt in if_node.body:
+            for node in ast.walk(stmt):
+                if hasattr(node, "lineno"):
+                    starts.append(node.lineno)
+                if hasattr(node, "end_lineno") and node.end_lineno is not None:
+                    ends.append(node.end_lineno)
+        return min(starts), max(ends)
+
+    guards = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and "learning_mode" in ast.unparse(node.test)
+        and "!=" in ast.unparse(node.test)
+        and "paused" in ast.unparse(node.test)
+    ]
+    assert guards, "dry-replay learning_mode guard not found in _process_one_issue"
+
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "run_dry_replay")
+            or (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "run_dry_replay"
+            )
         )
+    ]
+    assert calls, "run_dry_replay call not found in _process_one_issue"
 
-    assert _would_run_dry_replay("active", "orig", object(), "src/x.py") is True
-    assert _would_run_dry_replay("paused", "orig", object(), "src/x.py") is False
-    assert _would_run_dry_replay("active", None, object(), "src/x.py") is False
-    assert _would_run_dry_replay("active", "orig", None, "src/x.py") is False
-    assert _would_run_dry_replay("active", "orig", object(), "") is False
+    # The call must lie inside the guard's body span (not its orelse, not
+    # after the guarded block).
+    span_start, span_end = _body_span(guards[0])
+    call = calls[0]
+    assert span_start <= call.lineno and call.end_lineno <= span_end, (
+        f"run_dry_replay call (lines {call.lineno}-{call.end_lineno}) must be "
+        f"nested inside the learning_mode guard body "
+        f"(lines {span_start}-{span_end})"
+    )

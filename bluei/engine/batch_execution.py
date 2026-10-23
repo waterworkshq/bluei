@@ -273,27 +273,24 @@ def _apply_single_fix(
     except (subprocess.CalledProcessError, OSError):
         before_commit = None
 
-    # Model Governor resolution (ADR-0022 amendment 1) — mirror pr-cycle M5
+    # Model Governor resolution (ADR-0022 amendment 1) — mirror pr-cycle
     # (helper before the apply_claude_fix call; consume at ClaudeFixRequest).
-    # Guard: only records when governor_ledger_path is not None (preserves
-    # batch tests that don't pass it). pattern_store=None — the batch path has
-    # no store in scope; coverage counts patterns as 0. apply_claude_fix is
-    # unchanged (AC-P1-3): the resolved template reaches it via
+    # The helper owns the None-guards: ledger_path or selection_fn None →
+    # base_template unchanged, no ledger row. pattern_store=None — the batch
+    # path has no store in scope; coverage counts patterns as 0.
+    # apply_claude_fix is unchanged: the resolved template reaches it via
     # ClaudeFixRequest.claude_cmd_template below.
-    if governor_ledger_path is not None:
-        from bluei.engine.model_governor import resolve_governed_model
+    from bluei.engine.model_governor import resolve_governed_model
 
-        _gov_rec, _gov_resolved, resolved_tmpl, _model_name = resolve_governed_model(
-            finding=finding,
-            selection_fn=selection_fn,
-            pattern_store=None,
-            discovery=discovery,
-            base_template=args.claude_cmd_template,
-            ledger_path=governor_ledger_path,
-            run_id=run_id,
-        )
-    else:
-        resolved_tmpl = args.claude_cmd_template
+    _gov_rec, _gov_resolved, resolved_tmpl, _model_name = resolve_governed_model(
+        finding=finding,
+        selection_fn=selection_fn,
+        pattern_store=None,
+        discovery=discovery,
+        base_template=args.claude_cmd_template,
+        ledger_path=governor_ledger_path,
+        run_id=run_id,
+    )
 
     try:
         rc, output, prompt_file = apply_claude_fix(

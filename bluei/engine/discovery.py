@@ -31,6 +31,7 @@ from bluei.engine.linters import (
 from bluei.engine.models import Finding, parse_iso, stable_finding_id
 from bluei.engine.plugin_loader import run_plugin_discovery
 from bluei.engine.state import _append_text
+from bluei.engine.utils import walk_source_files
 
 _logger = logging.getLogger(__name__)
 
@@ -163,15 +164,9 @@ def ast_scan_pipeline(
     findings: List[Finding] = []
 
     for ext in config.extensions:
-        for f in repo_path.rglob(f"*{ext}"):
-            skip = False
-            for part in f.relative_to(repo_path).parts:
-                if part in config.skip_dirs:
-                    skip = True
-                    break
-            if skip:
-                continue
-
+        # skip_dirs are pruned during the walk (not filtered after): an
+        # rglob would traverse .git/objects and race git maintenance.
+        for f in walk_source_files(repo_path, ext, config.skip_dirs):
             try:
                 source = f.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):

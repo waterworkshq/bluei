@@ -67,13 +67,13 @@ def apply_structural_replay(
 
     try:
         target_tree = ast.parse(file_text)
-    except SyntaxError:
+    except (SyntaxError, ValueError, RecursionError):
         return None
 
     try:
         before_tree = ast.parse(pattern.before_snippet)
         after_tree = ast.parse(pattern.after_snippet)
-    except SyntaxError:
+    except (SyntaxError, ValueError, RecursionError):
         return None
 
     if not before_tree.body or not after_tree.body:
@@ -89,18 +89,25 @@ def apply_structural_replay(
     region_text = ast.get_source_segment(file_text, candidate)
     if region_text is None:
         return None
-    fuzzy = fuzzy_structural_match(region_text, pattern.before_snippet, language)
-    if fuzzy < get_fuzzy_threshold(pattern.rule, catalog=_detector_catalog()):
-        return None
+    # The match/apply/delta/import stages walk the parsed trees with
+    # recursive visitors — deep-but-parseable input that survived ast.parse
+    # can still overflow here, so the whole analysis region degrades to a
+    # miss instead of raising out of apply_structural_replay.
+    try:
+        fuzzy = fuzzy_structural_match(region_text, pattern.before_snippet, language)
+        if fuzzy < get_fuzzy_threshold(pattern.rule, catalog=_detector_catalog()):
+            return None
 
-    bindings: Dict[str, ast.AST] = {}
-    if not _match(pattern_anchor, candidate, bindings):
-        return None
+        bindings: Dict[str, ast.AST] = {}
+        if not _match(pattern_anchor, candidate, bindings):
+            return None
 
-    if not _bindings_complete(pattern_anchor, bindings):
-        return None
+        if not _bindings_complete(pattern_anchor, bindings):
+            return None
 
-    new_after = _apply_delta(after_anchor, bindings)
+        new_after = _apply_delta(after_anchor, bindings)
+    except RecursionError:
+        return None
 
     start_line = getattr(candidate, "lineno", 0)
     end_line = getattr(candidate, "end_lineno", start_line)
@@ -120,18 +127,21 @@ def apply_structural_replay(
     post = "".join(lines[end_line:])
     new_source = pre + new_stmt_text + "\n" + post
 
-    imports_added = _compute_imports_added(
-        before_tree, after_tree, pattern, target_tree
-    )
-    if imports_added:
-        existing = set(_collect_imports(target_tree))
-        to_insert = [
-            _normalize_import_text(t)
-            for t in imports_added
-            if _normalize_import_text(t) not in existing
-        ]
-        if to_insert:
-            new_source = _insert_imports_textually(new_source, to_insert)
+    try:
+        imports_added = _compute_imports_added(
+            before_tree, after_tree, pattern, target_tree
+        )
+        if imports_added:
+            existing = set(_collect_imports(target_tree))
+            to_insert = [
+                _normalize_import_text(t)
+                for t in imports_added
+                if _normalize_import_text(t) not in existing
+            ]
+            if to_insert:
+                new_source = _insert_imports_textually(new_source, to_insert)
+    except RecursionError:
+        return None
 
     try:
         compile(new_source, "<structural-replay>", "exec")
@@ -300,7 +310,7 @@ def _normalize_import_text(text: str) -> str:
         parsed = ast.parse(text)
         if parsed.body and isinstance(parsed.body[0], (ast.Import, ast.ImportFrom)):
             return ast.unparse(parsed.body[0])
-    except SyntaxError:
+    except (SyntaxError, ValueError, RecursionError):
         pass
     return text.strip()
 

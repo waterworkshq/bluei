@@ -1,6 +1,9 @@
+import ast
+import importlib.util
 import json
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,6 +15,8 @@ from bluei.app.emergent_rules import (
     EmergentRuleStatus,
     EmergentRuleStore,
     ShadowRuleMatch,
+    _iter_structural_subtrees,
+    extract_detection_ast,
     extract_detection_regex,
     measure_false_positives,
     propose_rules_from_fix_patterns,
@@ -250,6 +255,51 @@ def test_emergent_rule_store_rejects_noisy_shadow_rule(tmp_path) -> None:
     reloaded = store.load()[0]
     assert reloaded.status == EmergentRuleStatus.REJECTED
     assert reloaded.rejected_reason == "shadow_false_positive_rate"
+
+
+def test_record_shadow_run_zero_findings_stays_tentative(tmp_path) -> None:
+    """A rule that never matched anything must not promote to ACTIVE.
+
+    With zero shadow findings there is no positive evidence at all, so the
+    promotion gate additionally requires ``shadow_findings > 0``. A
+    zero-evidence rule stays TENTATIVE; operators can still force-promote
+    via ``promote_rule``.
+    """
+    store = EmergentRuleStore(tmp_path / "emergent_rules.json")
+    store.save([_rule("er-quiet", status=EmergentRuleStatus.TENTATIVE)])
+
+    for _ in range(3):
+        result = store.record_shadow_run(
+            "er-quiet",
+            matches=0,
+            false_positives=0,
+            min_shadow_runs=3,
+            max_false_positive_rate=0.2,
+        )
+
+    assert result["status"] == "tentative"
+    reloaded = store.load()[0]
+    assert reloaded.status == EmergentRuleStatus.TENTATIVE
+    assert reloaded.shadow_runs == 3
+    assert reloaded.shadow_findings == 0
+
+
+def test_record_shadow_run_promotes_with_real_findings(tmp_path) -> None:
+    """Positive shadow evidence (findings > 0, zero FPs) still promotes ACTIVE."""
+    store = EmergentRuleStore(tmp_path / "emergent_rules.json")
+    store.save([_rule("er-live", status=EmergentRuleStatus.TENTATIVE)])
+
+    for _ in range(3):
+        result = store.record_shadow_run(
+            "er-live",
+            matches=2,
+            false_positives=0,
+            min_shadow_runs=3,
+            max_false_positive_rate=0.2,
+        )
+
+    assert result["status"] == "active"
+    assert store.load()[0].status == EmergentRuleStatus.ACTIVE
 
 
 def test_propose_rules_from_fix_patterns_uses_successful_reuse_as_evidence() -> None:
@@ -623,6 +673,39 @@ def test_retire_stale_proposed_rules(tmp_path) -> None:
     fresh = next(r for r in rules if r.rule_id == "er-fresh-proposed")
     assert stale.status == EmergentRuleStatus.RETIRED
     assert fresh.status == EmergentRuleStatus.PROPOSED
+
+
+def test_retire_stale_rules_handles_naive_timestamps(tmp_path) -> None:
+    """Timezone-naive ``updated_at`` strings must not crash the age math.
+
+    ``datetime.fromisoformat`` happily parses offset-less timestamps while
+    ``now`` is tz-aware; without normalization the subtraction raises
+    TypeError outside the try block. Naive values are normalized to UTC
+    (same pattern as ``_check_staleness`` in pattern_confidence.py).
+    """
+    naive_recent = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    store = EmergentRuleStore(tmp_path / "emergent_rules.json")
+    store.save(
+        [
+            _rule(
+                "er-naive-old",
+                status=EmergentRuleStatus.ACTIVE,
+                updated_at="2026-01-01T00:00:00",
+            ),
+            _rule(
+                "er-naive-recent",
+                status=EmergentRuleStatus.ACTIVE,
+                updated_at=naive_recent,
+            ),
+        ]
+    )
+    result = store.retire_stale_rules(active_days=60)
+    assert result["retired"] == 1
+    rules = store.load()
+    old = next(r for r in rules if r.rule_id == "er-naive-old")
+    recent = next(r for r in rules if r.rule_id == "er-naive-recent")
+    assert old.status == EmergentRuleStatus.RETIRED
+    assert recent.status == EmergentRuleStatus.ACTIVE
 
 
 # ── Tests extracted from test_phase5_modules_remaining.py ──
@@ -1273,6 +1356,116 @@ class TestNegativeExamplesRoundTrip:
         )
         rules = EmergentRuleStore(path).load()
         assert rules[0].negative_examples == []
+
+
+# ── Defensive fixes: RecursionError-tolerant structural scanning ──
+
+
+# A flat operator chain — ast.parse() of this text raises RecursionError
+# (verified: the parser recurses once per BinOp level; 20000 >> sys limit).
+_DEEP_CHAIN = "+".join(["1"] * 20000)
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_graduated_pack():
+    """Import plugins/graduated-eslint/plugin.py (not an installed package)."""
+    plugin_file = _REPO_ROOT / "plugins" / "graduated-eslint" / "plugin.py"
+    spec = importlib.util.spec_from_file_location("graduated_eslint_pack", plugin_file)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestStructuralScanRecursionSafety:
+    """Deep/flat sources must skip cleanly instead of raising RecursionError."""
+
+    def test_scan_shadow_rules_deep_chain_returns_empty(self, tmp_path):
+        worktree = tmp_path / "repo"
+        worktree.mkdir()
+        (worktree / "deep.py").write_text(_DEEP_CHAIN, encoding="utf-8")
+        rule = EmergentRule(
+            rule_id="er-deep",
+            header="Deep chain",
+            detection_pattern=DetectionPattern(
+                detection_type=DetectionType.STRUCTURAL,
+                search_pattern="",
+                ast_pattern=json.dumps({"hash": "deadbeef"}),
+                file_glob="**/*.py",
+            ),
+            language="python",
+            category="lint",
+            status=EmergentRuleStatus.TENTATIVE,
+        )
+        # Pre-fix: ast.parse raised RecursionError out of _scan_structural.
+        assert scan_shadow_rules([rule], worktree) == []
+
+    def test_extract_detection_regex_deep_chain_returns_empty(self):
+        # Pre-fix: RecursionError out of the identifier-extraction ast.parse.
+        assert extract_detection_regex(_DEEP_CHAIN, "python") == ""
+
+    def test_extract_detection_ast_deep_chain_returns_none(self):
+        # Pre-fix: RecursionError out of the snippet-validity ast.parse.
+        assert extract_detection_ast(_DEEP_CHAIN, "python") is None
+
+    def test_graduated_plugin_structural_scan_deep_chain_skips(
+        self, tmp_path, monkeypatch
+    ):
+        pack = _load_graduated_pack()
+        # The committed pack ships as a regex detector; point its structural
+        # branch at a .py worktree so the plugin's own ast.parse site runs.
+        monkeypatch.setattr(pack, "_DETECTION_TYPE", "structural")
+        monkeypatch.setattr(pack, "_AST_BLOB", json.dumps({"hash": "deadbeef"}))
+        monkeypatch.setattr(pack, "_FILE_GLOB", "**/*.py")
+        worktree = tmp_path / "repo"
+        worktree.mkdir()
+        (worktree / "deep.py").write_text(_DEEP_CHAIN, encoding="utf-8")
+        assert pack.Plugin().discover(worktree, {}) == []
+
+
+class TestStructuralWalkerDepthCap:
+    """_iter_structural_subtrees bounds nesting on constructed deep ASTs.
+
+    The cap (128) exceeds the tokenizer's ~100-level indent maximum, so it is
+    a no-op on any parseable source — verified by the shallow-tree control.
+    """
+
+    @staticmethod
+    def _nested_function_tree(depth: int) -> ast.Module:
+        """Build ``depth``-deep nested FunctionDefs WITHOUT source text."""
+
+        def fn(name: str, body: list) -> ast.FunctionDef:
+            return ast.FunctionDef(
+                name=name,
+                args=ast.arguments(
+                    posonlyargs=[],
+                    args=[],
+                    kwonlyargs=[],
+                    kw_defaults=[],
+                    defaults=[],
+                ),
+                body=body,
+                decorator_list=[],
+            )
+
+        node = fn("f0", [ast.Expr(value=ast.Constant(value="leaf"))])
+        for i in range(1, depth):
+            node = fn(f"f{i}", [node])
+        return ast.Module(body=[node], type_ignores=[])
+
+    def test_deep_tree_is_truncated_not_recursed(self):
+        tree = self._nested_function_tree(200)
+        subtrees = _iter_structural_subtrees(tree)
+        assert isinstance(subtrees, list)
+        # Every statement is a container except the 200-deep leaf Expr, which
+        # sits beyond the 128-level cap → never emitted.
+        assert subtrees == []
+
+    def test_shallow_tree_unaffected_by_cap(self):
+        tree = self._nested_function_tree(3)
+        subtrees = _iter_structural_subtrees(tree)
+        assert len(subtrees) == 1
+        assert isinstance(subtrees[0], ast.Expr)
 
 
 if __name__ == "__main__":
