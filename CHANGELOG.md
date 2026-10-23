@@ -6,6 +6,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.2.0-beta.3] — Review-and-Fix (Sprint 2: B1 Neighborhood)
+
+The second beta hardening sprint, per the recorded slicing: the governor/discovery/cost and governance/learn domains — where the one historical silent-failure lived — plus the fix slices deferred from sprint 1.
+
+### Deferred fixes landed (verified findings from the sprint-1 review)
+
+- **SPRT per-family calibration is wired.** `run_sprt_check` never received a rule family and its API could express only one family per batch, so `calibration.yaml` was never consulted. Families now resolve per pattern from the pattern store, and a calibration entry is honored only when `0 < p_broken < p_healthy < 1` — equal probabilities make every outcome's likelihood ratio 1, so each evidence contribution to the LLR is zero (the boundaries can never be crossed), and extremes raise domain errors; both fall back to defaults.
+- **Dry replay applies candidates through the same ladder as live replay** (literal, then AST-structural). It previously applied literal-only while live replay had a structural fallback, so every structurally matched candidate could only record a miss — the SPRT evidence stream was structurally empty for exactly the seeded pattern population it was calibrated for.
+- **The mainline replay honors the governance overlay and records honest outcomes.** A PAUSED pattern no longer auto-replays on the standalone path (it consulted nothing; only the cascade stage did), and mainline MISS/FAILURE now accrue via the replay path's own three-way recording instead of a HIT-only manual record.
+- **The vacuous binding-completeness gate is removed** (the matcher binds every pattern Name on a successful match by construction, so the gate could not fail); ADR-0019 amended to record it. Safety is unchanged: the fuzzy-score gate, compile check, and caller validation carry it.
+
+### Review-driven fixes (two fresh-context reviews; every claim verified before action)
+
+The sprint's reviews found **2 CRITICAL + 6 HIGH**; all were independently verified against the code (each empirically reproduced), and all are fixed in this release or deferred with recorded rationale:
+
+- **Double store-outcome recording (HIGH).** A finding whose standalone replay failed and then went through the cascade had its outcome recorded twice — the cascade's pattern stage re-attempted the same pattern and recorded the same miss again, inflating the evidence that drives confidence decay. The attempted pattern is now excluded from the cascade's pattern stage; the gate-resolved candidate is the id source because the replay returns the id only on some outcome shapes. *Note: completing this fix required relaxing the file-level freeze on `lifecycle.py` to the true invariant — the `apply_claude_fix` function body, which remains byte-identical.*
+- **Discovered pricing leaked past the injection no-op (HIGH).** When the model flag cannot be injected (unrecognized backend), the invocation runs the default model — the previous sprint fixed the ledger's model name but discovered cheap-tier pricing still flowed into the cost row (a 12× undercount with wrong provenance). The no-op branch now returns no resolved model at all.
+- **Paused did not freeze mainline evidence (HIGH).** The replay still ran with outcome recording on, mutating pattern-store counts under the kill switch. Recording now freezes while paused; the replay itself still delivers value.
+- **Batch Claude spend was invisible to the cost ledger (HIGH).** Batch invocations never reached `cost_log.jsonl` or the hard-limit check. The cycle's tracker now threads through the batch chain and records each invocation with the resolved model and discovered pricing.
+- **Write-producing promotions defaulted gate-open at runtime (CRITICAL).** The runtime auto-promoter wrote staged recipe YAML and an approval record with no operator gate, where the design says nothing writes without explicit approval; a test pinned the open default while citing the wrong authority. Defaults are now per transition (write-producing closed, in-place open-audit).
+- **The paused kill switch failed open at both promotion gates (CRITICAL).** Both sites branched only on the gate-closed case, so a paused workspace fell through to the write path — the panic button was weaker than audit-only. Paused is now a hard hold at the runtime promoter and the foundry, visible in the log.
+
+### Deferred with rationale (roadmap)
+
+Per-repo approval trails governing workspace-global assets; the event-sourced store failing open on a torn trail line (plus the unmapped `demote` decision); the ungoverned/uncosted cascade-fallback LLM invocation (fix locus is the frozen `apply_claude_fix` file region); the unverified `--list-models` CLI contract; learn-verb validation and actor/reason recording; and the minors recorded in the sprint's triage.
+
+- 6649 → **6676 tests** (+27, 0 regressions). One ADR amendment (0019). C1 holds — no live runs.
+
+---
+
 ## [0.2.0-beta.2] — Review-and-Fix (Sprint 1: Pattern Heart)
 
 The first code-review-and-fix sprint of the beta lifecycle. Two pillars: every tracked code-quality deferral small enough to land now, and the first deep fresh-context review of the pattern-learning core — the Flywheel Ledger/cascade/pattern-court domain and the detection/structural domain — which surfaced and fixed three more defects the test suite could not see.

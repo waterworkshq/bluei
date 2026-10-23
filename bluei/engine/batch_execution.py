@@ -89,6 +89,7 @@ def apply_batch_fixes(
     governor_ledger_path: Optional[Path] = None,
     run_id: str = "",
     discovery: Optional[ModelDiscovery] = None,
+    cost_tracker: Any = None,
 ) -> Tuple[int, int]:
     """Apply all fixes within a shared worktree sequentially.
 
@@ -116,6 +117,7 @@ def apply_batch_fixes(
             governor_ledger_path=governor_ledger_path,
             run_id=run_id,
             discovery=discovery,
+            cost_tracker=cost_tracker,
         )
         batch.fix_results[finding.finding_id] = result
 
@@ -154,6 +156,7 @@ def _apply_single_fix(
     governor_ledger_path: Optional[Path] = None,
     run_id: str = "",
     discovery: Optional[ModelDiscovery] = None,
+    cost_tracker: Any = None,
 ) -> FixResult:
     """Apply one fix within a shared batch worktree.
 
@@ -260,6 +263,24 @@ def _apply_single_fix(
         )
 
     # Claude fix path
+    # Pre-invocation limit guard (mirrors the pr-cycle call site): once the
+    # hard limit is reached, do not launch the Claude subprocess at all.
+    # Returns the same FAILED shape a claude failure produces so the batch
+    # tally counts it as a failure.
+    if cost_tracker is not None and cost_tracker.exceeded_limit():
+        _append_text(
+            log_file,
+            f"batch-fix-skip: skipping claude fix for {finding.finding_id[:8]} "
+            f"({finding.rule}) reason=cost_limit — hard limit "
+            f"(${cost_tracker.cycle_total():.2f}) reached",
+        )
+        return FixResult(
+            finding_id=finding.finding_id,
+            status=FixStatus.FAILED.value,
+            error="cost-limit",
+            fix_method="claude",
+        )
+
     target_checks = build_target_checks(finding)
     # Capture worktree state before Claude so we can detect if anything changed
     try:
@@ -292,6 +313,30 @@ def _apply_single_fix(
         run_id=run_id,
     )
 
+    # Cost ledger (D5-F4): record the Claude invocation mirroring the pr-cycle
+    # call site so batch spend is visible to cost_log.jsonl and the hard
+    # limit. Rates validation (usable-discovered) lives inside
+    # record_invocation — delegating keeps the two lanes identical. When
+    # injection no-oped or discovery resolved nothing, _gov_resolved is None
+    # → rates None → MODEL_RATES fallback anchored at the estimate label.
+    # Shared by the success path and the exception path below: the Claude
+    # subprocess launched in BOTH cases (a timeout kills a live subprocess),
+    # so the invocation spend is recorded either way.
+    def _record_invocation_cost() -> None:
+        if cost_tracker is None:
+            return
+        cost_tracker.record_invocation(
+            model=_model_name,
+            input_tokens=3000,
+            output_tokens=300,
+            rates={
+                "input_per_1k": _gov_resolved.input_per_1k,
+                "output_per_1k": _gov_resolved.output_per_1k,
+            }
+            if _gov_resolved is not None
+            else None,
+        )
+
     try:
         rc, output, prompt_file = apply_claude_fix(
             ClaudeFixRequest(
@@ -305,7 +350,25 @@ def _apply_single_fix(
                 log_file=log_file,
             ),
         )
-    except (subprocess.CalledProcessError, OSError, ValueError) as exc:
+    except (
+        subprocess.CalledProcessError,
+        OSError,
+        ValueError,
+        subprocess.TimeoutExpired,
+    ) as exc:
+        # The subprocess DID launch (a TimeoutExpired is a killed live
+        # subprocess) — record the invocation cost first, so a timed-out
+        # call does not vanish from the ledger. Then RE-RAISE timeouts:
+        # a killed fix can leave partial edits in the shared worktree, and
+        # letting the batch continue would risk a later finding committing
+        # them. Other exceptions keep the per-finding failure return.
+        _record_invocation_cost()
+        if isinstance(exc, subprocess.TimeoutExpired):
+            _append_text(
+                log_file,
+                f"batch-fix: claude timeout for {finding.finding_id[:8]}; aborting batch",
+            )
+            raise
         _append_text(
             log_file, f"batch-fix: claude exception for {finding.finding_id[:8]}: {exc}"
         )
@@ -315,6 +378,8 @@ def _apply_single_fix(
             error=f"claude-exception: {exc}",
             fix_method="claude",
         )
+
+    _record_invocation_cost()
 
     # FIX: rc=0 does not mean Claude applied a fix. In --print non-interactive mode,
     # Claude returns 0 after analyzing but cannot use Edit/Bash tools.

@@ -128,7 +128,12 @@ def test_ac_p1_2_evidence_recording(tmp_path: Path) -> None:
     assert "from err" in final_text
 
 
-def test_ac_p1_3_binding_completeness_gate() -> None:
+def test_ac_p1_3_attribute_chain_depth_mismatch() -> None:
+    """Originally named "binding_completeness_gate" — but it never reached
+    the gate: ``self.ctx.value`` (two attribute levels) vs ``ctx.value``
+    (one level) fails in the ``_match`` recursion itself. The vacuous gate
+    was removed (ADR-0019 amendment, 2026-10-23); this pins the real defense:
+    structurally different shapes never apply."""
     pattern = _make_pattern(
         before="return self.ctx.value",
         after="return self.ctx.resolved()",

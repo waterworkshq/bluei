@@ -9,6 +9,7 @@ Phase 3: Split/recovery logic → bluei.engine.batch_recovery
 from __future__ import annotations
 
 import logging
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple, TYPE_CHECKING
@@ -92,6 +93,7 @@ def process_batch(
     governor_ledger_path: Optional[Path] = None,
     run_id: str = "",
     discovery: Optional[ModelDiscovery] = None,
+    cost_tracker: Optional["object"] = None,
 ) -> Tuple[bool, Optional[str]]:
     """Process a multi-finding batch: worktree → fixes → PR.
 
@@ -175,17 +177,31 @@ def process_batch(
         hydrate_worktree(repo_path, worktree_path, log_file=log_file)
 
         # Apply all fixes sequentially
-        successes, failures = apply_batch_fixes(
-            batch=batch,
-            worktree_path=worktree_path,
-            repo_path=repo_path,
-            args=args,
-            log_file=log_file,
-            selection_fn=selection_fn,
-            governor_ledger_path=governor_ledger_path,
-            run_id=run_id,
-            discovery=discovery,
-        )
+        try:
+            successes, failures = apply_batch_fixes(
+                batch=batch,
+                worktree_path=worktree_path,
+                repo_path=repo_path,
+                args=args,
+                log_file=log_file,
+                selection_fn=selection_fn,
+                governor_ledger_path=governor_ledger_path,
+                run_id=run_id,
+                discovery=discovery,
+                cost_tracker=cost_tracker,
+            )
+        except subprocess.TimeoutExpired:
+            # A timed-out Claude fix re-raises from the per-finding loop: its
+            # partial edits may sit in this batch's worktree, so the BATCH is
+            # abandoned (no commit, no PR — the worktree is discarded) while
+            # the cycle continues with the remaining batches and findings.
+            batch.status = BatchStatus.FAILED.value
+            _append_text(
+                log_file,
+                f"batch-aborted: {batch.batch_id} reason=claude-timeout "
+                "(worktree discarded; no commit, no PR)",
+            )
+            return False, "claude-timeout-batch-aborted"
 
         _append_text(
             log_file,
@@ -204,8 +220,12 @@ def process_batch(
         if split_warranted and getattr(args, "batch_pr_split_on_failure", True):
             batch.retry_count += 1
             sub_batches = handle_batch_failure(batch, repo_path, args, log_file)
-            # Process sub-batches recursively
-            for sub_batch in sub_batches:
+            # Process sub-batches recursively; propagate their results —
+            # "split-and-retried" is success only if at least one sub-batch
+            # produced a PR. Reporting success when every sub-batch failed
+            # (e.g. each timed out) makes the cycle count a PR that was
+            # never created and can consume the PR cap for nothing.
+            sub_results = [
                 process_batch(
                     sub_batch,
                     repo_path,
@@ -215,8 +235,19 @@ def process_batch(
                     governor_ledger_path=governor_ledger_path,
                     run_id=run_id,
                     discovery=discovery,
+                    cost_tracker=cost_tracker,
                 )
-            return True, "split-and-retried"
+                for sub_batch in sub_batches
+            ]
+            if sub_results and any(ok for ok, _detail in sub_results):
+                return True, "split-and-retried"
+            batch.status = BatchStatus.FAILED.value
+            _append_text(
+                log_file,
+                f"batch-abort: {batch.batch_id} split produced no successful "
+                "sub-batches (no PR created)",
+            )
+            return False, "split-all-sub-batches-failed"
         elif (
             not split_warranted
             and batch.retry_count >= max_depth

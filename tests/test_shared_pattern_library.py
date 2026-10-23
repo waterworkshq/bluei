@@ -15,6 +15,18 @@ from bluei.engine.shared_pattern_library import (
 from bluei.engine.pattern_store import FixPattern, FixPatternStore
 from bluei.engine.pattern_replay import _resolve_pattern
 
+# C1 (ADR-0007): write_producing now defaults gate_closed; the promotion
+# mechanics tests below opt into the gate-open policy explicitly. The
+# default itself is pinned in tests/test_governance.py and
+# tests/test_promotion_gate.py.
+_GATE_OPEN = {
+    "learning": {
+        "asset_classes": {
+            "pattern": {"write_producing": "gate_open_audit"},
+        },
+    },
+}
+
 
 def _mf(make_finding, **overrides):
     """Wrap conftest make_finding with shared_pattern_library-specific defaults."""
@@ -708,7 +720,7 @@ class TestCheckPromotionEligibility:
 class TestPromotePatternToRecipe:
     def test_not_eligible(self, tmp_path):
         p = _make_xrepo(success_count=0, failure_count=0)
-        result = promote_pattern_to_recipe(p, "python", tmp_path / "recipes")
+        result = promote_pattern_to_recipe(p, "python", tmp_path / "recipes", config=_GATE_OPEN)
         assert result == PromotionResult.NOT_ELIGIBLE
 
     def test_eligible_idempotent(self, tmp_path):
@@ -719,7 +731,7 @@ class TestPromotePatternToRecipe:
             source_repos={"r1", "r2", "r3", "r4", "r5"},
         )
         recipes_dir = tmp_path / "recipes"
-        result = promote_pattern_to_recipe(p, "python", recipes_dir)
+        result = promote_pattern_to_recipe(p, "python", recipes_dir, config=_GATE_OPEN)
         assert result == PromotionResult.PROMOTED
         content = sorted(recipes_dir.glob("*.yaml"))[0].read_text()
         assert "idempotent" in content
@@ -732,7 +744,7 @@ class TestPromotePatternToRecipe:
             source_repos={"r1", "r2", "r3", "r4", "r5"},
         )
         recipes_dir = tmp_path / "recipes"
-        result = promote_pattern_to_recipe(p, "python", recipes_dir)
+        result = promote_pattern_to_recipe(p, "python", recipes_dir, config=_GATE_OPEN)
         assert result == PromotionResult.PROMOTED
         content = sorted(recipes_dir.glob("*.yaml"))[0].read_text()
         assert "needs_validation" in content

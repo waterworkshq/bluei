@@ -980,3 +980,67 @@ def test_replay_excluded_paths_enforced_by_target_path(
     log_content = log_file.read_text()
     assert "pattern-replay-miss" in log_content
     assert "reason=no_matching_pattern" in log_content
+
+
+def test_apply_pattern_to_text_structural_rung_gated_on_auto_replay_threshold():
+    """ADR-0019: the shared ladder's structural rung fires only at
+    confidence >= AUTO_REPLAY_THRESHOLD. Live replay enforces this BEFORE
+    the ladder (test_ac_p1_4 pins that); housing the gate in the ladder
+    gives the Dry Replay path the same defense. A structurally-shaped
+    below-threshold Pattern applies nowhere (live or dry)."""
+    from bluei.engine.pattern_replay import apply_pattern_to_text
+
+    file_text = "def f():\n    raise CustomError(custom_msg)\n"
+    shape = dict(
+        rule="ruff-c408",
+        before_snippet='raise ValueError("bad")',
+        after_snippet='raise ValueError("bad") from err',
+    )
+
+    low = make_pattern(confidence=0.6, **shape)
+    assert apply_pattern_to_text(file_text, low, "python", target_line=2) is None
+
+    high = make_pattern(confidence=0.95, **shape)
+    application = apply_pattern_to_text(file_text, high, "python", target_line=2)
+    assert application is not None
+    assert application.mechanism == "structural"
+    assert "from err" in application.new_text
+
+
+def test_replay_low_confidence_structural_shape_never_applies(
+    tmp_path, log_file, make_finding
+):
+    """Live-path half of the dry/live parity pair: a sub-threshold Pattern
+    with structural shape is surfaced as a prompt hint ((False, pid)) and
+    the file is NOT modified — the ladder never runs for it below
+    AUTO_REPLAY_THRESHOLD."""
+    pid = "fp-structural-lowconf-live"
+    store = MagicMock()
+    store.lookup.return_value = make_pattern(
+        pattern_id=pid,
+        rule="ruff-c408",
+        before_snippet='raise ValueError("bad")',
+        after_snippet='raise ValueError("bad") from err',
+        confidence=0.6,
+    )
+    store.lookup_structural.return_value = None
+    store.lookup_fuzzy.return_value = None
+
+    worktree = tmp_path / "repo"
+    (worktree / "src").mkdir(parents=True)
+    target = worktree / "src" / "app.py"
+    original = "def f():\n    raise CustomError(custom_msg)\n"
+    target.write_text(original, encoding="utf-8")
+
+    finding = make_finding(
+        rule="ruff-c408",
+        path="src/app.py",
+        line=2,
+        snippet="raise CustomError(custom_msg)",
+    )
+
+    result = try_replay(worktree, finding, store, {}, log_file)
+
+    assert result == (False, pid)  # prompt-hint tier: id surfaced, no apply
+    assert target.read_text(encoding="utf-8") == original  # untouched
+    store.record_replay_outcome.assert_not_called()  # no outcome recorded

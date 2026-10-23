@@ -111,7 +111,7 @@ def _cost_tracker():
     )
 
 
-def _build_ctx(tmp_path, store, governor_ledger, **ctx_overrides):
+def _build_ctx(tmp_path, store, governor_ledger, baseline_checks=None, **ctx_overrides):
     ctx = RunContext(
         args=_args(),
         repo_path=tmp_path / "repo",
@@ -122,17 +122,20 @@ def _build_ctx(tmp_path, store, governor_ledger, **ctx_overrides):
         cost_tracker=_cost_tracker(),
         pattern_store=store,
         governor_ledger_path=governor_ledger,
-        PER_REPO_BASELINE_CHECKS={},
+        PER_REPO_BASELINE_CHECKS=(
+            baseline_checks if baseline_checks is not None else {}
+        ),
         **ctx_overrides,
     )
     return ctx
 
 
 @contextmanager
-def _neutralize_post_fix():
+def _neutralize_post_fix(worktree_path: Path = Path("/tmp/wt")):
     """Neutralize GitHub/worktree/post-fix phases so the function returns via
     the 'verified without changes' path (diff_stats→(0,0) +
-    verify_fix_closed→closed)."""
+    verify_fix_closed→closed). ``worktree_path`` lets a test point the flow at
+    a REAL prepared worktree when the replay itself must run for real."""
     with ExitStack() as stack:
         stack.enter_context(
             patch("bluei.engine.commands.pr_cycle._resolve_github", return_value=False)
@@ -141,7 +144,7 @@ def _neutralize_post_fix():
             patch(
                 "bluei.engine.commands.pr_cycle._setup_worktree",
                 return_value=_WorktreeSetup(
-                    worktree_path=Path("/tmp/wt"), worktree_branch="fix/f001"
+                    worktree_path=worktree_path, worktree_branch="fix/f001"
                 ),
             )
         )
@@ -367,3 +370,386 @@ class TestGovernorCascadeScope:
 
         # The scoped-locus contrast
         assert len(cascade_rows) != len(llm_rows)
+
+
+# ── Governance + honest outcomes on the standalone mainline replay ───────────
+
+
+class TestMainlineReplayGovernance:
+    """The standalone ``try_replay`` in ``_process_one_issue`` must (a) consult
+    the same governance projection the cascade's
+    ``PatternReplayCascadeStage.can_handle`` consults — a PAUSED pattern must
+    not auto-replay on the mainline — and (b) record honest three-way
+    outcomes (HIT/MISS/FAILURE), not HIT-only."""
+
+    def test_paused_pattern_skips_standalone_replay(self, tmp_path):
+        """A PAUSED pattern that would match the finding → the standalone
+        replay is skipped entirely (try_replay never called) and no HIT is
+        recorded on the pattern store."""
+        from bluei.engine import pattern_replay as pr
+
+        pr._clear_pattern_cache()  # resolver cache is keyed by rule+path+snippet
+
+        store = FixPatternStore(tmp_path / "patterns.jsonl")
+        pid = store.append(_pattern())
+        store._rebuild_from_disk()
+        before_pattern = store.get_pattern(pid)
+        assert before_pattern is not None
+
+        governor_ledger = tmp_path / "governor_recommendations.jsonl"
+        ctx = _build_ctx(
+            tmp_path,
+            store,
+            governor_ledger,
+            governance_state={f"pattern:{pid}": "paused"},
+        )
+        ctx.args = _args(fix_engine="claude")
+
+        finding = _finding(rule="broad-except")  # no refactor_class → LLM path
+        issue = {
+            "issue_id": "i1",
+            "finding_id": "f001",
+            "status": "open",
+            "rule": "broad-except",
+        }
+
+        with _neutralize_post_fix():
+            with (
+                patch(
+                    "bluei.engine.commands.pr_cycle.try_replay"
+                ) as mock_replay,
+                patch("bluei.engine.lifecycle.apply_cascade_fix"),
+                patch(
+                    "bluei.engine.commands.pr_cycle.apply_claude_fix",
+                    return_value=(0, "", "/tmp/prompt.txt"),
+                ),
+                patch(
+                    "bluei.engine.commands.pr_cycle._append_text"
+                ) as mock_append,
+            ):
+                _process_one_issue(ctx, 0, issue, finding, {})
+
+        # Standalone replay skipped: the resolved pattern is PAUSED
+        mock_replay.assert_not_called()
+        assert any(
+            "reason=governance_inactive" in str(c)
+            for c in mock_append.call_args_list
+        ), "the governance skip must be logged at the call site"
+
+        # No HIT recorded on the store (append seeds success_count >= 1;
+        # the skip must leave the counters exactly as they were)
+        pattern = store.get_pattern(pid)
+        assert pattern is not None
+        assert pattern.success_count == before_pattern.success_count
+        assert pattern.last_verified_at is None
+
+    def test_retired_pattern_skips_standalone_replay(self, tmp_path):
+        """Same gate, RETIRED state — both non-ACTIVE states are excluded."""
+        from bluei.engine import pattern_replay as pr
+
+        pr._clear_pattern_cache()
+
+        store = FixPatternStore(tmp_path / "patterns.jsonl")
+        pid = store.append(_pattern())
+        store._rebuild_from_disk()
+
+        governor_ledger = tmp_path / "governor_recommendations.jsonl"
+        ctx = _build_ctx(
+            tmp_path,
+            store,
+            governor_ledger,
+            governance_state={f"pattern:{pid}": "retired"},
+        )
+        ctx.args = _args(fix_engine="claude")
+
+        finding = _finding(rule="broad-except")
+        issue = {
+            "issue_id": "i1",
+            "finding_id": "f001",
+            "status": "open",
+            "rule": "broad-except",
+        }
+
+        with _neutralize_post_fix():
+            with (
+                patch(
+                    "bluei.engine.commands.pr_cycle.try_replay"
+                ) as mock_replay,
+                patch("bluei.engine.lifecycle.apply_cascade_fix"),
+                patch(
+                    "bluei.engine.commands.pr_cycle.apply_claude_fix",
+                    return_value=(0, "", "/tmp/prompt.txt"),
+                ),
+            ):
+                _process_one_issue(ctx, 0, issue, finding, {})
+
+        mock_replay.assert_not_called()
+
+    def test_active_pattern_still_replays(self, tmp_path):
+        """Complement: with no governance record (default ACTIVE), the
+        standalone replay runs as before."""
+        from bluei.engine import pattern_replay as pr
+
+        pr._clear_pattern_cache()
+
+        store = FixPatternStore(tmp_path / "patterns.jsonl")
+        pid = store.append(_pattern())
+        store._rebuild_from_disk()
+
+        governor_ledger = tmp_path / "governor_recommendations.jsonl"
+        ctx = _build_ctx(tmp_path, store, governor_ledger)
+        ctx.args = _args(fix_engine="claude")
+
+        finding = _finding(rule="broad-except")
+        issue = {
+            "issue_id": "i1",
+            "finding_id": "f001",
+            "status": "open",
+            "rule": "broad-except",
+        }
+
+        with _neutralize_post_fix():
+            with (
+                patch(
+                    "bluei.engine.commands.pr_cycle.try_replay",
+                    return_value=(False, None),
+                ) as mock_replay,
+                patch("bluei.engine.lifecycle.apply_cascade_fix"),
+                patch(
+                    "bluei.engine.commands.pr_cycle.apply_claude_fix",
+                    return_value=(0, "", "/tmp/prompt.txt"),
+                ),
+            ):
+                _process_one_issue(ctx, 0, issue, finding, {})
+
+        mock_replay.assert_called_once()
+        assert mock_replay.call_args.kwargs["record_outcome"] is True
+
+    def test_mainline_validation_failure_accrues_failure_count(self, tmp_path):
+        """(b) Honest three-way outcomes: a literal match whose validation
+        fails must accrue failure_count/last_failed_at on the MAINLINE path
+        (real try_replay, record_outcome=True) — previously only HIT was
+        recorded manually and mainline failures vanished."""
+        import subprocess
+
+        from bluei.engine import pattern_replay as pr
+
+        pr._clear_pattern_cache()
+
+        # Real worktree with the literal snippet present
+        wt = tmp_path / "wt"
+        (wt / "src").mkdir(parents=True)
+        original = "except:\n    pass\n"
+        (wt / "src" / "main.py").write_text(original)
+        for args_ in (
+            ["git", "init"],
+            ["git", "config", "user.email", "test@bluei.dev"],
+            ["git", "config", "user.name", "Test"],
+            ["git", "add", "."],
+            ["git", "commit", "-m", "initial"],
+        ):
+            subprocess.run(args_, cwd=str(wt), capture_output=True, check=True)
+
+        store = FixPatternStore(tmp_path / "patterns.jsonl")
+        pid = store.append(_pattern())
+        store._rebuild_from_disk()
+
+        governor_ledger = tmp_path / "governor_recommendations.jsonl"
+        ctx = _build_ctx(
+            tmp_path,
+            store,
+            governor_ledger,
+            baseline_checks={"lint": "false"},  # always-failing check
+        )
+
+        finding = _finding(rule="broad-except", refactor_class="cascade_fix")
+        issue = {
+            "issue_id": "i1",
+            "finding_id": "f001",
+            "status": "open",
+            "rule": "broad-except",
+        }
+
+        before = store.get_pattern(pid)
+        assert before is not None
+        assert before.failure_count == 0
+
+        with _neutralize_post_fix(worktree_path=wt):
+            with patch(
+                "bluei.engine.lifecycle.apply_cascade_fix", return_value=False
+            ):
+                _process_one_issue(ctx, 0, issue, finding, {})
+
+        pattern = store.get_pattern(pid)
+        assert pattern is not None
+        assert pattern.failure_count == 1
+        assert pattern.last_failed_at is not None
+        assert pattern.success_count == before.success_count  # no HIT on failure
+        # try_replay's rollback restored the committed content
+        assert (wt / "src" / "main.py").read_text() == original
+
+    def test_paused_learning_mode_passes_record_outcome_false(self, tmp_path):
+        """D5-F3 (call-site half): under learning_mode="paused" the standalone
+        replay still RUNS (value delivery continues) but the call site must
+        pass record_outcome=False — ADR-0013 paused is a full evidence
+        freeze, not a replay disable."""
+        from bluei.engine import pattern_replay as pr
+
+        pr._clear_pattern_cache()
+
+        store = FixPatternStore(tmp_path / "patterns.jsonl")
+        store.append(_pattern())
+        store._rebuild_from_disk()
+
+        governor_ledger = tmp_path / "governor_recommendations.jsonl"
+        ctx = _build_ctx(tmp_path, store, governor_ledger, learning_mode="paused")
+        ctx.args = _args(fix_engine="claude")
+
+        finding = _finding(rule="broad-except")
+        issue = {
+            "issue_id": "i1",
+            "finding_id": "f001",
+            "status": "open",
+            "rule": "broad-except",
+        }
+
+        with _neutralize_post_fix():
+            with (
+                patch(
+                    "bluei.engine.commands.pr_cycle.try_replay",
+                    return_value=(False, None),
+                ) as mock_replay,
+                patch("bluei.engine.lifecycle.apply_cascade_fix"),
+                patch(
+                    "bluei.engine.commands.pr_cycle.apply_claude_fix",
+                    return_value=(0, "", "/tmp/prompt.txt"),
+                ),
+            ):
+                _process_one_issue(ctx, 0, issue, finding, {})
+
+        mock_replay.assert_called_once()
+        assert mock_replay.call_args.kwargs["record_outcome"] is False
+
+    def test_paused_learning_mode_freezes_store_counts(self, tmp_path):
+        """D5-F3 (store half, real try_replay): under learning_mode="paused"
+        a mainline replay MISS must NOT mutate the pattern store (skip_count /
+        last_used_at unchanged) — while the active-mode control records it
+        (skip_count 1). Paused freezes evidence; it does not skip the replay."""
+        from bluei.engine import pattern_replay as pr
+
+        def _run_once(ctx):
+            pr._clear_pattern_cache()
+            store = FixPatternStore(tmp_path / f"patterns-{ctx.learning_mode}.jsonl")
+            pid = store.append(_pattern())
+            store._rebuild_from_disk()
+            ctx.pattern_store = store
+
+            # Real worktree whose content does NOT contain the before snippet
+            # → try_replay resolves the pattern (literal rule+snippet match)
+            # then records a MISS (snippet_not_found_in_file) when told to.
+            wt = tmp_path / f"wt-{ctx.learning_mode}"
+            (wt / "src").mkdir(parents=True)
+            (wt / "src" / "main.py").write_text("x = 1\n")
+
+            finding = _finding(rule="broad-except", refactor_class="cascade_fix")
+            issue = {
+                "issue_id": "i1",
+                "finding_id": "f001",
+                "status": "open",
+                "rule": "broad-except",
+            }
+
+            with _neutralize_post_fix(worktree_path=wt):
+                with patch(
+                    "bluei.engine.lifecycle.apply_cascade_fix", return_value=False
+                ):
+                    _process_one_issue(ctx, 0, issue, finding, {})
+            return store.get_pattern(pid)
+
+        # Control: active mode records the MISS (skip_count 0 -> 1).
+        governor_ledger = tmp_path / "governor_recommendations.jsonl"
+        ctx_active = _build_ctx(tmp_path, None, governor_ledger)
+        ctx_active.args = _args(fix_engine="claude")
+        active_pattern = _run_once(ctx_active)
+        assert active_pattern is not None
+        assert active_pattern.skip_count == 1
+        assert active_pattern.last_used_at is not None
+
+        # Paused: same replay path, store counts unchanged.
+        ctx_paused = _build_ctx(
+            tmp_path, None, governor_ledger, learning_mode="paused"
+        )
+        ctx_paused.args = _args(fix_engine="claude")
+        paused_pattern = _run_once(ctx_paused)
+        assert paused_pattern is not None
+        assert paused_pattern.skip_count == 0  # frozen — no MISS recorded
+        assert paused_pattern.last_used_at is None
+
+
+class TestExactlyOncePatternOutcome:
+    """One finding, one pattern, at most one recorded outcome across the
+    standalone replay and the cascade's pattern stage (review finding F1:
+    the cascade re-attempted the pattern the mainline just failed on and
+    recorded the same MISS twice)."""
+
+    def _setup(self, tmp_path, name):
+        from bluei.engine import pattern_replay as pr
+
+        pr._clear_pattern_cache()
+        store = FixPatternStore(tmp_path / f"patterns-{name}.jsonl")
+        pid = store.append(_pattern())
+        store._rebuild_from_disk()
+        wt = tmp_path / f"wt-{name}"
+        (wt / "src").mkdir(parents=True)
+        (wt / "src" / "main.py").write_text("x = 1\n")  # snippet absent
+        log = tmp_path / f"run-{name}.log"
+        finding = _finding(rule="broad-except", refactor_class="cascade_fix")
+        return store, pid, wt, log, finding
+
+    def test_standalone_then_cascade_records_exactly_once(self, tmp_path):
+        from bluei.engine import pattern_replay as pr
+        from bluei.engine.lifecycle import apply_cascade_fix
+
+        store, pid, wt, log, finding = self._setup(tmp_path, "once")
+
+        # Standalone mainline attempt: resolves the pattern, snippet absent
+        # -> one MISS recorded internally (try_replay returns (False, None)
+        # for this outcome shape — the caller learns the attempted id from
+        # its own gate-resolved candidate, exactly as _process_one_issue
+        # does).
+        replayed, replay_pid = pr.try_replay(
+            wt, finding, store, {"baseline": []}, log, record_outcome=True
+        )
+        assert replayed is False
+        assert store.get_pattern(pid).skip_count == 1
+
+        # Cascade dispatch with the attempted id excluded: the pattern stage
+        # must not re-attempt — still exactly one recorded MISS.
+        applied = apply_cascade_fix(
+            wt,
+            finding,
+            log,
+            pattern_store_path=store.store_path,
+            deterministic_only=True,
+            attempted_pattern_ids={pid},
+        )
+        assert store.get_pattern(pid).skip_count == 1
+        assert "excluded_upstream_attempt" in log.read_text()
+
+    def test_try_replay_exclusion_resolves_as_no_pattern(self, tmp_path):
+        from bluei.engine import pattern_replay as pr
+
+        store, pid, wt, log, finding = self._setup(tmp_path, "excl")
+
+        replayed, replay_pid = pr.try_replay(
+            wt,
+            finding,
+            store,
+            {"baseline": []},
+            log,
+            record_outcome=True,
+            exclude_pattern_ids={pid},
+        )
+        assert replayed is False
+        assert replay_pid is None  # excluded pattern behaves as not-found
+        assert store.get_pattern(pid).skip_count == 0  # nothing recorded

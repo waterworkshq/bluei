@@ -209,14 +209,15 @@ def test_sprt_params_calibrated_overrides_config(calibrated_sprt):
 
 
 def test_run_sprt_check_threads_rule_family(calibrated_sprt, tmp_path: Path):
-    """run_sprt_check accepts rule_family and threads it to _sprt_params."""
+    """run_sprt_check accepts pattern_families and threads each pattern's
+    family through to _sprt_params."""
     dr = tmp_path / "dry_replay.jsonl"
     ar = tmp_path / "approval_records.jsonl"
     dr.write_text("")  # no records → no LLR crossing → empty result
     ar.write_text("")
-    # Just confirms the signature accepts rule_family without error.
+    # Just confirms the signature accepts pattern_families without error.
     result = sprt.run_sprt_check(
-        ["p1"], dr, ar, config={}, rule_family="calibrated-family"
+        ["p1"], dr, ar, config={}, pattern_families={"p1": "calibrated-family"}
     )
     assert result == []
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import fnmatch
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -79,6 +80,7 @@ def try_replay(
     log_file: Path,
     shared_library: Any = None,
     record_outcome: bool = True,
+    exclude_pattern_ids: Optional[set] = None,
 ) -> Tuple[bool, Optional[str]]:
     try:
         return _try_replay_inner(
@@ -89,6 +91,7 @@ def try_replay(
             log_file,
             shared_library,
             record_outcome,
+            exclude_pattern_ids,
         )
     except Exception as exc:
         try:
@@ -109,14 +112,34 @@ def _resolve_pattern(
     store: FixPatternStore,
     log_file: Path,
     shared_library: Any = None,
+    exclude_pattern_ids: Optional[set] = None,
 ) -> Optional[FixPattern]:
+    def _excluded(candidate: Optional[FixPattern]) -> bool:
+        # A pattern the caller already attempted for this finding (e.g. the
+        # standalone mainline replay before the cascade re-tries) resolves as
+        # not-found, so the second path cannot re-attempt and double-record
+        # the same outcome.
+        if candidate is None or not exclude_pattern_ids:
+            return False
+        if candidate.pattern_id in exclude_pattern_ids:
+            append_log(
+                log_file,
+                (
+                    f"pattern-replay-skip: rule={finding.rule} "
+                    f"pattern_id={candidate.pattern_id} "
+                    f"reason=excluded_upstream_attempt"
+                ),
+            )
+            return True
+        return False
+
     cache_key = (
         f"{finding.rule}::{finding.path}::{normalize_snippet(finding.snippet)[:64]}"
     )
     now = time.monotonic()
     cached = _PATTERN_CACHE.get(cache_key)
     if cached is not None and (now - cached[0]) < _PATTERN_CACHE_TTL:
-        return cached[1]
+        return None if _excluded(cached[1]) else cached[1]
 
     normalized = normalize_snippet(finding.snippet)
     language = getattr(finding, "language", None) or infer_language_from_path(
@@ -210,11 +233,80 @@ def _resolve_pattern(
         oldest = sorted(_PATTERN_CACHE.items(), key=lambda x: x[1][0])[:256]
         for k, _ in oldest:
             _PATTERN_CACHE.pop(k, None)
-    return result
+    return None if _excluded(result) else result
 
 
 def _clear_pattern_cache() -> None:
     _PATTERN_CACHE.clear()
+
+
+@dataclass
+class PatternApplication:
+    """One successful rung of the pattern-application ladder.
+
+    ``mechanism`` is ``"literal"`` (normalized snippet splice) or
+    ``"structural"`` (AST structural replay, ADR-0019). ``structural``
+    carries the :class:`StructuralReplayResult` when the structural rung
+    applied, else ``None``.
+    """
+
+    new_text: str
+    mechanism: str
+    structural: Optional[Any] = None
+
+
+def apply_pattern_to_text(
+    file_text: str,
+    pattern: FixPattern,
+    language: str,
+    target_line: int = 0,
+) -> Optional[PatternApplication]:
+    """Apply a Pattern's before→after transformation to file text.
+
+    This is the SINGLE application ladder shared by live replay
+    (``_try_replay_inner``) and Dry Replay (``run_dry_replay``):
+
+      1. Literal (indentation-normalized) snippet match → text splice.
+      2. On literal miss → AST structural replay (ADR-0019): rename-tolerant
+         application via variable bindings.
+
+    Returns a :class:`PatternApplication` with the new file text and which
+    rung applied, or ``None`` when neither rung applies (the caller records
+    a MISS). Purely functional — nothing is written to disk; the caller owns
+    checkpointing, validation, and restoration.
+    """
+    match_result = _find_snippet_in_file(file_text, pattern.before_snippet)
+    if match_result is not None:
+        match_pos, matched_length = match_result
+        new_text = (
+            file_text[:match_pos]
+            + pattern.after_snippet
+            + file_text[match_pos + matched_length :]
+        )
+        return PatternApplication(new_text=new_text, mechanism="literal")
+
+    # Structural-rung confidence gate (ADR-0019): the AST rung only fires
+    # for Patterns at/above AUTO_REPLAY_THRESHOLD. Live replay enforced
+    # this before the ladder call; housing it IN the ladder gives the Dry
+    # Replay path the same gate (a low-confidence structurally-shaped
+    # candidate records a MISS instead of applying). No live behavior
+    # change: _try_replay_inner only reaches the ladder when confidence
+    # is already >= AUTO_REPLAY_THRESHOLD.
+    if pattern.confidence < AUTO_REPLAY_THRESHOLD:
+        return None
+
+    from bluei.engine.structural_replay import apply_structural_replay
+
+    structural = apply_structural_replay(
+        file_text, pattern, language, target_line=target_line
+    )
+    if structural is not None:
+        return PatternApplication(
+            new_text=structural.new_source,
+            mechanism="structural",
+            structural=structural,
+        )
+    return None
 
 
 def _try_replay_inner(
@@ -225,8 +317,11 @@ def _try_replay_inner(
     log_file: Path,
     shared_library: Any = None,
     record_outcome: bool = True,
+    exclude_pattern_ids: Optional[set] = None,
 ) -> Tuple[bool, Optional[str]]:
-    pattern = _resolve_pattern(finding, store, log_file, shared_library)
+    pattern = _resolve_pattern(
+        finding, store, log_file, shared_library, exclude_pattern_ids
+    )
 
     if pattern is None:
         append_log(
@@ -275,51 +370,17 @@ def _try_replay_inner(
         return (False, None)
 
     file_text = target_file.read_text(encoding="utf-8")
-    before_snippet = pattern.before_snippet
-    after_snippet = pattern.after_snippet
+    language = getattr(pattern, "language", None) or infer_language_from_path(
+        finding.path, fallback="python"
+    )
 
-    match_result = _find_snippet_in_file(file_text, before_snippet)
-    if match_result is None:
-        from bluei.engine.structural_replay import apply_structural_replay
-
-        language = getattr(pattern, "language", None) or infer_language_from_path(
-            finding.path, fallback="python"
-        )
-        structural = apply_structural_replay(
-            file_text, pattern, language, target_line=finding.line
-        )
-        if structural is not None:
-            target_file.write_text(structural.new_source, encoding="utf-8")
-            validation_passed = _run_baseline_validation(
-                worktree_path, baseline_checks, log_file
-            )[0]
-            if not validation_passed:
-                run_capture(
-                    ["git", "checkout", "--", finding.path],
-                    cwd=Path(worktree_path),
-                    timeout=30,
-                )
-                if record_outcome:
-                    store.record_replay_outcome(pid, ReplayOutcome.FAILURE)
-                append_log(
-                    log_file,
-                    (
-                        f"pattern-replay-structural-fail: pattern_id={pid} "
-                        f"reason=validation_failed"
-                    ),
-                )
-                return (False, None)
-            if record_outcome:
-                store.record_replay_outcome(pid, ReplayOutcome.HIT)
-            append_log(
-                log_file,
-                (
-                    f"pattern-replay-structural-success: pattern_id={pid} "
-                    f"binding_map_size={len(structural.binding_map)} "
-                    f"fuzzy={structural.fuzzy_score:.2f}"
-                ),
-            )
-            return (True, pid)
+    # Shared application ladder (literal → structural). Dry Replay uses the
+    # same helper so counterfactual outcomes mirror what live replay would
+    # have done.
+    application = apply_pattern_to_text(
+        file_text, pattern, language, target_line=finding.line
+    )
+    if application is None:
         if record_outcome:
             store.record_replay_outcome(pid, ReplayOutcome.MISS)
         append_log(
@@ -328,11 +389,7 @@ def _try_replay_inner(
         )
         return (False, None)
 
-    match_pos, matched_length = match_result
-    new_text = (
-        file_text[:match_pos] + after_snippet + file_text[match_pos + matched_length :]
-    )
-    target_file.write_text(new_text, encoding="utf-8")
+    target_file.write_text(application.new_text, encoding="utf-8")
 
     validation_passed = _run_baseline_validation(
         worktree_path,
@@ -348,17 +405,36 @@ def _try_replay_inner(
         )
         if record_outcome:
             store.record_replay_outcome(pid, ReplayOutcome.FAILURE)
-        append_log(
-            log_file,
-            (f"pattern-replay-fail: pattern_id={pid} reason=validation_failed"),
-        )
+        if application.mechanism == "structural":
+            append_log(
+                log_file,
+                (
+                    f"pattern-replay-structural-fail: pattern_id={pid} "
+                    f"reason=validation_failed"
+                ),
+            )
+        else:
+            append_log(
+                log_file,
+                (f"pattern-replay-fail: pattern_id={pid} reason=validation_failed"),
+            )
         return (False, None)
 
     if record_outcome:
         store.record_replay_outcome(pid, ReplayOutcome.HIT)
-    append_log(
-        log_file, (f"pattern-replay-success: pattern_id={pid} validation=passed")
-    )
+    if application.mechanism == "structural":
+        append_log(
+            log_file,
+            (
+                f"pattern-replay-structural-success: pattern_id={pid} "
+                f"binding_map_size={len(application.structural.binding_map)} "
+                f"fuzzy={application.structural.fuzzy_score:.2f}"
+            ),
+        )
+    else:
+        append_log(
+            log_file, (f"pattern-replay-success: pattern_id={pid} validation=passed")
+        )
     return (True, pid)
 
 

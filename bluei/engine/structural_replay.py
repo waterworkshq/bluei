@@ -102,8 +102,12 @@ def apply_structural_replay(
         if not _match(pattern_anchor, candidate, bindings):
             return None
 
-        if not _bindings_complete(pattern_anchor, bindings):
-            return None
+        # NOTE: ADR-0019's binding-completeness gate is vacuous here — the
+        # _match recursion above binds every pattern Name on success by
+        # construction, so a separate completeness check could never fail.
+        # Removed rather than kept as dead code; safety is carried by the
+        # fuzzy-score gate above plus post-application validation (compile
+        # check + the caller's validation gate). See ADR-0019 amendment.
 
         new_after = _apply_delta(after_anchor, bindings)
     except RecursionError:
@@ -204,10 +208,10 @@ def _scan_for_structural_match(
     for node in ast.walk(tree):
         if type(node) is not type(pattern_anchor):
             continue
+        # No separate binding-completeness check: _match binds every pattern
+        # Name on success (the ADR-0019 completeness gate was vacuous).
         probe: Dict[str, ast.AST] = {}
-        if _match(pattern_anchor, node, probe) and _bindings_complete(
-            pattern_anchor, probe
-        ):
+        if _match(pattern_anchor, node, probe):
             return node
     return None
 
@@ -265,14 +269,6 @@ def _match_field(va: object, vb: object, bindings: Dict[str, ast.AST]) -> bool:
                 return False
         return True
     return va == vb
-
-
-def _bindings_complete(pattern_anchor: ast.AST, bindings: Dict[str, ast.AST]) -> bool:
-    for node in ast.walk(pattern_anchor):
-        if isinstance(node, ast.Name):
-            if _leaf_token(node) not in bindings:
-                return False
-    return True
 
 
 def _apply_delta(after_anchor: ast.AST, bindings: Dict[str, ast.AST]) -> ast.AST:

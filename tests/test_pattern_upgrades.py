@@ -30,6 +30,18 @@ from bluei.engine.cascade import (
 from bluei.engine.models import Finding
 from bluei.engine.governance import PromotionResult
 from bluei.engine.pattern_store import FixPattern, FixPatternStore, normalize_snippet
+
+# C1 (ADR-0007): write_producing now defaults gate_closed; the promotion
+# integration test below opts into the gate-open policy explicitly. The
+# default itself is pinned in tests/test_governance.py and
+# tests/test_promotion_gate.py.
+_GATE_OPEN = {
+    "learning": {
+        "asset_classes": {
+            "pattern": {"write_producing": "gate_open_audit"},
+        },
+    },
+}
 from bluei.engine.shared_pattern_library import (
     CrossRepoPattern,
     SharedPatternLibrary,
@@ -269,7 +281,7 @@ class TestPromotionIntegration:
                 break
         assert cross_pat is not None
         assert check_promotion_eligibility(cross_pat)
-        result = promote_pattern_to_recipe(cross_pat, "python", tmp_path / "staged")
+        result = promote_pattern_to_recipe(cross_pat, "python", tmp_path / "staged", config=_GATE_OPEN)
         assert result == PromotionResult.PROMOTED
         staged_dir = tmp_path / "staged"
         content = sorted(staged_dir.glob("*.yaml"))[0].read_text()

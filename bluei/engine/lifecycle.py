@@ -751,8 +751,14 @@ def apply_cascade_fix(
     run_id: str = "",
     cost_tracker: Any = None,
     governance_state: Optional[Dict[str, str]] = None,
+    attempted_pattern_ids: Optional[set] = None,
 ) -> bool:
-    """Apply the deterministic cascade to fix a finding."""
+    """Apply the deterministic cascade to fix a finding.
+
+    ``attempted_pattern_ids`` carries pattern ids the caller already tried
+    for this finding (standalone replay); the cascade's pattern stage
+    excludes them so outcomes record exactly once per pattern.
+    """
     from bluei.engine.cascade import (
         CascadeContext,
         DeterministicCascade,
@@ -809,6 +815,7 @@ def apply_cascade_fix(
         run_id=run_id,
         cost_tracker=cost_tracker,
         governance_state=governance_state or {},
+        attempted_pattern_ids=attempted_pattern_ids,
     )
 
     cascade = DeterministicCascade(default_cascade_stages())

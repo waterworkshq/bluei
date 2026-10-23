@@ -350,13 +350,15 @@ def promote_pattern_to_recipe(
     Write-producing promotions are routed through the governance gate
     (ADR-0007):
 
-    * ``gate_closed`` — requires a bundle reference; queues an
-      ``ApprovalRecord`` (``pending_approval``) and returns
-      ``PENDING_APPROVAL`` without writing YAML. No bundle reference →
-      ``NOT_ELIGIBLE``.
-    * ``gate_open_audit`` (default, including ``config={}``) — writes the
-      YAML and appends an ``ApprovalRecord`` (``auto_promote``); returns
-      ``PROMOTED``.
+    * ``gate_closed`` (the default for unconfigured ``write_producing``) —
+      requires a bundle reference; queues an ``ApprovalRecord``
+      (``pending_approval``) and returns ``PENDING_APPROVAL`` without
+      writing YAML. No bundle reference → ``NOT_ELIGIBLE``.
+    * ``gate_open_audit`` (explicit config only) — writes the YAML and
+      appends an ``ApprovalRecord`` (``auto_promote``); returns ``PROMOTED``.
+    * ``paused`` (learning.mode=paused) — hard hold (ADR-0013): no YAML, no
+      pending record; returns ``NOT_ELIGIBLE`` with a held-by-paused log line
+      so operators can see the kill switch engaged.
 
     ``approval_records_path=None`` is safe: no audit record is written but
     YAML still is (gate-open) or the queue step is skipped (gate-closed).
@@ -374,8 +376,26 @@ def promote_pattern_to_recipe(
     if not check_promotion_eligibility(pattern):
         return PromotionResult.NOT_ELIGIBLE
 
-    policy = resolve_policy(config, "pattern", "write_producing")
+    # Runtime promoter (ADR-0007 refinement): unconfigured write_producing
+    # stays GATE-CLOSED — nothing writes at runtime without an explicit
+    # operator gate. (Build-time curated pipelines, e.g. the Foundry, pass
+    # their own gate-open default — the human commit is the approval.)
+    policy = resolve_policy(
+        config, "pattern", "write_producing", default="gate_closed"
+    )
     asset_ref = format_asset_ref("pattern", pattern.pattern_id)
+
+    if policy == "paused":
+        # ADR-0013 kill switch: paused is a HARD HOLD — strictly stronger
+        # than gate_closed (no YAML write, no pending record). The held
+        # state is distinguishable from NOT_ELIGIBLE only via this log
+        # line, so operators can see the switch is engaged.
+        _logger.warning(
+            "auto-promote held: learning.mode=paused asset_ref=%s rule=%s",
+            asset_ref,
+            pattern.rule,
+        )
+        return PromotionResult.NOT_ELIGIBLE
 
     if policy == "gate_closed":
         bundles = load_bundles(repo_state_dir) if repo_state_dir else []

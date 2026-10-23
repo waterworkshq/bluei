@@ -341,6 +341,171 @@ def test_run_sprt_check_missing_dry_replay_file(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# run_sprt_check — per-pattern family calibration (pattern_families threading)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _calibrated_families(tmp_path: Path, monkeypatch):
+    """Point sprt's inline calibration loader at a tmp yaml with a sane
+    entry, an equal-values entry (0.5/0.5), and an extremes entry (1.0/0.0) —
+    all flagged non-degenerate so only the sanity guard distinguishes them."""
+    from bluei.engine import sprt as sprt_mod
+
+    calib = tmp_path / "calibration.yaml"
+    calib.write_text(
+        "families:\n"
+        "  fam-calibrated:\n"
+        "    p_healthy: 0.95\n"
+        "    p_broken: 0.20\n"
+        "    degenerate: false\n"
+        "  fam-equal:\n"
+        "    p_healthy: 0.5\n"
+        "    p_broken: 0.5\n"
+        "    degenerate: false\n"
+        "  fam-extremes:\n"
+        "    p_healthy: 1.0\n"
+        "    p_broken: 0.0\n"
+        "    degenerate: false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sprt_mod, "_CALIBRATION_PATH", calib)
+    monkeypatch.setattr(sprt_mod, "_CALIBRATION_CACHE", None)
+    monkeypatch.setattr(sprt_mod, "_CALIBRATION_MTIME", None)
+    return sprt_mod
+
+
+def _twenty_hits(pattern_id: str, month: str) -> list[dict]:
+    return [
+        _dr_record(
+            pattern_id=pattern_id,
+            outcome="HIT",
+            timestamp=f"2024-{month}-{i + 1:02d}T00:00:00Z",
+        )
+        for i in range(20)
+    ]
+
+
+def test_run_sprt_check_per_pattern_family_calibration(
+    tmp_path: Path, _calibrated_families
+):
+    """Two patterns from different families in ONE call: the pattern whose
+    family has a sane calibration entry carries the calibrated
+    p_healthy/p_broken in its evidence_snapshot; the other keeps defaults."""
+    dr = tmp_path / "dry_replay.jsonl"
+    ar = tmp_path / "approval_records.jsonl"
+    _write_jsonl(ar, [])
+    _write_jsonl(
+        dr,
+        _twenty_hits("p-cal", "01") + _twenty_hits("p-plain", "02"),
+    )
+
+    result = run_sprt_check(
+        ["p-cal", "p-plain"],
+        dr,
+        ar,
+        config={},
+        pattern_families={"p-cal": "fam-calibrated", "p-plain": "fam-other"},
+    )
+
+    by_pattern = {r["asset_ref"]: r for r in result}
+    assert len(result) == 2
+
+    snap_cal = by_pattern["pattern:p-cal"]["evidence_snapshot"]
+    assert by_pattern["pattern:p-cal"]["decision"] == "auto_promote"
+    assert snap_cal["p_healthy"] == pytest.approx(0.95)
+    assert snap_cal["p_broken"] == pytest.approx(0.20)
+    assert snap_cal["llr"] == pytest.approx(20 * math.log(0.95 / 0.20))
+
+    snap_plain = by_pattern["pattern:p-plain"]["evidence_snapshot"]
+    assert snap_plain["p_healthy"] == pytest.approx(0.90)
+    assert snap_plain["p_broken"] == pytest.approx(0.50)
+    assert snap_plain["llr"] == pytest.approx(20 * math.log(0.90 / 0.50))
+
+
+def test_run_sprt_check_equal_calibration_falls_back_to_defaults(
+    tmp_path: Path, _calibrated_families
+):
+    """A 0.5/0.5 entry (flagged non-degenerate) zeroes every LLR contribution
+    (ln(1)=0) — the sanity guard must treat it as degenerate → defaults."""
+    dr = tmp_path / "dry_replay.jsonl"
+    ar = tmp_path / "approval_records.jsonl"
+    _write_jsonl(ar, [])
+    _write_jsonl(dr, _twenty_hits("p1", "01"))
+
+    [record] = run_sprt_check(
+        ["p1"], dr, ar, config={}, pattern_families={"p1": "fam-equal"}
+    )
+
+    snap = record["evidence_snapshot"]
+    assert record["decision"] == "auto_promote"
+    assert snap["p_healthy"] == pytest.approx(0.90)
+    assert snap["p_broken"] == pytest.approx(0.50)
+    assert snap["llr"] == pytest.approx(20 * math.log(0.90 / 0.50))
+
+
+def test_run_sprt_check_extreme_calibration_falls_back_no_exception(
+    tmp_path: Path, _calibrated_families
+):
+    """A 1.0/0.0 entry makes the LLR formula divide by zero (0.9/0.0) — the
+    sanity guard must route it to defaults without raising."""
+    dr = tmp_path / "dry_replay.jsonl"
+    ar = tmp_path / "approval_records.jsonl"
+    _write_jsonl(ar, [])
+    _write_jsonl(dr, _twenty_hits("p1", "01"))
+
+    [record] = run_sprt_check(
+        ["p1"], dr, ar, config={}, pattern_families={"p1": "fam-extremes"}
+    )
+
+    snap = record["evidence_snapshot"]
+    assert snap["p_healthy"] == pytest.approx(0.90)
+    assert snap["p_broken"] == pytest.approx(0.50)
+
+
+def test_run_sprt_check_huge_int_calibration_falls_back_no_exception(
+    tmp_path: Path, monkeypatch
+):
+    """A calibration entry whose value is an int beyond float range
+    (10**400 — YAML parses it as an arbitrary-precision int; float() then
+    raises OverflowError, which is NOT a ValueError) must fall back to
+    defaults without raising."""
+    from bluei.engine import sprt as sprt_mod
+
+    calib = tmp_path / "calibration.yaml"
+    calib.write_text(
+        "families:\n"
+        "  fam-huge:\n"
+        f"    p_healthy: {10**400}\n"
+        "    p_broken: 0.20\n"
+        "    degenerate: false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sprt_mod, "_CALIBRATION_PATH", calib)
+    monkeypatch.setattr(sprt_mod, "_CALIBRATION_CACHE", None)
+    monkeypatch.setattr(sprt_mod, "_CALIBRATION_MTIME", None)
+
+    # Direct unit level: _sprt_params falls back to defaults, no exception.
+    params = sprt_mod._sprt_params({}, "fam-huge")
+    assert params["p_healthy"] == pytest.approx(0.90)
+    assert params["p_broken"] == pytest.approx(0.50)
+
+    # End to end through run_sprt_check.
+    dr = tmp_path / "dry_replay.jsonl"
+    ar = tmp_path / "approval_records.jsonl"
+    _write_jsonl(ar, [])
+    _write_jsonl(dr, _twenty_hits("p1", "01"))
+
+    [record] = run_sprt_check(
+        ["p1"], dr, ar, config={}, pattern_families={"p1": "fam-huge"}
+    )
+
+    snap = record["evidence_snapshot"]
+    assert snap["p_healthy"] == pytest.approx(0.90)
+    assert snap["p_broken"] == pytest.approx(0.50)
+
+
+# ---------------------------------------------------------------------------
 # Integration guard (T7.3)
 # ---------------------------------------------------------------------------
 
@@ -362,3 +527,142 @@ def test_integration_guard_active_only(tmp_path: Path, monkeypatch):
     assert "run_sprt_check" in src
     # And it's gated on dry_replay.jsonl existence
     assert '"dry_replay.jsonl"' in src
+
+
+def test_pr_cycle_sprt_wires_pattern_families(tmp_path, monkeypatch):
+    """The end-of-cycle SPRT block threads per-pattern families from the
+    pattern store in scope (ctx.pattern_store) into run_sprt_check.
+
+    Source-pinning idiom (as in test_integration_guard_active_only): driving
+    run_pr_cycle_phase end-to-end requires a heavy RunContext. The behavioral
+    half below runs run_sprt_check with the exact map the call site builds —
+    stored rule_family when the pattern exists, None when missing.
+    """
+    import inspect
+    import math as _math
+    from types import SimpleNamespace
+
+    from bluei.engine.commands import pr_cycle
+    from bluei.engine.sprt import run_sprt_check as _real_run
+
+    src = inspect.getsource(pr_cycle.run_pr_cycle_phase)
+    assert "pattern_families=" in src, (
+        "run_pr_cycle_phase must pass pattern_families to run_sprt_check"
+    )
+    assert "ctx.pattern_store" in src
+    assert "rule_family" in src
+
+    # Behavioral half: the map shape the call site builds
+    # (store.get_pattern(pid).rule_family or None, guarded for missing).
+    store = SimpleNamespace(
+        get_pattern=lambda pid: {
+            "p-seeded": SimpleNamespace(rule_family="synthetic-raise"),
+            "p-gone-missing": None,
+            "p-empty-family": SimpleNamespace(rule_family=""),
+        }.get(pid)
+    )
+    families = {}
+    for pid in ("p-seeded", "p-gone-missing", "p-empty-family"):
+        pat = store.get_pattern(pid)
+        families[pid] = (getattr(pat, "rule_family", "") or None) if pat else None
+    assert families == {
+        "p-seeded": "synthetic-raise",
+        "p-gone-missing": None,
+        "p-empty-family": None,
+    }
+
+    # And run_sprt_check accepts that map (defaults for None families).
+    dr = tmp_path / "dry_replay.jsonl"
+    ar = tmp_path / "approval_records.jsonl"
+    _write_jsonl(ar, [])
+    _write_jsonl(dr, _twenty_hits("p-empty-family", "01"))
+    [record] = _real_run(
+        ["p-empty-family"], dr, ar, config={}, pattern_families=families
+    )
+    assert record["evidence_snapshot"]["p_healthy"] == pytest.approx(0.90)
+    assert _math.isfinite(record["evidence_snapshot"]["llr"])
+
+    # Wiring seam (tightened): drive run_pr_cycle_phase itself — empty issue
+    # queue, a dry_replay.jsonl next to the state file referencing a stored
+    # Pattern whose rule_family is set — with run_sprt_check patched at its
+    # source module (pr_cycle imports it function-locally). The patched
+    # check must receive a pattern_families map containing the store's
+    # family for that pattern; broken propagation (the map no longer built
+    # from ctx.pattern_store) fails here.
+    from unittest.mock import patch
+
+    from bluei.engine.commands.context import RunContext
+    from bluei.engine.pattern_store import FixPattern, FixPatternStore
+
+    store = FixPatternStore(tmp_path / "patterns.jsonl")
+    pid = store.append(
+        FixPattern(
+            pattern_id="",
+            rule="broad-except",
+            language="python",
+            file_path="src/example.py",
+            before_snippet="except:\n    pass",
+            after_snippet="except Exception:\n    pass",
+            diff_patch="",
+            confidence=0.95,
+            success_count=0,
+            failure_count=0,
+            skip_count=0,
+            source="claude",
+            created_at="2026-01-01T00:00:00+00:00",
+            last_used_at=None,
+            last_verified_at=None,
+            source_finding_ids=["f001"],
+            rule_family="synthetic-raise",
+        )
+    )
+    store._rebuild_from_disk()
+    assert store.get_pattern(pid) is not None
+    assert store.get_pattern(pid).rule_family == "synthetic-raise"
+
+    state_file = tmp_path / "state" / "status.json"
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    _write_jsonl(
+        state_file.parent / "dry_replay.jsonl",
+        [_dr_record(pattern_id=pid, outcome="hit", timestamp="2026-10-23T00:00:00+00:00")],
+    )
+
+    ctx = RunContext(
+        args=SimpleNamespace(
+            batch_pr_enabled=False,
+            allow_main_commit=False,
+            max_prs_per_run=0,
+        ),
+        repo_path=tmp_path / "repo",
+        state_file=state_file,
+        log_file=tmp_path / "run.log",
+        findings_file=tmp_path / "findings.jsonl",
+        worktree_root=tmp_path / "worktrees",
+        gh_repo_slug="acme/widget",
+        issues_data={"issues": []},
+        eligible_findings=[],
+        findings=[],
+        PER_REPO_BASELINE_CHECKS={},
+        pattern_store=store,
+        learning_mode="active",
+    )
+
+    with (
+        patch("bluei.engine.commands.pr_cycle.get_branch", return_value="main"),
+        patch(
+            "bluei.engine.commands.pr_cycle._select_candidates",
+            return_value=([], 0),
+        ),
+        patch("bluei.app.config.load_global_config", return_value={}),
+        patch("bluei.engine.sprt.run_sprt_check", return_value=[]) as mock_sprt,
+    ):
+        pr_cycle.run_pr_cycle_phase(ctx)
+
+    mock_sprt.assert_called_once()
+    wired_families = mock_sprt.call_args.kwargs.get("pattern_families")
+    assert wired_families is not None, (
+        "run_pr_cycle_phase must thread pattern_families into run_sprt_check"
+    )
+    assert wired_families.get(pid) == "synthetic-raise", (
+        "the store's rule_family for the dry-replayed pattern must propagate"
+    )

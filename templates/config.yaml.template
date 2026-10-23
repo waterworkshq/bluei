@@ -45,9 +45,13 @@ github:
   live_actions: false
   auto_merge: false
 
-# Learning / promotion governance (ADR-0007). Uncomment to opt in.
-# With the defaults below (commented), promote_pattern_to_recipe uses
-# gate_open_audit — eligible patterns are auto-promoted to staged recipes.
+# Learning / promotion governance (ADR-0007 + the runtime/build-time
+# refinement). Uncomment to opt in.
+# Defaults while commented: RUNTIME write-producing promotions (e.g.
+# promote_pattern_to_recipe) are GATE-CLOSED — eligible patterns queue a
+# pending_approval record; nothing writes without `bluei learn approve`.
+# Build-time curated tools (the Recipe Foundry) default gate_open_audit —
+# the human commit that runs the pipeline is the approval.
 #
 # learning:
 #   mode: active            # active | audit_only | paused

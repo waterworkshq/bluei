@@ -1,15 +1,23 @@
-"""Foundry pipeline — orchestrate proposal -> validation -> policy-routed write.
+"""Foundry pipeline — orchestration proposal -> validation -> policy-routed write.
 
 For each Pattern: propose_recipe -> resolve_policy(config, "recipe",
 "write_producing"):
-  - gate_open_audit (default): write YAML to staged_dir + append auto_promote.
-  - gate_closed: append pending_approval with proposed_recipe_yaml cached in
-    evidence_snapshot (ADR-0020 carve-out from ADR-0007 — Foundry is a trusted
-    author; does NOT call has_bundle_reference).
+  - gate_closed (explicit config): append pending_approval with
+    proposed_recipe_yaml cached in evidence_snapshot (ADR-0020 carve-out
+    from ADR-0007 — Foundry is a trusted author; does NOT call
+    has_bundle_reference).
+  - gate_open_audit (the default for unconfigured ``write_producing`` at
+    this BUILD-TIME gate — the human commit that runs the pipeline IS the
+    approval, per the ADR-0007 refinement + ADR-0020; the RUNTIME promoter
+    stays gate-closed by default): write YAML to staged_dir + append
+    auto_promote.
+  - paused (learning.mode=paused): hard hold (ADR-0013) — no YAML, no
+    pending record; counted in ``summary.held_paused``.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -25,6 +33,8 @@ from bluei.engine.models import now_iso
 from bluei.engine.pattern_store import FixPattern
 from bluei.tools.foundry.proposer import propose_recipe
 
+_logger = logging.getLogger(__name__)
+
 
 @dataclass
 class FoundrySummary:
@@ -36,6 +46,7 @@ class FoundrySummary:
     written: int = 0
     queued_pending: int = 0
     auto_promoted: int = 0
+    held_paused: int = 0
 
 
 def run_foundry(
@@ -76,7 +87,24 @@ def run_foundry(
         summary.proposed += 1
         recipe_id = proposal.parsed.id
         asset_ref = format_asset_ref("recipe", recipe_id)
-        policy = resolve_policy(config, "recipe", "write_producing")
+        # Build-time gate (ADR-0007 refinement + ADR-0020): the Foundry is a
+        # curated pipeline — the human commit that runs it IS the approval,
+        # so unconfigured write_producing defaults gate-open-with-audit
+        # here (the runtime promoter stays gate-closed by default).
+        policy = resolve_policy(
+            config, "recipe", "write_producing", default="gate_open_audit"
+        )
+
+        if policy == "paused":
+            # ADR-0013 kill switch: paused is a HARD HOLD — strictly stronger
+            # than gate_closed (no YAML write, no pending record). Counted in
+            # held_paused + logged so operators can see the switch engaged.
+            _logger.warning(
+                "foundry: promotion held for %s — learning.mode=paused",
+                asset_ref,
+            )
+            summary.held_paused += 1
+            continue
 
         if policy == "gate_closed":
             if approval_records_path is not None:

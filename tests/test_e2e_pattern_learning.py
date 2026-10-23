@@ -497,9 +497,22 @@ class TestIntegratedLifecycle:
         assert cross_pat.success_count >= PROMOTION_MIN_APPLICATIONS
 
         # Eligibility + actual promotion should write a recipe YAML.
+        # C1 (ADR-0007): write_producing defaults gate_closed now, so the
+        # promotion leg of this lifecycle test opts into gate-open explicitly.
         assert check_promotion_eligibility(cross_pat) is True
         recipes_dir = tmp_path / "recipes"
-        result = promote_pattern_to_recipe(cross_pat, "python", recipes_dir)
+        result = promote_pattern_to_recipe(
+            cross_pat,
+            "python",
+            recipes_dir,
+            config={
+                "learning": {
+                    "asset_classes": {
+                        "pattern": {"write_producing": "gate_open_audit"},
+                    },
+                },
+            },
+        )
         assert result == PromotionResult.PROMOTED
         recipe_files = sorted(recipes_dir.glob("*.yaml"))
         assert len(recipe_files) == 1
