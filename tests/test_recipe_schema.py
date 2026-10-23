@@ -1,5 +1,6 @@
 """Tests for bluei.engine.recipe_schema — dataclasses and YAML loader."""
 
+import json
 import yaml
 import tempfile
 from pathlib import Path
@@ -7,11 +8,14 @@ from pathlib import Path
 import pytest
 
 from bluei.engine.recipe_schema import (
+    MAX_RECIPE_ID_LENGTH,
     Recipe,
     RecipeMatch,
     RecipeReplacement,
     RecipeValidation,
+    is_safe_recipe_id,
     load_recipe,
+    parse_recipe,
 )
 
 
@@ -227,3 +231,52 @@ priority: 5
                 load_recipe(path)
         finally:
             path.unlink(missing_ok=True)
+
+
+class TestRecipeIdValidation:
+    """D3-03: the recipe id becomes a filename + asset_ref and may be
+    LLM-authored, so parse_recipe rejects path-like/over-long ids at the
+    schema gate."""
+
+    def test_accepts_slug_ids(self):
+        recipe = parse_recipe("id: eslint-no-unused-vars\nrule: eslint-no-unused-vars\n")
+        assert recipe.id == "eslint-no-unused-vars"
+
+    def test_accepts_max_length_and_mixed_charset(self):
+        long_id = "a" + "B9._-" * 19 + "xxxx"  # exactly 100 chars, all allowed
+        assert len(long_id) == MAX_RECIPE_ID_LENGTH
+        recipe = parse_recipe(f"id: {long_id}\nrule: F401\n")
+        assert recipe.id == long_id
+
+    @pytest.mark.parametrize(
+        "bad_id",
+        [
+            "../../escape",  # traversal (D3-03)
+            "/abs/path",  # absolute path (D3-03)
+            "a/b",  # nested path
+            "..",  # parent ref
+            "",  # empty
+            ".",  # bare dot
+            "-leading-dash",  # shell-flag-looking lead
+            "sp ace",  # whitespace
+            "tab\tid",  # control char
+            "uñîcode",  # non-ASCII
+            "semi;colon",  # shell metachar
+            "x" * (MAX_RECIPE_ID_LENGTH + 1),  # over-long
+        ],
+    )
+    def test_parse_recipe_rejects_unsafe_ids(self, bad_id):
+        text = f"id: {json.dumps(bad_id)}\nrule: F401\n"
+        with pytest.raises(ValueError, match="Recipe id must match"):
+            parse_recipe(text)
+
+    def test_parse_recipe_rejects_non_string_id(self):
+        with pytest.raises(ValueError, match="Recipe id must match"):
+            parse_recipe("id: 123\nrule: F401\n")
+
+    def test_is_safe_recipe_id_direct(self):
+        assert is_safe_recipe_id("eslint-no-unused-vars") is True
+        assert is_safe_recipe_id("../../escape") is False
+        assert is_safe_recipe_id("") is False
+        assert is_safe_recipe_id(None) is False
+        assert is_safe_recipe_id(123) is False

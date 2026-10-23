@@ -276,7 +276,8 @@ def test_regenerate_patterns_from_synthetic_bundle(tmp_path, monkeypatch):
 
 
 def test_regenerate_clears_stale_jsonl_but_keeps_calibration(tmp_path, monkeypatch):
-    """Regeneration is idempotent: pre-existing *.jsonl are cleared, non-jsonl files survive."""
+    """Regeneration is idempotent: on a successful (all-validated) run,
+    pre-existing *.jsonl are cleared, non-jsonl files survive."""
     from bluei.tools.seed import regenerate as regen_mod
     from bluei.tools.seed.validator import ValidationResult
 
@@ -285,16 +286,17 @@ def test_regenerate_clears_stale_jsonl_but_keeps_calibration(tmp_path, monkeypat
     (seeded_dir / "stale.jsonl").write_text("garbage\n", encoding="utf-8")
     (seeded_dir / "calibration.yaml").write_text("key: value\n", encoding="utf-8")
 
+    # Valid stub: the wipe only happens when every bundle validated (D3-06).
     monkeypatch.setattr(
         regen_mod,
         "validate_candidate",
         lambda *a, **k: ValidationResult(
-            valid=False,
-            before_triggered=False,
-            after_clean=False,
-            before_diagnostics=0,
+            valid=True,
+            before_triggered=True,
+            after_clean=True,
+            before_diagnostics=1,
             after_diagnostics=0,
-            reason="stub",
+            reason="",
         ),
     )
     bundles_dir = tmp_path / "golden_bundles"
@@ -318,4 +320,244 @@ def test_regenerate_clears_stale_jsonl_but_keeps_calibration(tmp_path, monkeypat
     )
 
     assert not (seeded_dir / "stale.jsonl").exists()
+    assert (seeded_dir / "ruff-b.jsonl").exists()  # productive run did the wipe
     assert (seeded_dir / "calibration.yaml").exists()
+
+
+def _write_bundle(bundles_dir: Path, rule: str, *, after="x = 2\n") -> None:
+    (bundles_dir / f"gb-{rule}.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "rule": rule,
+                "language": "python",
+                "before": "x = 1\n",
+                "after": after,
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_regenerate_fail_closed_validator_never_deletes_shipped_patterns(
+    tmp_path, monkeypatch
+):
+    """D3-06: when validation fails closed (e.g. ruff/eslint missing from
+    PATH), regeneration aborts BEFORE deleting anything — the shipped
+    seeded_patterns must survive byte-identical."""
+    from bluei.tools.seed import regenerate as regen_mod
+    from bluei.tools.seed.regenerate import RegenerationError
+    from bluei.tools.seed.validator import ValidationResult
+
+    seeded_dir = tmp_path / "seeded_patterns"
+    seeded_dir.mkdir()
+    (seeded_dir / "ruff-b.jsonl").write_text(
+        '{"pattern_id": "seed-ruff-b904"}\n', encoding="utf-8"
+    )
+    original = (seeded_dir / "ruff-b.jsonl").read_text(encoding="utf-8")
+    (seeded_dir / "calibration.yaml").write_text("key: value\n", encoding="utf-8")
+
+    bundles_dir = tmp_path / "golden_bundles"
+    bundles_dir.mkdir()
+    _write_bundle(bundles_dir, "ruff-b904")
+
+    monkeypatch.setattr(
+        regen_mod,
+        "validate_candidate",
+        lambda *a, **k: ValidationResult(
+            valid=False,
+            before_triggered=False,
+            after_clean=False,
+            before_diagnostics=0,
+            after_diagnostics=0,
+            reason="linter not on PATH",
+        ),
+    )
+
+    with pytest.raises(RegenerationError) as excinfo:
+        regenerate_patterns_from_bundles(
+            golden_bundles_dir=bundles_dir,
+            seeded_patterns_dir=seeded_dir,
+        )
+    assert "gb-ruff-b904" in str(excinfo.value)
+    assert "linter not on PATH" in str(excinfo.value)
+
+    # Nothing deleted, nothing written — the shipped dir is untouched.
+    assert (seeded_dir / "ruff-b.jsonl").read_text(encoding="utf-8") == original
+    assert (seeded_dir / "calibration.yaml").exists()
+    assert sorted(p.name for p in seeded_dir.iterdir()) == [
+        "calibration.yaml",
+        "ruff-b.jsonl",
+    ]
+
+
+def test_regenerate_mixed_valid_and_invalid_writes_nothing(tmp_path, monkeypatch):
+    """D3-06: one invalid bundle among valid ones aborts the whole run —
+    no wipe, no partial rewrite."""
+    from bluei.tools.seed import regenerate as regen_mod
+    from bluei.tools.seed.regenerate import RegenerationError
+    from bluei.tools.seed.validator import ValidationResult
+
+    seeded_dir = tmp_path / "seeded_patterns"
+    seeded_dir.mkdir()
+    (seeded_dir / "ruff-b.jsonl").write_text(
+        '{"pattern_id": "seed-ruff-b904"}\n', encoding="utf-8"
+    )
+
+    bundles_dir = tmp_path / "golden_bundles"
+    bundles_dir.mkdir()
+    _write_bundle(bundles_dir, "ruff-b904")  # would validate
+    _write_bundle(bundles_dir, "ruff-b017")
+
+    def _validate(candidate, ruff_executable="ruff", eslint_executable="eslint"):
+        valid = candidate.rule == "ruff-b904"
+        return ValidationResult(
+            valid=valid,
+            before_triggered=valid,
+            after_clean=valid,
+            before_diagnostics=1 if valid else 0,
+            after_diagnostics=0,
+            reason="" if valid else "bundle drifted",
+        )
+
+    monkeypatch.setattr(regen_mod, "validate_candidate", _validate)
+
+    with pytest.raises(RegenerationError) as excinfo:
+        regenerate_patterns_from_bundles(
+            golden_bundles_dir=bundles_dir,
+            seeded_patterns_dir=seeded_dir,
+        )
+    assert "gb-ruff-b017" in str(excinfo.value)
+
+    # The VALID bundle must not have been written either (all-or-nothing).
+    assert (seeded_dir / "ruff-b.jsonl").read_text(encoding="utf-8") == (
+        '{"pattern_id": "seed-ruff-b904"}\n'
+    )
+    assert sorted(p.name for p in seeded_dir.iterdir()) == ["ruff-b.jsonl"]
+
+
+def test_regenerate_all_valid_but_zero_patterns_keeps_existing_files(
+    tmp_path, monkeypatch
+):
+    """D3-06: a validated run that would write zero Patterns (all bundles
+    without a fix shape) must not wipe the existing seeded patterns."""
+    from bluei.tools.seed import regenerate as regen_mod
+    from bluei.tools.seed.validator import ValidationResult
+
+    seeded_dir = tmp_path / "seeded_patterns"
+    seeded_dir.mkdir()
+    (seeded_dir / "ruff-b.jsonl").write_text(
+        '{"pattern_id": "seed-ruff-b904"}\n', encoding="utf-8"
+    )
+
+    bundles_dir = tmp_path / "golden_bundles"
+    bundles_dir.mkdir()
+    _write_bundle(bundles_dir, "ruff-b904", after=None)  # no fix shape
+
+    monkeypatch.setattr(
+        regen_mod,
+        "validate_candidate",
+        lambda *a, **k: ValidationResult(
+            valid=True,
+            before_triggered=True,
+            after_clean=True,
+            before_diagnostics=1,
+            after_diagnostics=0,
+            reason="",
+        ),
+    )
+
+    summary = regenerate_patterns_from_bundles(
+        golden_bundles_dir=bundles_dir,
+        seeded_patterns_dir=seeded_dir,
+    )
+
+    assert summary == {
+        "bundles_read": 1,
+        "patterns_written": 0,
+        "skipped_autofixable": 1,
+    }
+    # Existing pattern file survives the no-write run.
+    assert (seeded_dir / "ruff-b.jsonl").read_text(encoding="utf-8") == (
+        '{"pattern_id": "seed-ruff-b904"}\n'
+    )
+
+
+class TestRegenerateScriptExitCodes:
+    """D3-06 script wrapper: regeneration failures exit non-zero (never a
+    silent wipe-and-exit-0). The script is loaded by path and its shipped
+    dirs are redirected to tmp_path — no shipped fixture is touched."""
+
+    @staticmethod
+    def _load_script():
+        import importlib.util
+
+        script_path = (
+            Path(__file__).resolve().parent.parent
+            / "scripts"
+            / "regenerate_seeded_patterns.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "regenerate_seeded_patterns_script", script_path
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _prepare(self, tmp_path, monkeypatch, *, valid: bool, after="x = 2\n"):
+        from bluei.tools.seed import regenerate as regen_mod
+        from bluei.tools.seed.validator import ValidationResult
+
+        script = self._load_script()
+        bundles_dir = tmp_path / "golden_bundles"
+        bundles_dir.mkdir()
+        _write_bundle(bundles_dir, "ruff-b904", after=after)
+        seeded_dir = tmp_path / "seeded_patterns"
+        seeded_dir.mkdir()
+        (seeded_dir / "ruff-b.jsonl").write_text(
+            '{"pattern_id": "seed-ruff-b904"}\n', encoding="utf-8"
+        )
+        monkeypatch.setattr(script, "GOLDEN_BUNDLES_DIR", bundles_dir)
+        monkeypatch.setattr(script, "SEEDED_PATTERNS_DIR", seeded_dir)
+        monkeypatch.setattr(
+            regen_mod,
+            "validate_candidate",
+            lambda *a, **k: ValidationResult(
+                valid=valid,
+                before_triggered=valid,
+                after_clean=valid,
+                before_diagnostics=1 if valid else 0,
+                after_diagnostics=0,
+                reason="" if valid else "linter not on PATH",
+            ),
+        )
+        return script, seeded_dir
+
+    def test_validation_failure_exits_nonzero_without_deleting(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        script, seeded_dir = self._prepare(tmp_path, monkeypatch, valid=False)
+        assert script.main() == 1
+        assert "gb-ruff-b904" in capsys.readouterr().err
+        assert (seeded_dir / "ruff-b.jsonl").exists()  # untouched
+
+    def test_zero_writes_exits_nonzero_without_deleting(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        script, seeded_dir = self._prepare(
+            tmp_path, monkeypatch, valid=True, after=None
+        )
+        assert script.main() == 1
+        assert "wrote 0 patterns" in capsys.readouterr().err
+        assert (seeded_dir / "ruff-b.jsonl").exists()  # untouched
+
+    def test_productive_run_exits_zero(self, tmp_path, monkeypatch):
+        script, seeded_dir = self._prepare(tmp_path, monkeypatch, valid=True)
+        assert script.main() == 0
+        lines = [
+            ln
+            for ln in (seeded_dir / "ruff-b.jsonl").read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+        assert len(lines) == 1
+        assert json.loads(lines[0])["pattern_id"] == "seed-ruff-b904"
