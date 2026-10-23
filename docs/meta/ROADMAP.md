@@ -25,6 +25,8 @@ What's been built, and what's next.
 
 | v0.2.0-beta.4 | "Review-and-Fix (Sprint 3: Seed Factory)": seeds/foundry/hatchery/benchmark hardening. Deferred fixes — demote maps to paused; torn governance trail lines counted and warned (valid records still applied); model discovery fails soft on malformed catalog entries, probes the backend once per cycle, and says "tier routing inert" loudly once. Review fixes (6 HIGH verified: 3 fixed, 3 deferred) — recipe ids validated at the schema gate before any filesystem use (LLM path-escape closed); the foundry's authoring-template gate implemented (disabled-when-unconfigured, hardcoded invocation removed); seed regeneration two-pass (validate all before wiping anything; non-zero exit on failure or zero writes). 6749 tests. Zero ADRs. C1 holds. |
 
+| v0.2.0-beta.5 | "Review-and-Fix (Sprint 4: Surfaces)": campaigns/review/reports + core plumbing/CLI hardening — the FINAL domain slice; every domain of the 0.2.0 arc now deep-reviewed. Review fixes (2 CRITICAL + 9 HIGH verified; 5 fixed): live PR creation no longer crashes on repository configs (reproduced by execution); runtime safety gates live (context never carried a safety config — every gate defaulted permissive); dry runs no longer push real batch branches; average cost per run is per-cycle (was cumulative ÷ per-cycle, unbounded); merge-finalizes preserve populated flywheel ledgers (+ first direct producer tests). Deferred: campaign learning-objective routing production-unreachable (product decision for the dogfooding gate), dependency-ordered planner silent arbitrary order, review-feedback loop driven only by a test stub, promotion min-repos gate per-worktree identity, gate-closed pattern→recipe dead end. 6779 tests. Zero ADRs. C1 holds. |
+
 > Full release notes live in [`CHANGELOG.md`](../CHANGELOG.md).
 
 ---
@@ -106,6 +108,18 @@ beta.1 shipped (see Delivered above). The beta phase is a long experimentation l
 | Standalone `bluei savings` CLI | **beta** (whenever) | alpha.1 deferral; redundant with report/dashboard surface. | alpha.1 deferral |
 
 > **Scoping rule (2026-07-05):** everything fixing, scoping, and feature-related lands in **beta**. rc has **no defined scope** — it is not a planned release with contents; it is a future maturity gate that will be scoped only when beta is mature enough to consider. Do not assign items to rc.
+
+### Deferred from v0.2.0-beta.5 (DELIVERED)
+
+| Deferred item | Target | Why deferred |
+|---------------|--------|--------------|
+| Campaign learning-objective routing is production-unreachable (CLI never passes an objective; injected consumer is dead wiring; learning report never persisted) | **dogfooding gate** (product decision) | Feature-surface choice (objective flag? report persistence?) — nothing can reach it before live campaigns exist |
+| dependency_ordered planner silently yields arbitrary order (repo slug → empty import graph → documented fallback never fires) | **beta.6+** | Needs the campaigns→app import-graph decoupling decision (long-tracked) + honest fallback semantics |
+| Review-feedback confidence loop driven only by a test-oriented stub (live GitHub feedback never reaches the adjuster) | **beta.6+** (design) | Pre-arc wiring; needs a real feedback ingestion path decision |
+| Campaign evidence failures swallowed at two layers (successful completion with empty evidence) | **beta.6+** | Surface/UX design for failure signaling |
+| Promotion min-repos gate satisfiable by five worktrees of one repo (repo_id = worktree stem); success-rate gate unreachable | **beta.6+** (design) | "What is a distinct repo for promotion" is an identity-semantics decision |
+| Gate-closed pattern→recipe promotion dead end (pending records lack what resume needs) | **beta.6+** | Same class as the foundry trail fix; shared-library path |
+| Sprint minors (composite patterns written to ephemeral worktrees; recovery cleanup from non-repo dir; conflict-split re-runs successful fixes; mnemo channel zero suppliers; patterns/learn blind to seeded patterns; CLI_REFERENCE drift) | **patch** | Recorded with evidence in the review files |
 
 ### Deferred from v0.2.0-beta.4 (DELIVERED)
 
