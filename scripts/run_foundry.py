@@ -112,7 +112,10 @@ def load_seeded_patterns() -> list[FixPattern]:
     return patterns
 
 
-def main(config: Optional[Dict[str, Any]] = None) -> int:
+def main(
+    config: Optional[Dict[str, Any]] = None,
+    approval_records_path: Optional[Path] = None,
+) -> int:
     # ADR-0020 / D3-05 gate FIRST, before any work: no configured authoring
     # template -> Foundry disabled, exit 0 (not crashed, not hardcoded).
     if config is None:
@@ -129,8 +132,21 @@ def main(config: Optional[Dict[str, Any]] = None) -> int:
     bundles = load_bundles()
     staged_dir = REPO_ROOT / "bluei" / "engine" / "recipes" / "staged"
 
+    # Under a gate-closed policy the pipeline queues proposals as pending
+    # approval records instead of writing staged YAML — without a records
+    # path those validated proposals are silently discarded. Default to the
+    # workspace state trail (overridable for tests and tooling). NOTE:
+    # workspace-level records are not yet surfaced by any repo's
+    # `learn inbox` (per-repo trails govern global assets — tracked design
+    # work); retaining the records is still strictly better than dropping
+    # them.
+    if approval_records_path is None:
+        approval_records_path = REPO_ROOT / "state" / "approval_records.jsonl"
+        approval_records_path.parent.mkdir(parents=True, exist_ok=True)
+
     print(f"Loaded {len(patterns)} seeded Patterns, {len(bundles)} bundles")
     print(f"Output dir: {staged_dir}")
+    print(f"Approvals:  {approval_records_path}")
     print()
 
     callback = make_claude_callback(template)
@@ -143,7 +159,7 @@ def main(config: Optional[Dict[str, Any]] = None) -> int:
         # so learning.mode and promotion policies hold; an empty config here
         # would silently resolve every gate to its permissive default.
         config=config,
-        approval_records_path=None,
+        approval_records_path=approval_records_path,
     )
 
     print()

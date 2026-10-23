@@ -107,7 +107,7 @@ class TestMainGate:
 
 
 class TestGovernanceConfigPassthrough:
-    def test_main_passes_loaded_config_to_pipeline(self, script, monkeypatch):
+    def test_main_passes_loaded_config_to_pipeline(self, script, monkeypatch, tmp_path):
         # An empty config at the pipeline call silently resolves every
         # governance gate to its permissive default — learning.mode=paused
         # or a gate_closed policy would not hold. The loaded config must
@@ -132,6 +132,48 @@ class TestGovernanceConfigPassthrough:
         monkeypatch.setattr(script, "make_claude_callback", lambda t: None)
         monkeypatch.setattr(script, "run_foundry", _fake_run_foundry)
 
-        rc = script.main(config=paused_cfg)
+        rc = script.main(
+            config=paused_cfg, approval_records_path=tmp_path / "approvals.jsonl"
+        )
         assert rc == 0
         assert captured["config"] == paused_cfg
+        assert captured["approval_records_path"] == tmp_path / "approvals.jsonl"
+
+    def test_gate_closed_proposals_persist_to_records(self, script, monkeypatch, tmp_path):
+        # Under gate_closed the pipeline queues pending approvals at the
+        # records path instead of writing staged YAML — a None path would
+        # silently discard every validated proposal. The default path lands
+        # in workspace state; an explicit path is honored.
+        from bluei.tools.foundry.pipeline import run_foundry as real_run
+        import json as _json
+
+        cfg = {
+            "foundry": {"claude_author_cmd_template": "cmd {prompt}"},
+            "learning": {"asset_classes": {"recipe": {"write_producing": "gate_closed"}}},
+        }
+
+        def _fake_run_foundry(patterns, bundles, llm_callback, staged_dir, config, approval_records_path):
+            assert approval_records_path is not None
+            from bluei.engine.jsonl import append_jsonl
+            append_jsonl(
+                approval_records_path,
+                {"asset_ref": "recipe:x", "decision": "pending_approval"},
+            )
+
+            class S:
+                proposed = written = rejected = held_paused = auto_promoted = 0
+                rejected_topics = []
+
+            S.proposed = 1
+            S.written = 1
+            return S()
+
+        monkeypatch.setattr(script, "load_seeded_patterns", lambda: [])
+        monkeypatch.setattr(script, "load_bundles", lambda: [])
+        monkeypatch.setattr(script, "run_foundry", _fake_run_foundry)
+
+        rc = script.main(config=cfg, approval_records_path=tmp_path / "appr.jsonl")
+        assert rc == 0
+        assert _json.loads((tmp_path / "appr.jsonl").read_text().strip())[
+            "decision"
+        ] == "pending_approval"
