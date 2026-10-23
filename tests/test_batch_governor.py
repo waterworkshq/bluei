@@ -486,3 +486,77 @@ class TestSplitResultPropagation:
 
         assert ok is True
         assert detail == "split-and-retried"
+
+
+class TestSplitSoloSubBatch:
+    def test_split_generated_solo_sub_batch_runs_batch_flow(self, tmp_path, make_finding):
+        # A split can produce a single-finding sub-batch. At the TOP level a
+        # solo batch delegates to the single-finding path, but inside the
+        # split recursion nobody re-routes it — it must run the normal batch
+        # flow (allow_solo) instead of returning "solo-delegated" and going
+        # unprocessed.
+        from bluei.engine.batch_pr import process_batch
+        from bluei.engine.models import BatchGroup
+
+        finding = make_finding(rule="ruff-b904", safe_to_autofix=False)
+        parent = BatchGroup(
+            batch_id="parent3", rule_pattern="ruff-b904", findings=[finding] * 6
+        )
+        solo_sub = BatchGroup(
+            batch_id="solo-sub", rule_pattern="ruff-b904", findings=[finding]
+        )
+        multi_sub = BatchGroup(
+            batch_id="multi-sub", rule_pattern="ruff-b904", findings=[finding] * 5
+        )
+        args = _make_args()
+        args.dry_run = True
+
+        def _apply(batch, **kwargs):
+            if batch.batch_id == "parent3":
+                return 1, 5
+            return (1, 0) if batch.is_solo else (0, 1)
+
+        with patch("bluei.engine.batch_pr._create_worktree", return_value=True), patch(
+            "bluei.engine.batch_pr.apply_batch_fixes", side_effect=_apply
+        ), patch(
+            "bluei.engine.batch_pr.should_split_batch",
+            side_effect=lambda batch, max_depth=3: batch.batch_id == "parent3",
+        ), patch(
+            "bluei.engine.batch_pr.handle_batch_failure",
+            return_value=[solo_sub, multi_sub],
+        ), patch(
+            "bluei.engine.git_ops.git_commit_all", return_value="ok"
+        ), patch(
+            "bluei.engine.git_ops.git_push_branch", return_value=True
+        ):
+            ok, detail = process_batch(
+                batch=parent,
+                repo_path=tmp_path,
+                args=args,
+                log_file=tmp_path / "log.txt",
+            )
+
+        # The solo sub-batch ran the batch flow and produced the dry-run PR;
+        # the multi sub-batch failed — the parent succeeds on the solo's PR.
+        assert ok is True
+        assert detail == "split-and-retried"
+        assert "batch-dry-run: would create PR for solo-sub" in (
+            tmp_path / "log.txt"
+        ).read_text()
+
+    def test_top_level_solo_still_delegates(self, tmp_path, make_finding):
+        from bluei.engine.batch_pr import process_batch
+        from bluei.engine.models import BatchGroup
+
+        finding = make_finding(rule="ruff-b904", safe_to_autofix=False)
+        solo = BatchGroup(
+            batch_id="top-solo", rule_pattern="ruff-b904", findings=[finding]
+        )
+        ok, detail = process_batch(
+            batch=solo,
+            repo_path=tmp_path,
+            args=_make_args(),
+            log_file=tmp_path / "log.txt",
+        )
+        assert ok is False
+        assert detail == "solo-delegated"
