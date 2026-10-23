@@ -1391,30 +1391,54 @@ def _process_one_issue(
 
 
 def _project_repo_safety(ctx: "RunContext") -> None:
-    """Load repository policy once; preserve caller-supplied configuration."""
-    if (
-        getattr(ctx, "repo_config", None) is None
-        and getattr(ctx, "safety_config", None) is None
-    ):
-        from bluei.app.config import ConfigManager
+    """Match registered checkout paths, preserving injected policy; fail closed."""
+    if getattr(ctx, "safety_config", None) is not None:
+        return
+    config = getattr(ctx, "repo_config", None)
+    if config is not None:
+        ctx.safety_config = config.safety
+        return
 
+    import logging
+    import yaml
+
+    from bluei.app.config import ConfigManager
+
+    try:
         manager = ConfigManager()
-        config = manager.load_repo_config(ctx.repo_path.name)
-        if config is None:
-            # The loader returns None for both absent and invalid config. Only
-            # absence permits the historical unconfigured-repository behavior.
-            try:
-                manager.get_repo_config_path(ctx.repo_path.name).stat()
-            except FileNotFoundError:
-                pass
-            else:
-                raise ValueError(
-                    f"Cannot load repository safety config for {ctx.repo_path.name}"
-                )
-        ctx.repo_config = config
-    if getattr(ctx, "safety_config", None) is None:
-        config = getattr(ctx, "repo_config", None)
-        ctx.safety_config = config.safety if config is not None else None
+        checkout = ctx.repo_path.resolve()
+        # registry.yaml retains identity even when its config is missing/broken.
+        try:
+            with (manager.workspace / "registry.yaml").open() as stream:
+                registry = yaml.safe_load(stream)
+        except FileNotFoundError:
+            registry = {"repos": []}
+        registered_names = set()
+        for entry in registry["repos"]:
+            if Path(entry["path"]).resolve() == checkout:
+                registered_names.add(entry["name"])
+
+        matches = {}
+        for name in manager.list_repo_configs():
+            candidate = manager.load_repo_config(name)
+            if candidate is None or not isinstance(candidate.safety, dict):
+                raise ValueError(f"Cannot load registration {name}")
+            if Path(candidate.path).resolve() == checkout:
+                matches[name] = candidate
+        if len(matches) > 1 or (registered_names and registered_names != set(matches)):
+            raise ValueError("Missing or ambiguous checkout registration")
+        config = next(iter(matches.values()), None)
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError, yaml.YAMLError) as exc:
+        # Unknown identity is not permission to borrow a same-basename policy.
+        ctx.safety_config = {"mode": "observe", "block_push": True}
+        logging.getLogger(__name__).warning(
+            "repository safety: cannot resolve registration for %s; "
+            "using fail-closed observe policy: %s", ctx.repo_path, exc,
+        )
+        return
+
+    ctx.repo_config = config
+    ctx.safety_config = config.safety if config is not None else None
 
 
 def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:

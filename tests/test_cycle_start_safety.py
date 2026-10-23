@@ -27,7 +27,7 @@ def _resolve_cycle_configs(workspace: Path, repo_name: str):
     """Exercise the production cycle-start projection in a temporary workspace."""
     from bluei.engine.commands.pr_cycle import _project_repo_safety
 
-    ctx = RunContext(args=None, repo_path=workspace / "repos" / repo_name)
+    ctx = RunContext(args=None, repo_path=workspace / repo_name)
     with patch("bluei.app.config.WORKSPACE", workspace):
         _project_repo_safety(ctx)
     return ctx.repo_config, ctx.safety_config
@@ -141,22 +141,41 @@ class TestPrCreationPathWithRepoConfig:
 
 
 class TestMergeOnlySafetyProjection:
-    @pytest.mark.parametrize("mode", ["observe", "pr", "merge"])
-    def test_merge_cycle_ctx_gets_safety_without_pr_phase(self, tmp_path, mode):
+    @pytest.mark.parametrize("mode", ["observe", "pr", "merge", "invalid", "unreadable"])
+    def test_merge_cycle_ctx_gets_safety_without_pr_phase(self, tmp_path, mode, caplog):
         from bluei.engine.commands import merge_cycle as mc
         from bluei.engine.safety_gates import check_merge_allowed
 
         safety = {"mode": mode, "protected_branches": ["develop"]}
-        ConfigManager(tmp_path).save_repo_config(RepoConfig(
-            id="demo", name="demo", path=str(tmp_path / "demo"),
+        import yaml
+
+        manager = ConfigManager(tmp_path)
+        (tmp_path / "registry.yaml").write_text(yaml.safe_dump({"repos": [{
+            "name": "service-prod", "path": str(tmp_path / "src" / "service"),
+        }]}))
+        config_path = manager.save_repo_config(RepoConfig(
+            id="demo", name="service-prod", path=str(tmp_path / "src" / "service"),
             language="python", safety=safety,
         ))
+        # A same-basename registration belongs to a different checkout and
+        # must never supply this phase's policy, even when it allows merges.
+        manager.save_repo_config(RepoConfig(
+            id="other", name="service", path=str(tmp_path / "other" / "service"),
+            language="python", safety={"mode": "merge"},
+        ))
+        if mode in ("invalid", "unreadable"):
+            if mode == "invalid":
+                config_path.write_text("[invalid")
+            else:
+                config_path.unlink()
+                config_path.mkdir()  # Opening an unreadable config raises OSError.
+            safety = {"mode": "observe", "block_push": True}
         ctx = RunContext(
             args=SimpleNamespace(
                 auto_merge_sandbox=True, merge_cooldown_minutes=0,
                 dry_run=False, auto_rebase_enabled=False, live_github_actions=False,
             ),
-            repo_path=tmp_path / "repos" / "demo",
+            repo_path=tmp_path / "src" / "service",
             log_file=tmp_path / "cycle.log",
             review_state_file=tmp_path / "review.json",
             gh_repo_slug="acme/sandbox-demo", open_prs=1,
@@ -176,6 +195,18 @@ class TestMergeOnlySafetyProjection:
             result = mc.run_merge_cycle_phase(ctx)
 
         assert ctx.safety_config == safety
+        if mode in ("invalid", "unreadable"):
+            assert ctx.repo_config is None
+            assert "fail-closed observe" in caplog.text
+            from bluei.engine.git_ops import git_push_branch
+            with patch("bluei.engine.git_ops.run_capture") as push:
+                assert not git_push_branch(
+                    ctx.repo_path, "qa/fix", ctx.log_file, False,
+                    safety_config=ctx.safety_config,
+                )
+            push.assert_not_called()
+        else:
+            assert ctx.repo_config.name == "service-prod"
         gate.assert_called_once_with(safety)
         if mode == "merge":
             assert result[1] == 1
@@ -211,14 +242,99 @@ class TestMergeOnlySafetyProjection:
         "[invalid", "[]", "name: demo\n",
         "id: demo\nname: demo\npath: /demo\nlanguage: python\nsafety:\n  mode: invalid\n",
     ])
-    def test_invalid_existing_config_fails_closed(self, tmp_path, contents):
+    def test_invalid_existing_config_fails_closed(self, tmp_path, contents, caplog):
         path = ConfigManager(tmp_path).get_repo_config_path("demo")
         path.parent.mkdir(parents=True)
         path.write_text(contents)
-        with pytest.raises((ValueError, TypeError, AttributeError)):
-            _resolve_cycle_configs(tmp_path, "demo")
+        repo, safety = _resolve_cycle_configs(tmp_path, "demo")
+        assert repo is None
+        assert safety == {"mode": "observe", "block_push": True}
+        assert "fail-closed observe" in caplog.text
 
-    def test_unreadable_config_fails_closed(self, tmp_path):
+    def test_unreadable_config_fails_closed(self, tmp_path, caplog):
+        ConfigManager(tmp_path).save_repo_config(RepoConfig(
+            id="demo", name="demo", path=str(tmp_path / "demo"), language="python",
+        ))
         with patch("bluei.app.config.ConfigManager.load_repo_config", side_effect=PermissionError("unreadable")):
-            with pytest.raises(PermissionError, match="unreadable"):
-                _resolve_cycle_configs(tmp_path, "demo")
+            repo, safety = _resolve_cycle_configs(tmp_path, "demo")
+        assert repo is None
+        assert safety == {"mode": "observe", "block_push": True}
+        assert "unreadable" in caplog.text
+        assert "fail-closed observe" in caplog.text
+
+    def test_pr_phase_continues_learning_and_queue_after_invalid_config(self, tmp_path, caplog):
+        from bluei.engine.commands import pr_cycle as pc
+
+        path = ConfigManager(tmp_path).get_repo_config_path("service-prod")
+        path.parent.mkdir(parents=True)
+        path.write_text("[invalid")
+        ctx = RunContext(
+            args=SimpleNamespace(allow_main_commit=False),
+            repo_path=tmp_path / "src" / "service",
+            state_file=tmp_path / "state" / "run.json",
+            log_file=tmp_path / "run.log",
+        )
+        with (
+            patch("bluei.app.config.WORKSPACE", tmp_path),
+            patch("bluei.app.config.load_global_config", return_value={"learning": {"mode": "paused"}}),
+            patch.object(pc, "_select_candidates", return_value=([], 0)) as queue,
+            patch.object(pc, "get_branch", return_value="qa/test"),
+        ):
+            result = pc.run_pr_cycle_phase(ctx)
+        queue.assert_called_once()
+        assert result["fix_attempts"] == 0
+        assert ctx.learning_mode == "paused"
+        assert ctx.repo_config is None
+        assert ctx.safety_config == {"mode": "observe", "block_push": True}
+        assert "fail-closed observe" in caplog.text
+
+    def test_colliding_basename_does_not_register_another_checkout(self, tmp_path):
+        ConfigManager(tmp_path).save_repo_config(RepoConfig(
+            id="other", name="demo", path=str(tmp_path / "other" / "demo"),
+            language="python", safety={"mode": "merge"},
+        ))
+        repo, safety = _resolve_cycle_configs(tmp_path, "demo")
+        assert repo is None
+        assert safety is None  # A truly unregistered checkout retains compatibility.
+
+    @pytest.mark.parametrize("problem", ["missing", "duplicate", "invalid-registry", "unreadable-registry"])
+    def test_uncertain_registration_fails_closed(self, tmp_path, problem, caplog):
+        import yaml
+
+        manager = ConfigManager(tmp_path)
+        checkout = tmp_path / "demo"
+        registry = {"repos": [{"name": "service-prod", "path": str(checkout)}]}
+        (tmp_path / "registry.yaml").write_text(yaml.safe_dump(registry))
+        if problem == "duplicate":
+            for name in ("service-prod", "other-alias"):
+                manager.save_repo_config(RepoConfig(
+                    id=name, name=name, path=str(checkout), language="python",
+                    safety={"mode": "merge"},
+                ))
+        elif problem == "invalid-registry":
+            (tmp_path / "registry.yaml").write_text("[invalid")
+        elif problem == "unreadable-registry":
+            (tmp_path / "registry.yaml").unlink()
+            (tmp_path / "registry.yaml").mkdir()
+        repo, safety = _resolve_cycle_configs(tmp_path, "demo")
+        assert repo is None
+        assert safety == {"mode": "observe", "block_push": True}
+        assert "fail-closed observe" in caplog.text
+
+    def test_symlink_checkout_matches_resolved_registration_path(self, tmp_path):
+        from bluei.engine.commands.pr_cycle import _project_repo_safety
+
+        checkout = tmp_path / "src" / "service"
+        checkout.mkdir(parents=True)
+        link = tmp_path / "service-link"
+        link.symlink_to(checkout, target_is_directory=True)
+        manager = ConfigManager(tmp_path)
+        manager.save_repo_config(RepoConfig(
+            id="prod", name="service-prod", path=str(checkout), language="python",
+            safety={"mode": "pr"},
+        ))
+        ctx = RunContext(args=None, repo_path=link)
+        with patch("bluei.app.config.WORKSPACE", tmp_path):
+            _project_repo_safety(ctx)
+        assert ctx.repo_config.name == "service-prod"
+        assert ctx.safety_config == {"mode": "pr"}

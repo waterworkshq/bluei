@@ -97,9 +97,9 @@ def check_push_allowed(
 ) -> Tuple[bool, str]:
     """Gate for ``git push``.
 
-    bluei must NEVER push directly to a protected branch (main/master by
-    default) — it only pushes feature branches that become PR heads. Pushing
-    to a protected branch would bypass the review workflow.
+    ``block_push`` forbids all pushes when registration lookup fails closed.
+    Otherwise bluei must NEVER push directly to a protected branch (main/master
+    by default) — only feature branches that become PR heads.
 
     Returns:
         ``(allowed, reason)``. ``reason`` is safe to surface in logs. When
@@ -108,6 +108,8 @@ def check_push_allowed(
     """
     if not safety_config:
         return True, "no-safety-config"
+    if safety_config.get("block_push"):
+        return False, "fail-closed safety policy forbids push"
     protected = _get_protected_branches(safety_config)
     if is_protected_branch(branch, protected):
         return (
