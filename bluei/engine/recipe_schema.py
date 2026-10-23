@@ -6,10 +6,35 @@ YAML recipe files into Recipe instances used by the engine and handlers.
 
 from __future__ import annotations
 
+import re
+
 import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+
+# Safe recipe-id grammar (D3-03): the id may be LLM-authored (Recipe Foundry)
+# and is used to build filenames (`staged_dir / f"{id}.yaml"`) and asset_refs,
+# so anything that could escape the target directory (path separators,
+# absolute paths, traversal segments) or blow up filenames is rejected at
+# parse time — every downstream use is then safe by construction.
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+MAX_RECIPE_ID_LENGTH = 100
+
+
+def is_safe_recipe_id(recipe_id: object) -> bool:
+    """Return True if ``recipe_id`` is a filesystem-safe recipe slug.
+
+    A safe id is a string matching ``[A-Za-z0-9][A-Za-z0-9._-]*`` of at most
+    :data:`MAX_RECIPE_ID_LENGTH` characters — no path separators, no leading
+    dot, no traversal segments, no absolute paths.
+    """
+    return (
+        isinstance(recipe_id, str)
+        and bool(_SAFE_ID_RE.match(recipe_id))
+        and len(recipe_id) <= MAX_RECIPE_ID_LENGTH
+    )
 
 
 @dataclass
@@ -118,7 +143,9 @@ def parse_recipe(text: str) -> Recipe:
         Fully-populated Recipe with nested Match, Replacement, and Validation.
 
     Raises:
-        ValueError: If the text is not a YAML mapping or lacks required fields.
+        ValueError: If the text is not a YAML mapping, lacks required fields,
+            or the id is not a filesystem-safe slug (see
+            :func:`is_safe_recipe_id`).
     """
     raw = yaml.safe_load(text)
     if not isinstance(raw, dict):
@@ -128,6 +155,18 @@ def parse_recipe(text: str) -> Recipe:
     for key in required:
         if key not in raw:
             raise ValueError(f"Recipe text missing required field: {key}")
+
+    # D3-03: the id reaches the filesystem (filename) and asset_refs, and may
+    # be LLM-authored — reject path-like/over-long ids at the schema gate.
+    if not is_safe_recipe_id(raw["id"]):
+        shown = repr(raw["id"])
+        if len(shown) > 60:
+            shown = shown[:57] + "..."
+        raise ValueError(
+            "Recipe id must match [A-Za-z0-9][A-Za-z0-9._-]* and be at most "
+            f"{MAX_RECIPE_ID_LENGTH} characters (got {shown}); the id is "
+            "used as a filename, so path-like ids are rejected"
+        )
 
     match_raw = raw.get("match", {})
     match = RecipeMatch(
