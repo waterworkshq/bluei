@@ -1390,6 +1390,33 @@ def _process_one_issue(
     return counters.to_deltas()
 
 
+def _project_repo_safety(ctx: "RunContext") -> None:
+    """Load repository policy once; preserve caller-supplied configuration."""
+    if (
+        getattr(ctx, "repo_config", None) is None
+        and getattr(ctx, "safety_config", None) is None
+    ):
+        from bluei.app.config import ConfigManager
+
+        manager = ConfigManager()
+        config = manager.load_repo_config(ctx.repo_path.name)
+        if config is None:
+            # The loader returns None for both absent and invalid config. Only
+            # absence permits the historical unconfigured-repository behavior.
+            try:
+                manager.get_repo_config_path(ctx.repo_path.name).stat()
+            except FileNotFoundError:
+                pass
+            else:
+                raise ValueError(
+                    f"Cannot load repository safety config for {ctx.repo_path.name}"
+                )
+        ctx.repo_config = config
+    if getattr(ctx, "safety_config", None) is None:
+        config = getattr(ctx, "repo_config", None)
+        ctx.safety_config = config.safety if config is not None else None
+
+
 def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
     """Run the PR cycle: queue candidates, apply fixes, create PRs."""
     if args:
@@ -1461,24 +1488,8 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
     )
     ctx.governance_state = project_governance_state(_approval_records)
 
-    # Repo Taste Profile (ADR-0017 principle): resolve the repo's
-    # RepoConfig.framework once at cycle start so the taste channel can read
-    # it per-finding without re-loading the YAML. Function-local import
-    # mirrors the load_global_config import below (no enforce_architecture
-    # violation; pr_cycle is already an app.config consumer).
-    try:
-        from bluei.app.config import ConfigManager
-
-        ctx.repo_config = ConfigManager().load_repo_config(ctx.repo_path.name)
-    except Exception:
-        ctx.repo_config = None
-
-    # Runtime safety gates (D7-H1): lift RepoConfig.safety into the cycle
-    # projection so the pr/merge safety gates see the configured policy.
-    # Previously ``getattr(ctx, "safety_config", None)`` downstream was
-    # structurally always None (RunContext had no such field), so
-    # protected-branch / safety-mode enforcement never activated.
-    ctx.safety_config = ctx.repo_config.safety if ctx.repo_config else None
+    # Share repository identity and safety policy with merge-only cycles.
+    _project_repo_safety(ctx)
 
     # Learning mode (ADR-0013): resolve the global tri-state ceiling once at
     # cycle start. Defaults to ``active`` when no config.yaml is present.

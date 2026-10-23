@@ -298,6 +298,7 @@ def handle_batch_failure(
     repo_path: Path,
     args: Any,
     log_file: Path,
+    safety_config: Optional[dict] = None,
 ) -> List[BatchGroup]:
     """Main failure handler for a batch with excessive fix failures.
 
@@ -334,6 +335,7 @@ def handle_batch_failure(
             successful_findings,
             batch,
             log_file,
+            safety_config=safety_config,
             dry_run=getattr(args, "dry_run", True),
         )
         _append_text(

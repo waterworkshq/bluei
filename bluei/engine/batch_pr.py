@@ -258,7 +258,9 @@ def process_batch(
         split_warranted = should_split_batch(batch, max_depth=max_depth)
         if split_warranted and getattr(args, "batch_pr_split_on_failure", True):
             batch.retry_count += 1
-            sub_batches = handle_batch_failure(batch, repo_path, args, log_file)
+            sub_batches = handle_batch_failure(
+                batch, repo_path, args, log_file, safety_config=safety_config
+            )
             # Process sub-batches recursively; propagate their results —
             # "split-and-retried" is success only if at least one sub-batch
             # produced a PR. Reporting success when every sub-batch failed

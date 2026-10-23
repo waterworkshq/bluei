@@ -61,7 +61,12 @@ def run_merge_cycle_phase(*args, **kwargs) -> MergeCycleResult:
         blocked_reasons = ctx.blocked_reasons
         reconcile_event = ctx.reconcile_event
         # F1: runtime safety gates (ctx path — defensive getattr keeps
-        # historical behaviour when ctx lacks these attributes).
+        # historical behaviour when ctx lacks these attributes). A
+        # merge-only run never executes the pr-phase setup, so project the
+        # repository policy here too (no-op when already populated).
+        from bluei.engine.commands.pr_cycle import _project_repo_safety
+
+        _project_repo_safety(ctx)
         safety_config = getattr(ctx, "safety_config", None)
     else:
         repo_path = kwargs["repo_path"]

@@ -346,6 +346,48 @@ class TestSplitOnConflicts:
 
 
 class TestHandleBatchFailure:
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_partial_recovery_forwards_policy_and_dry_run(self, tmp_path, make_finding, dry_run):
+        from types import SimpleNamespace
+
+        findings = [
+            make_finding(finding_id="success", path="fixed.py"),
+            make_finding(finding_id="failed", path="failed.py"),
+        ]
+        batch = make_batch(
+            findings,
+            fix_results={
+                "success": FixResult(finding_id="success", status="success"),
+                "failed": FixResult(finding_id="failed", status="failed"),
+            },
+            worktree_path=tmp_path / "worktree", branch="qa/partial",
+        )
+        safety = {"mode": "observe", "protected_branches": ["qa/partial"]}
+        log = tmp_path / "recovery.log"
+        with (
+            patch("bluei.engine.git_ops.git_commit_all", return_value="committed") as commit,
+            patch("bluei.engine.git_ops.git_push_branch", return_value=False) as push,
+            patch("bluei.engine.utils.run_no_capture") as stage,
+        ):
+            sub_batches = handle_batch_failure(
+                batch, tmp_path, SimpleNamespace(dry_run=dry_run, max_split_depth=3),
+                log, safety_config=safety,
+            )
+
+        push.assert_called_once_with(
+            batch.worktree_path, batch.branch, log_file=log,
+            dry_run=dry_run, safety_config=safety,
+        )
+        assert push.call_args.kwargs["safety_config"] is safety
+        assert commit.call_args.kwargs["dry_run"] is dry_run
+        if dry_run:
+            stage.assert_not_called()
+        else:
+            stage.assert_called_once_with(["git", "add", "fixed.py"], cwd=batch.worktree_path)
+        assert len(sub_batches) == 1
+        assert sub_batches[0].findings == [findings[1]]
+        assert "batch-partial-commit: skipped/failed" in log.read_text()
+
     def test_separates_successes_from_failures(self, make_finding):
         findings = [
             make_finding(finding_id="f001"),
@@ -699,11 +741,16 @@ class TestProcessBatchSplitWiring:
                 side_effect=[(True, "dry-run-pr-simulated"), (False, "x")],
             ),
         ):
+            safety = {"mode": "observe", "protected_branches": ["main"]}
+            args = FakeArgs()
+            log = tmp_path / "batch.log"
             ok, reason = process_batch(
-                batch, Path("/tmp/repo"), FakeArgs(), Path("/tmp/batch.log")
+                batch, Path("/tmp/repo"), args, log, safety_config=safety
             )
 
-        mock_handle.assert_called_once()
+        mock_handle.assert_called_once_with(
+            batch, Path("/tmp/repo"), args, log, safety_config=safety
+        )
         assert ok is True
         assert reason.startswith("split-and-retried")
 
