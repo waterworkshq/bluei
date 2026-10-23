@@ -140,35 +140,31 @@ class TestGovernanceConfigPassthrough:
         assert captured["config"] == paused_cfg
         assert captured["approval_records_path"] == tmp_path / "approvals.jsonl"
 
-    def test_gate_closed_proposals_persist_to_records(self, script, monkeypatch, tmp_path):
-        # Under gate_closed the pipeline queues pending approvals at the
-        # records path instead of writing staged YAML — a None path would
-        # silently discard every validated proposal. The default path lands
-        # in workspace state; an explicit path is honored.
-        from bluei.tools.foundry.pipeline import run_foundry as real_run
-        import json as _json
-
+    def test_gate_closed_run_forwards_records_path_and_exits_zero(self, script, monkeypatch, tmp_path):
+        # Script-level scope: the records path forwarded to the pipeline is
+        # real (never None — a None path makes gate-closed proposals
+        # vanish), and a queued-not-written run exits 0. The pipeline-level
+        # persistence contract (pending_approval record with cached YAML
+        # written to the records file) is verified end-to-end in
+        # test_recipe_foundry.py::TestRunFoundryGateClosed.
         cfg = {
             "foundry": {"claude_author_cmd_template": "cmd {prompt}"},
             "learning": {"asset_classes": {"recipe": {"write_producing": "gate_closed"}}},
         }
 
-        def _fake_run_foundry(patterns, bundles, llm_callback, staged_dir, config, approval_records_path):
-            assert approval_records_path is not None
-            from bluei.engine.jsonl import append_jsonl
-            append_jsonl(
-                approval_records_path,
-                {"asset_ref": "recipe:x", "decision": "pending_approval"},
-            )
+        captured = {}
 
-            class S:
-                proposed = written = rejected = held_paused = auto_promoted = 0
-                queued_pending = 0
-                rejected_topics = []
+        class S:
+            proposed = written = rejected = held_paused = auto_promoted = 0
+            queued_pending = 0
+            rejected_topics = []
 
-            S.proposed = 1
-            S.queued_pending = 1  # real gate-closed outcome: queued, not written
-            return S()
+        def _fake_run_foundry(**kwargs):
+            captured.update(kwargs)
+            summary = S()
+            summary.proposed = 1
+            summary.queued_pending = 1  # real gate-closed outcome shape
+            return summary
 
         monkeypatch.setattr(script, "load_seeded_patterns", lambda: [])
         monkeypatch.setattr(script, "load_bundles", lambda: [])
@@ -176,6 +172,4 @@ class TestGovernanceConfigPassthrough:
 
         rc = script.main(config=cfg, approval_records_path=tmp_path / "appr.jsonl")
         assert rc == 0
-        assert _json.loads((tmp_path / "appr.jsonl").read_text().strip())[
-            "decision"
-        ] == "pending_approval"
+        assert captured["approval_records_path"] == tmp_path / "appr.jsonl"
