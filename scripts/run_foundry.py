@@ -173,7 +173,10 @@ def main(
         for topic in summary.rejected_topics:
             print(f"    - {topic}")
 
-    return 0 if summary.written > 0 else 1
+    # A gate-closed run that queued proposals for approval is productive
+    # too — exiting non-zero would signal failure for a healthy queueing
+    # run. Only a run that neither wrote nor queued anything exits 1.
+    return 0 if (summary.written > 0 or summary.queued_pending > 0) else 1
 
 
 if __name__ == "__main__":

@@ -118,6 +118,7 @@ class TestGovernanceConfigPassthrough:
 
         class _Summary:
             proposed = written = rejected = held_paused = auto_promoted = 0
+            queued_pending = 0
             rejected_topics = []
 
         def _fake_run_foundry(**kwargs):
@@ -162,10 +163,11 @@ class TestGovernanceConfigPassthrough:
 
             class S:
                 proposed = written = rejected = held_paused = auto_promoted = 0
+                queued_pending = 0
                 rejected_topics = []
 
             S.proposed = 1
-            S.written = 1
+            S.queued_pending = 1  # real gate-closed outcome: queued, not written
             return S()
 
         monkeypatch.setattr(script, "load_seeded_patterns", lambda: [])
