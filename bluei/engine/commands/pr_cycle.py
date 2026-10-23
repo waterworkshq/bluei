@@ -1413,13 +1413,21 @@ def _project_repo_safety(ctx: "RunContext") -> None:
                 registry = yaml.safe_load(stream)
         except FileNotFoundError:
             registry = {"repos": []}
-        registered_names = set()
+        identities = {}
         for entry in registry["repos"]:
-            if Path(entry["path"]).resolve() == checkout:
-                registered_names.add(entry["name"])
+            name, path = entry["name"], Path(entry["path"]).resolve()
+            if name in identities and identities[name] != path:
+                raise ValueError(f"Conflicting registration identity for {name}")
+            identities[name] = path
+        registered_names = {name for name, path in identities.items() if path == checkout}
 
         matches = {}
         for name in manager.list_repo_configs():
+            # Registry identity proves these configs unrelated even when broken.
+            if name in identities and identities[name] != checkout:
+                continue
+            # Unmapped configs can still be config-only aliases of this checkout;
+            # inspect them to detect ambiguity, failing closed if unreadable.
             candidate = manager.load_repo_config(name)
             if candidate is None or not isinstance(candidate.safety, dict):
                 raise ValueError(f"Cannot load registration {name}")

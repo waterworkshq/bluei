@@ -142,7 +142,8 @@ class TestPrCreationPathWithRepoConfig:
 
 class TestMergeOnlySafetyProjection:
     @pytest.mark.parametrize("mode", ["observe", "pr", "merge", "invalid", "unreadable"])
-    def test_merge_cycle_ctx_gets_safety_without_pr_phase(self, tmp_path, mode, caplog):
+    @pytest.mark.parametrize("unrelated", ["valid", "malformed", "unreadable"])
+    def test_merge_cycle_ctx_gets_safety_without_pr_phase(self, tmp_path, mode, caplog, unrelated):
         from bluei.engine.commands import merge_cycle as mc
         from bluei.engine.safety_gates import check_merge_allowed
 
@@ -150,19 +151,25 @@ class TestMergeOnlySafetyProjection:
         import yaml
 
         manager = ConfigManager(tmp_path)
-        (tmp_path / "registry.yaml").write_text(yaml.safe_dump({"repos": [{
-            "name": "service-prod", "path": str(tmp_path / "src" / "service"),
-        }]}))
+        (tmp_path / "registry.yaml").write_text(yaml.safe_dump({"repos": [
+            {"name": "service-prod", "path": str(tmp_path / "src" / "service")},
+            {"name": "service", "path": str(tmp_path / "other" / "service")},
+        ]}))
         config_path = manager.save_repo_config(RepoConfig(
             id="demo", name="service-prod", path=str(tmp_path / "src" / "service"),
             language="python", safety=safety,
         ))
         # A same-basename registration belongs to a different checkout and
         # must never supply this phase's policy, even when it allows merges.
-        manager.save_repo_config(RepoConfig(
+        other_path = manager.save_repo_config(RepoConfig(
             id="other", name="service", path=str(tmp_path / "other" / "service"),
             language="python", safety={"mode": "merge"},
         ))
+        if unrelated == "malformed":
+            other_path.write_text("[invalid")
+        elif unrelated == "unreadable":
+            other_path.unlink()
+            other_path.mkdir()
         if mode in ("invalid", "unreadable"):
             if mode == "invalid":
                 config_path.write_text("[invalid")
@@ -207,6 +214,8 @@ class TestMergeOnlySafetyProjection:
             push.assert_not_called()
         else:
             assert ctx.repo_config.name == "service-prod"
+            assert "block_push" not in ctx.safety_config
+            assert "fail-closed observe" not in caplog.text
         gate.assert_called_once_with(safety)
         if mode == "merge":
             assert result[1] == 1
@@ -316,6 +325,65 @@ class TestMergeOnlySafetyProjection:
         elif problem == "unreadable-registry":
             (tmp_path / "registry.yaml").unlink()
             (tmp_path / "registry.yaml").mkdir()
+        repo, safety = _resolve_cycle_configs(tmp_path, "demo")
+        assert repo is None
+        assert safety == {"mode": "observe", "block_push": True}
+        assert "fail-closed observe" in caplog.text
+
+    @pytest.mark.parametrize("unknown", ["malformed", "unreadable", "alias", "unrelated"])
+    def test_unmapped_configs_require_identity_inspection(self, tmp_path, unknown, caplog):
+        import yaml
+
+        manager = ConfigManager(tmp_path)
+        checkout = tmp_path / "demo"
+        (tmp_path / "registry.yaml").write_text(yaml.safe_dump({"repos": [
+            {"name": "service-prod", "path": str(checkout)},
+        ]}))
+        manager.save_repo_config(RepoConfig(
+            id="prod", name="service-prod", path=str(checkout), language="python",
+            safety={"mode": "merge"},
+        ))
+        path = manager.save_repo_config(RepoConfig(
+            id="unknown", name="unknown", language="python",
+            path=str(checkout if unknown == "alias" else tmp_path / "other"),
+            safety={"mode": "observe"},
+        ))
+        if unknown == "malformed":
+            path.write_text("[invalid")
+        elif unknown == "unreadable":
+            path.unlink()
+            path.mkdir()
+        # A unique registry entry cannot exclude config-only aliases. Unknown
+        # broken configs may conceal one; only a readable other path proves
+        # them unrelated. Keep ambiguity detection even for registered checkouts.
+        repo, safety = _resolve_cycle_configs(tmp_path, "demo")
+        if unknown == "unrelated":
+            assert repo.name == "service-prod"
+            assert safety == {"mode": "merge"}
+        else:
+            assert repo is None
+            assert safety == {"mode": "observe", "block_push": True}
+            assert "fail-closed observe" in caplog.text
+
+    @pytest.mark.parametrize("problem", ["wrong-path", "conflicting-name", "two-identities"])
+    def test_current_registry_identity_must_match_config(self, tmp_path, problem, caplog):
+        import yaml
+
+        manager = ConfigManager(tmp_path)
+        checkout = tmp_path / "demo"
+        entries = [{"name": "service-prod", "path": str(checkout)}]
+        if problem == "conflicting-name":
+            entries.append({"name": "service-prod", "path": str(tmp_path / "other")})
+        elif problem == "two-identities":
+            entries.append({"name": "second", "path": str(checkout)})
+            manager.save_repo_config(RepoConfig(
+                id="second", name="second", path=str(checkout), language="python",
+            ))
+        (tmp_path / "registry.yaml").write_text(yaml.safe_dump({"repos": entries}))
+        manager.save_repo_config(RepoConfig(
+            id="prod", name="service-prod", language="python", safety={"mode": "merge"},
+            path=str(tmp_path / "other" if problem == "wrong-path" else checkout),
+        ))
         repo, safety = _resolve_cycle_configs(tmp_path, "demo")
         assert repo is None
         assert safety == {"mode": "observe", "block_push": True}
