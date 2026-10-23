@@ -705,7 +705,7 @@ class TestProcessBatchSplitWiring:
 
         mock_handle.assert_called_once()
         assert ok is True
-        assert reason == "split-and-retried"
+        assert reason.startswith("split-and-retried")
 
     @patch("bluei.engine.batch_pr.apply_batch_fixes")
     @patch("bluei.engine.worktree.hydrate_worktree")

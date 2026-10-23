@@ -485,7 +485,7 @@ class TestSplitResultPropagation:
             )
 
         assert ok is True
-        assert detail == "split-and-retried"
+        assert detail == "split-and-retried:1"
 
 
 class TestSplitSoloSubBatch:
@@ -539,7 +539,7 @@ class TestSplitSoloSubBatch:
         # The solo sub-batch ran the batch flow and produced the dry-run PR;
         # the multi sub-batch failed — the parent succeeds on the solo's PR.
         assert ok is True
-        assert detail == "split-and-retried"
+        assert detail == "split-and-retried:1"
         assert "batch-dry-run: would create PR for solo-sub" in (
             tmp_path / "log.txt"
         ).read_text()
@@ -633,3 +633,120 @@ class TestSplitChildDedupExemption:
         # Only the top-level parent consulted the duplicate check.
         assert len(dup_lookups) == 1
         assert "batch-skip-duplicate" not in (tmp_path / "log.txt").read_text()
+
+
+class TestSplitPrAccounting:
+    def test_two_successful_subs_report_two_prs(self, tmp_path, make_finding):
+        # The split success detail carries the sub-PR count; the cycle
+        # counts them all against its PR budget instead of one.
+        from bluei.engine.batch_pr import parse_pr_count, process_batch
+        from bluei.engine.models import BatchGroup
+
+        finding = make_finding(rule="ruff-b904", safe_to_autofix=False)
+        parent = BatchGroup(
+            batch_id="parent5", rule_pattern="ruff-b904", findings=[finding] * 6
+        )
+        sub_a = BatchGroup(
+            batch_id="s5-a", rule_pattern="ruff-b904", findings=[finding] * 3
+        )
+        sub_b = BatchGroup(
+            batch_id="s5-b", rule_pattern="ruff-b904", findings=[finding] * 3
+        )
+        args = _make_args()
+        args.dry_run = True
+
+        def _apply(batch, **kwargs):
+            return (1, 5) if batch.batch_id == "parent5" else (3, 0)
+
+        with patch("bluei.engine.batch_pr._create_worktree", return_value=True), patch(
+            "bluei.engine.batch_pr.apply_batch_fixes", side_effect=_apply
+        ), patch(
+            "bluei.engine.batch_pr.should_split_batch",
+            side_effect=lambda batch, max_depth=3: batch.batch_id == "parent5",
+        ), patch(
+            "bluei.engine.batch_pr.handle_batch_failure",
+            return_value=[sub_a, sub_b],
+        ), patch(
+            "bluei.engine.git_ops.git_commit_all", return_value="ok"
+        ), patch(
+            "bluei.engine.git_ops.git_push_branch", return_value=True
+        ):
+            ok, detail = process_batch(
+                batch=parent,
+                repo_path=tmp_path,
+                args=args,
+                log_file=tmp_path / "log.txt",
+            )
+
+        assert ok is True
+        assert detail == "split-and-retried:2"
+        assert parse_pr_count(detail) == 2
+        assert parse_pr_count("dry-run-pr-simulated") == 1
+        assert parse_pr_count("pr-created") == 1
+        assert parse_pr_count("split-and-retried:bogus") == 1
+
+    def test_recursive_call_forwards_safety_and_repo_config(
+        self, tmp_path, make_finding
+    ):
+        # Child PRs retain the parent's safety gates and repo config.
+        from bluei.engine.batch_pr import process_batch
+        from bluei.engine.models import BatchGroup
+
+        finding = make_finding(rule="ruff-b904", safe_to_autofix=False)
+        parent = BatchGroup(
+            batch_id="parent6", rule_pattern="ruff-b904", findings=[finding] * 6
+        )
+        sub_a = BatchGroup(
+            batch_id="s6-a", rule_pattern="ruff-b904", findings=[finding] * 3
+        )
+        sub_b = BatchGroup(
+            batch_id="s6-b", rule_pattern="ruff-b904", findings=[finding] * 3
+        )
+        args = _make_args()
+        args.dry_run = False
+
+        def _apply(batch, **kwargs):
+            return (1, 5) if batch.batch_id == "parent6" else (3, 0)
+
+        seen = []
+
+        def _create_pr(batch, repo_slug, log_file, safety_config=None, repo_config=None, **kw):
+            seen.append((batch.batch_id, safety_config, repo_config))
+            return {"number": 1, "url": "u"}
+
+        with patch("bluei.engine.batch_pr._create_worktree", return_value=True), patch(
+            "bluei.engine.batch_pr.apply_batch_fixes", side_effect=_apply
+        ), patch(
+            "bluei.engine.batch_pr.should_split_batch",
+            side_effect=lambda batch, max_depth=3: batch.batch_id == "parent6",
+        ), patch(
+            "bluei.engine.batch_pr.handle_batch_failure",
+            return_value=[sub_a, sub_b],
+        ), patch(
+            "bluei.engine.gh.find_batch_pr_by_rule", return_value=None
+        ), patch(
+            "bluei.engine.gh.get_origin_url",
+            return_value="https://github.com/o/r.git",
+        ), patch(
+            "bluei.engine.gh.parse_github_repo", return_value=("o", "r")
+        ), patch(
+            "bluei.engine.git_ops.git_commit_all", return_value="ok"
+        ), patch(
+            "bluei.engine.git_ops.git_push_branch", return_value=True
+        ), patch(
+            "bluei.engine.batch_pr.create_batch_pr", side_effect=_create_pr
+        ):
+            ok, _ = process_batch(
+                batch=parent,
+                repo_path=tmp_path,
+                args=args,
+                log_file=tmp_path / "log.txt",
+                safety_config={"mode": "strict"},
+                repo_config={"base_branch": "develop"},
+            )
+
+        assert ok is True
+        assert [b for b, _sc, _rc in seen] == ["s6-a", "s6-b"]
+        for _b, sc, rc in seen:
+            assert sc == {"mode": "strict"}
+            assert rc == {"base_branch": "develop"}

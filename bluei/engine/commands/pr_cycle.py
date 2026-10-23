@@ -1511,6 +1511,7 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
     if getattr(args, "batch_pr_enabled", False) and queue_candidates:
         from bluei.engine.batch_pr import (
             group_findings_for_batch,
+            parse_pr_count,
             process_batch as _process_batch,
         )
         from bluei.engine.state import save_batch_record as _save_batch_record
@@ -1546,8 +1547,11 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
                     cost_tracker=ctx.cost_tracker,
                 )
                 if _success:
-                    created_prs += 1
-                    open_prs += 1
+                    # A split success can represent several sub-batch PRs —
+                    # count them all against the run's PR budget.
+                    _n_prs = parse_pr_count(_detail)
+                    created_prs += _n_prs
+                    open_prs += _n_prs
                     _bsf = Path(
                         getattr(args, "batch_state_file", str(DEFAULT_BATCH_STATE))
                     )

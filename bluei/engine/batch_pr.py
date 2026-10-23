@@ -81,6 +81,20 @@ from bluei.engine.batch_pr_creation import (  # noqa: F401
 )
 
 
+def parse_pr_count(detail: Optional[str]) -> int:
+    """Number of PRs a successful process_batch detail represents.
+
+    "split-and-retried:N" carries the count of PRs its sub-batches
+    created; every other success detail is a single PR.
+    """
+    if detail and detail.startswith("split-and-retried:"):
+        try:
+            return max(1, int(detail.split(":", 1)[1]))
+        except ValueError:
+            return 1
+    return 1
+
+
 def process_batch(
     batch: BatchGroup,
     repo_path: Path,
@@ -247,6 +261,8 @@ def process_batch(
                     repo_path,
                     args,
                     log_file,
+                    safety_config=safety_config,
+                    repo_config=repo_config,
                     selection_fn=selection_fn,
                     governor_ledger_path=governor_ledger_path,
                     run_id=run_id,
@@ -257,7 +273,11 @@ def process_batch(
                 for sub_batch in sub_batches
             ]
             if sub_results and any(ok for ok, _detail in sub_results):
-                return True, "split-and-retried"
+                # Carry the number of PRs the sub-batches actually created
+                # ("split-and-retried:N") so the cycle's PR accounting counts
+                # them all, not one.
+                n_prs = sum(1 for ok, _detail in sub_results if ok)
+                return True, f"split-and-retried:{n_prs}"
             batch.status = BatchStatus.FAILED.value
             _append_text(
                 log_file,
