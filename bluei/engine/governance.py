@@ -158,6 +158,14 @@ def resolve_learning_mode(config: Dict[str, Any]) -> str:
     return config.get("learning", {}).get("mode", "active")
 
 
+# Per-transition defaults (ADR-0007): write-producing transitions are
+# GATE-CLOSED by default — "nothing writes without ``bluei learn approve``".
+# Every other transition (in-place mutations such as confidence-threshold
+# crossings and Emergent Rule TENTATIVE→ACTIVE) defaults gate-open-with-audit.
+_TRANSITION_DEFAULTS: Dict[str, str] = {"write_producing": "gate_closed"}
+_DEFAULT_TRANSITION_POLICY = "gate_open_audit"
+
+
 def resolve_policy(config: Dict[str, Any], asset_class: str, transition: str) -> str:
     """Resolve the effective policy for a per-class transition (DESIGN.md §E.2).
 
@@ -166,13 +174,19 @@ def resolve_policy(config: Dict[str, Any], asset_class: str, transition: str) ->
 
     * ``paused`` → every transition is paused.
     * ``audit_only`` → gate-open transitions are forced to gate-closed.
-    * otherwise → the per-class transition value (default ``gate_open_audit``).
+    * otherwise → the per-class transition value. Unconfigured transitions
+      default per-transition (ADR-0007): ``write_producing`` →
+      ``gate_closed`` (a write-producing promotion never defaults open),
+      every other transition → ``gate_open_audit``.
     """
     mode = resolve_learning_mode(config)
     if mode == "paused":
         return "paused"
     class_cfg = config.get("learning", {}).get("asset_classes", {}).get(asset_class, {})
-    raw = class_cfg.get(transition, "gate_open_audit")
+    raw = class_cfg.get(
+        transition,
+        _TRANSITION_DEFAULTS.get(transition, _DEFAULT_TRANSITION_POLICY),
+    )
     if mode == "audit_only" and raw == "gate_open_audit":
         return "gate_closed"
     return raw

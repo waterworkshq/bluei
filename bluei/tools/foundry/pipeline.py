@@ -1,15 +1,20 @@
-"""Foundry pipeline — orchestrate proposal -> validation -> policy-routed write.
+"""Foundry pipeline — orchestration proposal -> validation -> policy-routed write.
 
 For each Pattern: propose_recipe -> resolve_policy(config, "recipe",
 "write_producing"):
-  - gate_open_audit (default): write YAML to staged_dir + append auto_promote.
-  - gate_closed: append pending_approval with proposed_recipe_yaml cached in
-    evidence_snapshot (ADR-0020 carve-out from ADR-0007 — Foundry is a trusted
-    author; does NOT call has_bundle_reference).
+  - gate_closed (the default for unconfigured ``write_producing``, ADR-0007):
+    append pending_approval with proposed_recipe_yaml cached in
+    evidence_snapshot (ADR-0020 carve-out from ADR-0007 — Foundry is a
+    trusted author; does NOT call has_bundle_reference).
+  - gate_open_audit (explicit config only): write YAML to staged_dir +
+    append auto_promote.
+  - paused (learning.mode=paused): hard hold (ADR-0013) — no YAML, no
+    pending record; counted in ``summary.held_paused``.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -25,6 +30,8 @@ from bluei.engine.models import now_iso
 from bluei.engine.pattern_store import FixPattern
 from bluei.tools.foundry.proposer import propose_recipe
 
+_logger = logging.getLogger(__name__)
+
 
 @dataclass
 class FoundrySummary:
@@ -36,6 +43,7 @@ class FoundrySummary:
     written: int = 0
     queued_pending: int = 0
     auto_promoted: int = 0
+    held_paused: int = 0
 
 
 def run_foundry(
@@ -77,6 +85,17 @@ def run_foundry(
         recipe_id = proposal.parsed.id
         asset_ref = format_asset_ref("recipe", recipe_id)
         policy = resolve_policy(config, "recipe", "write_producing")
+
+        if policy == "paused":
+            # ADR-0013 kill switch: paused is a HARD HOLD — strictly stronger
+            # than gate_closed (no YAML write, no pending record). Counted in
+            # held_paused + logged so operators can see the switch engaged.
+            _logger.warning(
+                "foundry: promotion held for %s — learning.mode=paused",
+                asset_ref,
+            )
+            summary.held_paused += 1
+            continue
 
         if policy == "gate_closed":
             if approval_records_path is not None:

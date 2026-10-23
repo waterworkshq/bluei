@@ -10,6 +10,18 @@ from bluei.engine.shared_pattern_library import (
     check_promotion_eligibility,
 )
 
+# C1 (ADR-0007): write_producing now defaults gate_closed, so these
+# mechanics tests (YAML roundtrip fidelity) opt into the gate-open policy
+# explicitly — the default itself is pinned in tests/test_governance.py and
+# tests/test_promotion_gate.py.
+_GATE_OPEN = {
+    "learning": {
+        "asset_classes": {
+            "pattern": {"write_producing": "gate_open_audit"},
+        },
+    },
+}
+
 
 def _single_recipe(out_dir: Path) -> Path:
     """Resolve the single YAML recipe written by a gate-open promotion."""
@@ -52,7 +64,7 @@ class TestBasicRoundTrip:
             failure_count=0,
         )
         out_dir = tmp_path / "staged"
-        result = promote_pattern_to_recipe(pat, "python", out_dir)
+        result = promote_pattern_to_recipe(pat, "python", out_dir, config=_GATE_OPEN)
         assert result == PromotionResult.PROMOTED
         loaded = yaml.safe_load(_single_recipe_text(out_dir))
         assert loaded["rule"] == "ruff-b904"
@@ -76,7 +88,7 @@ class TestBasicRoundTrip:
     def test_round_trip_preserves_rule_text_verbatim(self, tmp_path):
         rule_text = "my-custom-linter-rule"
         pat = _eligible_pattern(rule=rule_text)
-        promote_pattern_to_recipe(pat, "go", tmp_path)
+        promote_pattern_to_recipe(pat, "go", tmp_path, config=_GATE_OPEN)
         loaded = yaml.safe_load(_single_recipe_text(tmp_path))
         assert loaded["rule"] == rule_text
         assert loaded["match"]["rule"] == rule_text
@@ -88,7 +100,7 @@ class TestYAMLInjectionSafety:
             before_snippet="url: http://example.com:8080",
             after_snippet="url: https://secure.example.com:443",
         )
-        promote_pattern_to_recipe(pat, "yaml", tmp_path)
+        promote_pattern_to_recipe(pat, "yaml", tmp_path, config=_GATE_OPEN)
         loaded = yaml.safe_load(_single_recipe_text(tmp_path))
         assert loaded["replacement"]["pattern"] == "url: http://example.com:8080"
         assert (
@@ -100,7 +112,7 @@ class TestYAMLInjectionSafety:
         before = "line1\nline2\nline3"
         after = "line1\nline2-fixed\nline3"
         pat = _eligible_pattern(before_snippet=before, after_snippet=after)
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         loaded = yaml.safe_load(_single_recipe_text(tmp_path))
         assert loaded["replacement"]["pattern"] == before
         assert loaded["replacement"]["replacement"] == after
@@ -109,7 +121,7 @@ class TestYAMLInjectionSafety:
         before = "msg = \"hello 'world'\""
         after = "msg = 'hello \"world\"'"
         pat = _eligible_pattern(before_snippet=before, after_snippet=after)
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         loaded = yaml.safe_load(_single_recipe_text(tmp_path))
         assert loaded["replacement"]["pattern"] == before
         assert loaded["replacement"]["replacement"] == after
@@ -118,7 +130,7 @@ class TestYAMLInjectionSafety:
         before = "---\ntitle: test\n---"
         after = "---\ntitle: fixed\n---"
         pat = _eligible_pattern(before_snippet=before, after_snippet=after)
-        promote_pattern_to_recipe(pat, "yaml", tmp_path)
+        promote_pattern_to_recipe(pat, "yaml", tmp_path, config=_GATE_OPEN)
         raw = _single_recipe_text(tmp_path)
         loaded = yaml.safe_load(raw)
         assert loaded is not None
@@ -127,7 +139,7 @@ class TestYAMLInjectionSafety:
 
     def test_mixed_metacharacters_in_rule(self, tmp_path):
         pat = _eligible_pattern(rule="rule:with:colons & [brackets]")
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         loaded = yaml.safe_load(_single_recipe_text(tmp_path))
         assert loaded["rule"] == "rule:with:colons & [brackets]"
 
@@ -135,19 +147,19 @@ class TestYAMLInjectionSafety:
 class TestIdempotentSafetyTag:
     def test_confidence_095_gets_idempotent(self, tmp_path):
         pat = _eligible_pattern(confidence=0.95)
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         loaded = yaml.safe_load(_single_recipe_text(tmp_path))
         assert loaded["safety"] == "idempotent"
 
     def test_confidence_099_gets_idempotent(self, tmp_path):
         pat = _eligible_pattern(confidence=0.99)
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         loaded = yaml.safe_load(_single_recipe_text(tmp_path))
         assert loaded["safety"] == "idempotent"
 
     def test_confidence_10_gets_idempotent(self, tmp_path):
         pat = _eligible_pattern(confidence=1.0)
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         loaded = yaml.safe_load(_single_recipe_text(tmp_path))
         assert loaded["safety"] == "idempotent"
 
@@ -155,19 +167,19 @@ class TestIdempotentSafetyTag:
 class TestNeedsValidationSafetyTag:
     def test_confidence_094_gets_needs_validation(self, tmp_path):
         pat = _eligible_pattern(confidence=0.94)
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         loaded = yaml.safe_load(_single_recipe_text(tmp_path))
         assert loaded["safety"] == "needs_validation"
 
     def test_confidence_093_gets_needs_validation(self, tmp_path):
         pat = _eligible_pattern(confidence=0.93)
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         loaded = yaml.safe_load(_single_recipe_text(tmp_path))
         assert loaded["safety"] == "needs_validation"
 
     def test_confidence_boundary_below_095(self, tmp_path):
         pat = _eligible_pattern(confidence=0.9499)
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         loaded = yaml.safe_load(_single_recipe_text(tmp_path))
         assert loaded["safety"] == "needs_validation"
 
@@ -175,44 +187,44 @@ class TestNeedsValidationSafetyTag:
 class TestIneligiblePattern:
     def test_too_few_repos_returns_none(self, tmp_path):
         pat = _eligible_pattern(source_repos={"repo-a", "repo-b"})
-        result = promote_pattern_to_recipe(pat, "python", tmp_path)
+        result = promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         assert result == PromotionResult.NOT_ELIGIBLE
 
     def test_too_few_repos_creates_no_file(self, tmp_path):
         pat = _eligible_pattern(source_repos={"repo-a"})
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         yaml_files = list(tmp_path.glob("*.yaml"))
         assert yaml_files == []
 
     def test_has_failures_returns_none(self, tmp_path):
         pat = _eligible_pattern(failure_count=1)
-        result = promote_pattern_to_recipe(pat, "python", tmp_path)
+        result = promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         assert result == PromotionResult.NOT_ELIGIBLE
 
     def test_too_few_applications_returns_none(self, tmp_path):
         pat = _eligible_pattern(success_count=10, failure_count=0)
-        result = promote_pattern_to_recipe(pat, "python", tmp_path)
+        result = promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         assert result == PromotionResult.NOT_ELIGIBLE
 
     def test_check_eligibility_matches_promote(self, tmp_path):
         pat = _eligible_pattern(source_repos={"repo-a"})
         assert check_promotion_eligibility(pat) is False
         assert (
-            promote_pattern_to_recipe(pat, "python", tmp_path)
+            promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
             == PromotionResult.NOT_ELIGIBLE
         )
 
     def test_eligible_check_matches_promote(self, tmp_path):
         pat = _eligible_pattern()
         assert check_promotion_eligibility(pat) is True
-        result = promote_pattern_to_recipe(pat, "python", tmp_path)
+        result = promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         assert result == PromotionResult.PROMOTED
 
 
 class TestSpecialCharsInRuleFilename:
     def test_colon_sanitized_in_filename(self, tmp_path):
         pat = _eligible_pattern(rule="my:rule:with:colons")
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         name = _single_recipe(tmp_path).name
         assert ":" not in name
         loaded = yaml.safe_load(_single_recipe_text(tmp_path))
@@ -220,7 +232,7 @@ class TestSpecialCharsInRuleFilename:
 
     def test_slash_sanitized_in_filename(self, tmp_path):
         pat = _eligible_pattern(rule="path/to/rule")
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         name = _single_recipe(tmp_path).name
         assert "/" not in name
         loaded = yaml.safe_load(_single_recipe_text(tmp_path))
@@ -228,7 +240,7 @@ class TestSpecialCharsInRuleFilename:
 
     def test_spaces_sanitized_in_filename(self, tmp_path):
         pat = _eligible_pattern(rule="rule with spaces")
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         name = _single_recipe(tmp_path).name
         assert " " not in name
         loaded = yaml.safe_load(_single_recipe_text(tmp_path))
@@ -236,7 +248,7 @@ class TestSpecialCharsInRuleFilename:
 
     def test_hash_sanitized_in_filename(self, tmp_path):
         pat = _eligible_pattern(rule="rule#with#hashes")
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         name = _single_recipe(tmp_path).name
         assert "#" not in name
         loaded = yaml.safe_load(_single_recipe_text(tmp_path))
@@ -244,13 +256,13 @@ class TestSpecialCharsInRuleFilename:
 
     def test_structural_hash_in_filename(self, tmp_path):
         pat = _eligible_pattern(structural_hash="abcdef0123456789")
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         name = _single_recipe(tmp_path).name
         assert "abcdef01" in name
 
     def test_recipe_id_format(self, tmp_path):
         pat = _eligible_pattern(rule="ruff-b904", structural_hash="deadbeef12345678")
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         loaded = yaml.safe_load(_single_recipe_text(tmp_path))
         assert loaded["id"].startswith("auto-ruff-b904-")
         assert "deadbeef" in loaded["id"]
@@ -258,7 +270,7 @@ class TestSpecialCharsInRuleFilename:
     def test_long_rule_truncated_in_id(self, tmp_path):
         long_rule = "a" * 100
         pat = _eligible_pattern(rule=long_rule)
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         loaded = yaml.safe_load(_single_recipe_text(tmp_path))
         rule_part = loaded["id"].split("-")[1] if "auto-" in loaded["id"] else ""
         assert len(rule_part) <= 32

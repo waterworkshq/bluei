@@ -16,6 +16,17 @@ from bluei.engine.shared_pattern_library import (
     _now_iso,
 )
 
+# C1 (ADR-0007): write_producing now defaults gate_closed; these mechanics
+# tests opt into the gate-open policy explicitly. The default is pinned in
+# tests/test_governance.py and tests/test_promotion_gate.py.
+_GATE_OPEN = {
+    "learning": {
+        "asset_classes": {
+            "pattern": {"write_producing": "gate_open_audit"},
+        },
+    },
+}
+
 
 def _single_recipe_text(out_dir: Path) -> str:
     """Read the single YAML recipe written by a gate-open promotion."""
@@ -79,7 +90,7 @@ class TestPromotePatternToRecipe:
     def test_generates_valid_yaml(self, tmp_path):
         pat = _make_cross_repo_pattern()
         out_dir = tmp_path / "staged"
-        result = promote_pattern_to_recipe(pat, "python", out_dir)
+        result = promote_pattern_to_recipe(pat, "python", out_dir, config=_GATE_OPEN)
         assert result == PromotionResult.PROMOTED
         content = _single_recipe_text(out_dir)
         assert "auto-ruff-b904-" in content
@@ -89,36 +100,36 @@ class TestPromotePatternToRecipe:
 
     def test_idempotent_safety_for_high_confidence(self, tmp_path):
         pat = _make_cross_repo_pattern(confidence=0.97)
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         assert "safety: idempotent" in _single_recipe_text(tmp_path)
 
     def test_needs_validation_safety_for_lower_confidence(self, tmp_path):
         pat = _make_cross_repo_pattern(confidence=0.94)
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         assert "safety: needs_validation" in _single_recipe_text(tmp_path)
 
     def test_staged_dir_created(self, tmp_path):
         out_dir = tmp_path / "nested" / "staged"
         pat = _make_cross_repo_pattern()
-        result = promote_pattern_to_recipe(pat, "python", out_dir)
+        result = promote_pattern_to_recipe(pat, "python", out_dir, config=_GATE_OPEN)
         assert result == PromotionResult.PROMOTED
         assert out_dir.is_dir()
 
     def test_ineligible_pattern_returns_none(self, tmp_path):
         pat = _make_cross_repo_pattern(source_repos={"repo-a"})
-        result = promote_pattern_to_recipe(pat, "python", tmp_path)
+        result = promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         assert result == PromotionResult.NOT_ELIGIBLE
 
     def test_recipe_metadata(self, tmp_path):
         pat = _make_cross_repo_pattern()
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         content = _single_recipe_text(tmp_path)
         assert f"source_pattern_id: {pat.pattern_id}" in content
         assert "promoted_at:" in content
 
     def test_source_repos_in_metadata(self, tmp_path):
         pat = _make_cross_repo_pattern()
-        promote_pattern_to_recipe(pat, "python", tmp_path)
+        promote_pattern_to_recipe(pat, "python", tmp_path, config=_GATE_OPEN)
         assert "source_repos:" in _single_recipe_text(tmp_path)
 
 
@@ -180,6 +191,7 @@ class TestPromotionEndToEnd:
             cross_pat,
             "python",
             tmp_path / "staged",
+            config=_GATE_OPEN,
         )
         assert result == PromotionResult.PROMOTED
         assert _single_recipe_text(tmp_path / "staged")
@@ -204,5 +216,6 @@ class TestPromotionEndToEnd:
                 cross_pat,
                 "python",
                 tmp_path / "staged",
+                config=_GATE_OPEN,
             )
             assert result == PromotionResult.NOT_ELIGIBLE

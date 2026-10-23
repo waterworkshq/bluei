@@ -205,6 +205,13 @@ class TestRunFoundryGateOpen:
         cb = lambda prompt: _fenced(GOOD_YAML)  # noqa: E731
         staged = tmp_path / "staged"
         approvals = tmp_path / "approval_records.jsonl"
+        # C1 (ADR-0007): write_producing defaults gate_closed now; the
+        # gate-open write path requires explicit operator config.
+        config = {
+            "learning": {
+                "asset_classes": {"recipe": {"write_producing": "gate_open_audit"}}
+            }
+        }
 
         with patch(
             "bluei.tools.foundry.proposer._run_detector_oracle",
@@ -215,7 +222,7 @@ class TestRunFoundryGateOpen:
                 [],
                 llm_callback=cb,
                 staged_dir=staged,
-                config={},
+                config=config,
                 approval_records_path=approvals,
             )
 
@@ -276,6 +283,109 @@ class TestRunFoundryGateClosed:
         assert snap["recipe_id"] == "foundry-ruff-b904"
         assert "id: foundry-ruff-b904" in snap["proposed_recipe_yaml"]
         assert snap["source_pattern_id"] == "seed-ruff-b904"
+
+
+class TestRunFoundryDefaultHoldsGateClosed:
+    def test_empty_config_queues_pending(self, tmp_path):
+        # C1 (ADR-0007): unconfigured write_producing resolves gate_closed —
+        # the Foundry queues pending approval instead of writing.
+        pattern = _make_pattern()
+        cb = lambda prompt: _fenced(GOOD_YAML)  # noqa: E731
+        staged = tmp_path / "staged"
+        approvals = tmp_path / "approval_records.jsonl"
+
+        with patch(
+            "bluei.tools.foundry.proposer._run_detector_oracle",
+            return_value=(True, ""),
+        ):
+            summary = run_foundry(
+                [pattern],
+                [],
+                llm_callback=cb,
+                staged_dir=staged,
+                config={},
+                approval_records_path=approvals,
+            )
+
+        assert summary.queued_pending == 1
+        assert summary.written == 0
+        assert summary.auto_promoted == 0
+        assert summary.held_paused == 0
+        assert not staged.exists() or not list(staged.glob("*.yaml"))
+        records = list(read_jsonl(approvals))
+        assert len(records) == 1
+        assert records[0]["decision"] == "pending_approval"
+
+
+class TestRunFoundryPausedHold:
+    """C2 (ADR-0013): learning.mode=paused is a HARD HOLD at the build-time
+    gate — no YAML write AND no pending record, even when the per-class config
+    explicitly says gate_open_audit."""
+
+    def _paused_config(self):
+        return {
+            "learning": {
+                "mode": "paused",
+                # Explicit gate-open per-class setting must NOT punch through
+                # the paused ceiling.
+                "asset_classes": {"recipe": {"write_producing": "gate_open_audit"}},
+            },
+        }
+
+    def test_paused_holds_no_write_no_pending(self, tmp_path):
+        pattern = _make_pattern()
+        cb = lambda prompt: _fenced(GOOD_YAML)  # noqa: E731
+        staged = tmp_path / "staged"
+        approvals = tmp_path / "approval_records.jsonl"
+
+        with patch(
+            "bluei.tools.foundry.proposer._run_detector_oracle",
+            return_value=(True, ""),
+        ):
+            summary = run_foundry(
+                [pattern],
+                [],
+                llm_callback=cb,
+                staged_dir=staged,
+                config=self._paused_config(),
+                approval_records_path=approvals,
+            )
+
+        assert summary.proposed == 1  # reached the gate, then held
+        assert summary.held_paused == 1  # the kill switch is visible
+        assert summary.written == 0
+        assert summary.queued_pending == 0
+        assert summary.auto_promoted == 0
+        assert not staged.exists() or not list(staged.glob("*.yaml"))
+        assert list(read_jsonl(approvals)) == []
+
+    def test_audit_only_still_behaves_gate_closed(self, tmp_path):
+        # Pin: audit_only forces gate-closed (queues pending) — paused is
+        # strictly stronger (writes and queues nothing).
+        pattern = _make_pattern()
+        cb = lambda prompt: _fenced(GOOD_YAML)  # noqa: E731
+        staged = tmp_path / "staged"
+        approvals = tmp_path / "approval_records.jsonl"
+
+        with patch(
+            "bluei.tools.foundry.proposer._run_detector_oracle",
+            return_value=(True, ""),
+        ):
+            summary = run_foundry(
+                [pattern],
+                [],
+                llm_callback=cb,
+                staged_dir=staged,
+                config={"learning": {"mode": "audit_only"}},
+                approval_records_path=approvals,
+            )
+
+        assert summary.queued_pending == 1
+        assert summary.held_paused == 0
+        assert summary.written == 0
+        records = list(read_jsonl(approvals))
+        assert len(records) == 1
+        assert records[0]["decision"] == "pending_approval"
 
 
 class TestRunFoundryRejections:

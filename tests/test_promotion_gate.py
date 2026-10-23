@@ -206,19 +206,68 @@ class TestPromotedGateOpen:
 
 
 class TestBackwardCompat:
-    def test_empty_config_promotes(self, tmp_path):
-        """``config={}`` must produce gate-open behavior (ADR-0007 default)."""
+    def test_empty_config_holds_gate_closed(self, tmp_path):
+        """``config={}`` → gate-CLOSED default for write-producing promotions
+        (ADR-0007: "nothing writes without bluei learn approve"). Without a
+        bundle reference the gate-closed path returns NOT_ELIGIBLE — no YAML,
+        no ApprovalRecord."""
         pat = _eligible_pattern()
         staged = tmp_path / "staged"
-        result = promote_pattern_to_recipe(pat, "python", staged, config={})
+        records_path = tmp_path / "records.jsonl"
+        result = promote_pattern_to_recipe(
+            pat,
+            "python",
+            staged,
+            config={},
+            repo_state_dir=tmp_path / "state",  # exists, no bundle refs pattern
+            approval_records_path=records_path,
+        )
+        assert result == PromotionResult.NOT_ELIGIBLE
+        assert not staged.exists() or list(staged.glob("*.yaml")) == []
+        assert read_jsonl(records_path) == []
+
+    def test_empty_config_with_bundle_queues_approval(self, tmp_path):
+        """``config={}`` + a bundle referencing the pattern → the gate-closed
+        default queues a pending approval instead of writing."""
+        pat = _eligible_pattern()
+        asset_ref = f"pattern:{pat.pattern_id}"
+        _write_bundle(tmp_path / "state", asset_ref)
+        staged = tmp_path / "staged"
+        records_path = tmp_path / "records.jsonl"
+        result = promote_pattern_to_recipe(
+            pat,
+            "python",
+            staged,
+            config={},
+            repo_state_dir=tmp_path / "state",
+            approval_records_path=records_path,
+        )
+        assert result == PromotionResult.PENDING_APPROVAL
+        assert not staged.exists() or list(staged.glob("*.yaml")) == []
+        records = read_jsonl(records_path)
+        assert len(records) == 1
+        assert records[0]["decision"] == "pending_approval"
+
+    def test_no_config_kwarg_holds_gate_closed(self, tmp_path):
+        """Calling without the config kwarg (3-positional-arg form) keeps
+        working — and now resolves to the gate-closed default (no bundle →
+        NOT_ELIGIBLE, nothing written)."""
+        pat = _eligible_pattern()
+        result = promote_pattern_to_recipe(pat, "python", tmp_path / "staged")
+        assert result == PromotionResult.NOT_ELIGIBLE
+        assert not (tmp_path / "staged").exists() or list(
+            (tmp_path / "staged").glob("*.yaml")
+        ) == []
+
+    def test_explicit_gate_open_config_still_promotes(self, tmp_path):
+        """Explicit operator config overrides the gate-closed default."""
+        pat = _eligible_pattern()
+        staged = tmp_path / "staged"
+        result = promote_pattern_to_recipe(
+            pat, "python", staged, config=_gate_open_config()
+        )
         assert result == PromotionResult.PROMOTED
         assert len(list(staged.glob("*.yaml"))) == 1
-
-    def test_no_config_kwarg_promotes(self, tmp_path):
-        """Calling without the new kwargs keeps working (3-positional-arg form)."""
-        pat = _eligible_pattern()
-        result = promote_pattern_to_recipe(pat, "python", tmp_path)
-        assert result == PromotionResult.PROMOTED
 
     def test_no_audit_path_no_crash(self, tmp_path):
         """``approval_records_path=None`` → no audit record, YAML still written."""
@@ -232,3 +281,64 @@ class TestBackwardCompat:
         )
         assert result == PromotionResult.PROMOTED
         assert len(list((tmp_path / "staged").glob("*.yaml"))) == 1
+
+
+class TestPausedHardHold:
+    """C2 (ADR-0013): learning.mode=paused is a HARD HOLD at the runtime
+    promotion gate — stronger than gate_closed: no YAML, no pending record,
+    even when the per-class config explicitly says gate_open_audit."""
+
+    def _paused_config(self):
+        return {
+            "learning": {
+                "mode": "paused",
+                # Explicit gate-open per-class setting must NOT punch through
+                # the paused ceiling.
+                "asset_classes": {
+                    "pattern": {"write_producing": "gate_open_audit"},
+                },
+            },
+        }
+
+    def test_paused_writes_nothing_and_records_nothing(self, tmp_path):
+        pat = _eligible_pattern()
+        asset_ref = f"pattern:{pat.pattern_id}"
+        _write_bundle(tmp_path / "state", asset_ref)  # bundle present; must not matter
+        staged = tmp_path / "staged"
+        records_path = tmp_path / "records.jsonl"
+
+        result = promote_pattern_to_recipe(
+            pat,
+            "python",
+            staged,
+            config=self._paused_config(),
+            repo_state_dir=tmp_path / "state",
+            approval_records_path=records_path,
+        )
+        assert result == PromotionResult.NOT_ELIGIBLE  # held (NOT_ELIGIBLE-style return)
+        assert not staged.exists() or list(staged.glob("*.yaml")) == []
+        # Hard hold: no pending_approval AND no auto_promote record.
+        assert read_jsonl(records_path) == []
+
+    def test_audit_only_still_behaves_gate_closed(self, tmp_path):
+        """Pin: audit_only forces gate-closed at this gate (the pre-existing
+        ceiling) — with a bundle it queues pending approval; paused is
+        strictly stronger (writes nothing, queues nothing)."""
+        pat = _eligible_pattern()
+        _write_bundle(tmp_path / "state", f"pattern:{pat.pattern_id}")
+        staged = tmp_path / "staged"
+        records_path = tmp_path / "records.jsonl"
+
+        result = promote_pattern_to_recipe(
+            pat,
+            "python",
+            staged,
+            config={"learning": {"mode": "audit_only"}},
+            repo_state_dir=tmp_path / "state",
+            approval_records_path=records_path,
+        )
+        assert result == PromotionResult.PENDING_APPROVAL
+        assert not staged.exists() or list(staged.glob("*.yaml")) == []
+        records = read_jsonl(records_path)
+        assert len(records) == 1
+        assert records[0]["decision"] == "pending_approval"

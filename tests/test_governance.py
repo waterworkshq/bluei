@@ -157,9 +157,33 @@ def test_resolve_policy_active_mode_returns_per_class_value():
     assert resolve_policy(config, "pattern", "write_producing") == "gate_closed"
 
 
-def test_resolve_policy_active_mode_defaults_gate_open_audit():
-    config = {"learning": {"mode": "active"}}
-    # No asset_classes / no transition configured → default gate_open_audit.
+def test_resolve_policy_defaults_write_producing_gate_closed():
+    # C1 (ADR-0007): unconfigured write-producing transitions are GATE-CLOSED
+    # by default — "nothing writes without bluei learn approve". Applies to
+    # every asset class (pattern, recipe, ...).
+    assert resolve_policy({}, "pattern", "write_producing") == "gate_closed"
+    assert resolve_policy({}, "recipe", "write_producing") == "gate_closed"
+    assert (
+        resolve_policy({"learning": {"mode": "active"}}, "pattern", "write_producing")
+        == "gate_closed"
+    )
+
+
+def test_resolve_policy_defaults_in_place_transition_gate_open_audit():
+    # C1 (ADR-0007): non-write-producing (in-place mutation) transitions stay
+    # gate-open-with-audit by default.
+    assert resolve_policy({}, "pattern", "in_place_mutation") == "gate_open_audit"
+
+
+def test_resolve_policy_explicit_config_overrides_gate_closed_default():
+    # C1: the gate-closed default is a default — explicit operator config wins.
+    config = {
+        "learning": {
+            "asset_classes": {
+                "pattern": {"write_producing": "gate_open_audit"},
+            },
+        },
+    }
     assert resolve_policy(config, "pattern", "write_producing") == "gate_open_audit"
 
 
