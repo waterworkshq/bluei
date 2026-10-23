@@ -31,6 +31,7 @@ from bluei.engine.governance import (
 from bluei.engine.jsonl import append_jsonl
 from bluei.engine.models import now_iso
 from bluei.engine.pattern_store import FixPattern
+from bluei.engine.recipe_schema import is_safe_recipe_id
 from bluei.tools.foundry.proposer import propose_recipe
 
 _logger = logging.getLogger(__name__)
@@ -86,6 +87,19 @@ def run_foundry(
 
         summary.proposed += 1
         recipe_id = proposal.parsed.id
+        if not is_safe_recipe_id(recipe_id):
+            # D3-03 defense-in-depth: parse_recipe (the schema gate) already
+            # rejects unsafe ids, so this guards the write path against any
+            # proposal that bypassed the gate — the id is used verbatim as a
+            # filename below, so a path-like id must never reach the write.
+            _logger.warning(
+                "foundry: rejecting recipe with unsafe id %r (rule=%s)",
+                recipe_id,
+                pattern.rule,
+            )
+            summary.rejected += 1
+            summary.rejected_topics.append(pattern.rule)
+            continue
         asset_ref = format_asset_ref("recipe", recipe_id)
         # Build-time gate (ADR-0007 refinement + ADR-0020): the Foundry is a
         # curated pipeline — the human commit that runs it IS the approval,

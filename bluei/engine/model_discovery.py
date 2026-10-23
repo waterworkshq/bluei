@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import shlex
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol
 
@@ -201,29 +201,69 @@ class BackendModelDiscovery:
     the backend CLI for the available-model catalog and emits one
     ``ResolvedModel`` per tier whose configured model is actually present.
     Unavailable models are warned-and-skipped (degraded but functional).
+
+    Hardening (D5-F6/F7):
+
+    * The catalog is probed ONCE per instance and cached — ``discover`` is
+      called per LLM-branch Finding through ``resolve_governed_model``, so a
+      per-call probe would spawn one ``--list-models`` subprocess per Finding
+      in an N-Finding cycle. Cycles are single-threaded; no locking needed.
+    * Malformed catalog entries (e.g. ``input_per_1k: "free"``) are skipped
+      with a warning instead of crashing the cycle through
+      ``resolve_governed_model`` → ``_process_one_issue``.
+    * When the backend returns no listing at all (the ``--list-models``
+      contract is an unverified guess) and the operator configured tiers,
+      ONE loud warning is logged per instance instead of only per-tier
+      whispers — tier routing is inert and the operator should know.
     """
 
     tier_config: Dict[ModelTier, str]
     backend: str
+    # Probe cache + one-shot unavailability flag. init=False keeps the
+    # constructor signature unchanged; compare=False keeps equality purely
+    # config-based (probe state is not identity).
+    _catalog: Optional[Dict[str, Dict[str, Any]]] = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _unavailable_warned: bool = field(
+        default=False, init=False, repr=False, compare=False
+    )
 
     def discover(self) -> List[ResolvedModel]:
         backend = (
             self.backend
         )  # Phase 8 B1 fix: use the configured backend, not a caller-supplied literal
-        available = _list_backend_models(backend)  # Dict[model_id, Dict metadata]
+        if self._catalog is None:
+            self._catalog = _list_backend_models(backend)  # Dict[model_id, Dict metadata]
+        available = self._catalog
+        if not available and self.tier_config and not self._unavailable_warned:
+            self._unavailable_warned = True
+            _logger.warning(
+                "model discovery unavailable on backend %r — tier routing "
+                "is inert for this cycle (no model listing returned)",
+                self.backend,
+            )
         out: List[ResolvedModel] = []
         for tier, model_id in self.tier_config.items():
             if model_id in available:
                 meta = available[model_id]
-                out.append(
-                    ResolvedModel(
-                        tier=tier,
-                        backend=backend,
-                        model_id=model_id,
-                        input_per_1k=float(meta.get("input_per_1k", 0.0)),
-                        output_per_1k=float(meta.get("output_per_1k", 0.0)),
+                try:
+                    out.append(
+                        ResolvedModel(
+                            tier=tier,
+                            backend=backend,
+                            model_id=model_id,
+                            input_per_1k=float(meta.get("input_per_1k", 0.0)),
+                            output_per_1k=float(meta.get("output_per_1k", 0.0)),
+                        )
                     )
-                )
+                except (ValueError, TypeError, KeyError):
+                    # e.g. float("free") — a malformed rate field must not
+                    # take the whole cycle down; skip the entry and continue.
+                    _logger.warning(
+                        "model discovery: skipping malformed catalog entry %r",
+                        model_id,
+                    )
             else:
                 _logger.warning(
                     "model_tiers: %s unavailable on %s; tier %s falls back",

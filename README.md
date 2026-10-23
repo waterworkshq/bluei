@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/v/release/waterworkshq/bluei" alt="version" />
-  <img src="https://img.shields.io/badge/tests-6676%20passed-brightgreen" alt="tests" />
+  <img src="https://img.shields.io/badge/tests-6749%20passed-brightgreen" alt="tests" />
   <img src="https://img.shields.io/github/license/waterworkshq/bluei" alt="license" />
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey" alt="platform" />
 </p>
@@ -13,7 +13,7 @@
   <a href="https://bluei.dev">bluei.dev</a>
 </h3>
 
-> **⚠️ Pre-release software.** This is `v0.2.0-beta.3` — the beta hardening lifecycle (second review-and-fix sprint delivered). Still pre-release with the "do not use in production" warning in effect (C1: no live runs before 0.2.0 stable). Use for evaluation, testing, and contributions only. Production-ready releases will follow (`0.2.0-rc.1` → `0.2.0` stable).
+> **⚠️ Pre-release software.** This is `v0.2.0-beta.4` — the beta hardening lifecycle (third review-and-fix sprint delivered). Still pre-release with the "do not use in production" warning in effect (C1: no live runs before 0.2.0 stable). Use for evaluation, testing, and contributions only. Production-ready releases will follow (`0.2.0-rc.1` → `0.2.0` stable).
 
 # bluei — Trust the silence
 
@@ -352,6 +352,7 @@ Key design principles:
 | v0.2.0-beta.1 "Stabilization" | Delivered | Governor flips to act-on-recommendation (`selection_fn` → `select_tier`; real tier recommendations); tier resolved to a concrete model via new `engine/model_discovery.py` (`BackendModelDiscovery`, operator-config-validated against the claude/opencode CLI, no shipped defaults) and injected into the command template at the call site (shared `resolve_governed_model` helper). Behavior gated on operator `model_tiers.yaml` — under C2 (no operators) invocation is byte-identical to alpha.6. Batch path wired symmetrically (T1.2); cycle-start constructs discovery. `apply_claude_fix` unchanged. CR-3/4/5 test hardening. ADR-0022 amended; "Model Discovery" CONTEXT term. 6617 tests. C1 holds — real-repo measurement at rc.1. |
 | v0.2.0-beta.2 "Review-and-Fix (Sprint 1: Pattern Heart)" | Delivered | First code-review-and-fix sprint of the beta lifecycle: cost ledger honors discovered model pricing (`rates_source`, explicit precedence); batch Governor guard delegated to the shared helper; model ids brace-escaped at injection; structural scan recursion safety (RecursionError caught at all eight parse sites, walker depth-capped, 3-site parity pinned); two fresh-context deep reviews of the pattern heart (ledger/cascade/pattern court + detection/structural) — 9 HIGH claims, 8 verified (one split into an in-release fix plus a deferred design half; 1 rejected), 3 fixed in-release (retire timezone-naive crash, structurally-open emergent promotion gate now requiring shadow findings, tautological safe-mode test replaced). Deferred with rationale → beta.3. Sprint slicing recorded (beta.3 = D5+D2, beta.4 = D3, beta.5 = D6+D7). 6638 tests. Zero ADRs. C1 holds. |
 | v0.2.0-beta.3 "Review-and-Fix (Sprint 2: B1 Neighborhood)" | Delivered | Governor/discovery/cost + governance/learn hardening: SPRT per-family calibration wired (with an invalid-entry guard — equal probabilities make every outcome's likelihood ratio 1, so each LLR contribution is zero, and extreme probabilities raise domain errors); dry replay applies candidates through the same ladder as live replay (the SPRT evidence stream was structurally empty for the seeded population); the mainline replay honors the governance overlay and records honest three-way outcomes, exactly once across mainline and cascade; paused freezes evidence; batch fixes record their model spend; write-producing promotions gate-closed by default and the paused kill switch holds both promotion gates (it previously failed open, weaker than audit-only); the vacuous binding-completeness gate removed (ADR-0019 amended). Two fresh-context reviews found 2 CRITICAL + 6 HIGH, all independently verified and all fixed or deferred with rationale. 6649 → 6676 tests. |
+| v0.2.0-beta.4 "Review-and-Fix (Sprint 3: Seed Factory)" | Delivered | Seeds/foundry/hatchery/benchmark hardening: demote maps to paused; torn governance trail lines surface; model discovery fails soft, probes once per cycle, and reports "tier routing inert" loudly when unavailable. Review fixes (6 HIGH verified, 3 fixed): recipe ids validated before any filesystem use (LLM path-escape closed); the foundry's authoring gate implemented (disabled when unconfigured, hardcoded invocation removed); seed regeneration validates everything before deleting anything (the linter-less-machine silent wipe is closed). 6749 tests. Zero ADRs. C1 holds. |
 
 See [Roadmap](docs/meta/ROADMAP.md) for release boundaries and the planning seed map.
 

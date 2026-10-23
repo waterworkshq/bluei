@@ -23,6 +23,8 @@ What's been built, and what's next.
 
 | v0.2.0-beta.3 | "Review-and-Fix (Sprint 2: B1 Neighborhood)": governor/discovery/cost + governance/learn hardening. Sprint-1 deferred fixes landed — SPRT per-family calibration wired with an invalid-entry guard; dry replay mirrors the live application ladder (evidence stream was structurally empty for the seeded population); mainline replay honors governance + records honest three-way outcomes exactly once across mainline and cascade; paused freezes evidence; batch fixes record model spend; write-producing promotions gate-closed by default; the paused kill switch holds both promotion gates (previously failed open); vacuous binding gate removed (ADR-0019 amended). Sprint reviews: 2 CRITICAL + 6 HIGH, all verified, all fixed or deferred with rationale. 6676 tests. |
 
+| v0.2.0-beta.4 | "Review-and-Fix (Sprint 3: Seed Factory)": seeds/foundry/hatchery/benchmark hardening. Deferred fixes — demote maps to paused; torn governance trail lines counted and warned (valid records still applied); model discovery fails soft on malformed catalog entries, probes the backend once per cycle, and says "tier routing inert" loudly once. Review fixes (6 HIGH verified: 3 fixed, 3 deferred) — recipe ids validated at the schema gate before any filesystem use (LLM path-escape closed); the foundry's authoring-template gate implemented (disabled-when-unconfigured, hardcoded invocation removed); seed regeneration two-pass (validate all before wiping anything; non-zero exit on failure or zero writes). 6749 tests. Zero ADRs. C1 holds. |
+
 > Full release notes live in [`CHANGELOG.md`](../CHANGELOG.md).
 
 ---
@@ -104,6 +106,17 @@ beta.1 shipped (see Delivered above). The beta phase is a long experimentation l
 | Standalone `bluei savings` CLI | **beta** (whenever) | alpha.1 deferral; redundant with report/dashboard surface. | alpha.1 deferral |
 
 > **Scoping rule (2026-07-05):** everything fixing, scoping, and feature-related lands in **beta**. rc has **no defined scope** — it is not a planned release with contents; it is a future maturity gate that will be scoped only when beta is mature enough to consider. Do not assign items to rc.
+
+### Deferred from v0.2.0-beta.4 (DELIVERED)
+
+Verified findings and minors deferred with rationale; full triage in the sprint's planning reviews.
+
+| Deferred item | Target | Why deferred |
+|---------------|--------|--------------|
+| SPRT calibration data-side wiring (empty variation generators → every family degenerates; no production caller for the calibration harness; shipped calibration.yaml keys match no real family, so the runtime lookup beta.3 wired always misses) | **beta.5+** (design) | Needs per-family variation-generator design + re-keying the calibration file to real family names; runtime threading is correct and tested — the data side is its own slice |
+| Foundry oracle validates the pattern, not the recipe it authors (schema-only check on the LLM's match/replacement) | **beta.5+** (design) | Honest oracle = apply the proposed replacement to fixtures and re-lint; genuine design work, bounded current risk (detection-only output posture) |
+| Benchmark `is_gap` structurally unreachable (every corpus entry self-counts into coverage; 0 gaps possible on the real corpus) | **feature slice** | Known-theoretical since alpha.6; real gap analysis needs a rulespace scan, not a manifest self-join |
+| Sprint minors (unvalidated negative examples; family-granularity proxy overcounting determinism; package.py docstring drift; graduator no-PYTHONPATH load test; `{pack_id}` placeholder residue; duplicate pattern_id collapsing two seeds; RULES_REFERENCE 16-of-54 recipes) | **patch** | Recorded with evidence; picked up when their files are next edited or with the slices above |
 
 ### Deferred from v0.2.0-beta.3 (DELIVERED)
 

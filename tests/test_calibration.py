@@ -120,10 +120,8 @@ def test_load_calibration_missing_file_returns_empty(tmp_path: Path):
 def test_load_calibration_malformed_returns_empty(tmp_path: Path):
     bad = tmp_path / "bad.yaml"
     bad.write_text("::: not ::: valid ::: yaml ::: [[[")
-    # safe_load of garbage may raise or return non-dict; both → {}
-    assert load_calibration(bad) in ({}, None) or isinstance(
-        load_calibration(bad), dict
-    )
+    # safe_load of this garbage raises YAMLError; the handler returns {}.
+    assert load_calibration(bad) == {}
 
 
 # --- _sprt_params runtime override -------------------------------------------

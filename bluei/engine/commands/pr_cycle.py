@@ -1443,10 +1443,19 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
     # Governance State projection (ADR-0008): read-time view of the
     # approval_records.jsonl trail. Empty until the first record is written
     # (substrate no-op — is_governance_active returns True for all refs).
-    from bluei.engine.governance import project_governance_state, resolve_learning_mode
+    from bluei.engine.governance import (
+        _read_trail,
+        project_governance_state,
+        resolve_learning_mode,
+    )
     from bluei.engine.jsonl import read_jsonl
 
-    _approval_records = read_jsonl(ctx.state_file.parent / "approval_records.jsonl")
+    # Torn-trail visibility (D2-H2): route the projection's trail read
+    # through _read_trail so torn/corrupt lines are counted and loudly
+    # warned instead of silently dropped by read_jsonl(skip_errors=True).
+    _approval_records, _ = _read_trail(
+        ctx.state_file.parent / "approval_records.jsonl"
+    )
     ctx.governance_state = project_governance_state(_approval_records)
 
     # Repo Taste Profile (ADR-0017 principle): resolve the repo's

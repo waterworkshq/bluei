@@ -376,6 +376,104 @@ class TestBackendModelDiscovery:
         assert resolve_model(d_opencode, ModelTier.TIER_0) is None
 
 
+# ─── discover hardening (b4 fixes, D5-F6+F7) ───────────────────────────────
+
+
+class TestDiscoverRobustness:
+    """b4 pre-committed fix 3: malformed catalog entries are skipped with a
+    warning instead of crashing the cycle; the catalog is probed ONCE per
+    instance (resolve_governed_model calls discover per LLM-branch Finding);
+    an unavailable listing produces exactly ONE loud warning, not per-tier
+    whispers alone."""
+
+    def test_malformed_catalog_entry_skipped_with_warning(self, monkeypatch, caplog):
+        # float("free") previously raised ValueError out of discover() →
+        # resolve_model → resolve_governed_model → _process_one_issue
+        # (uncaught). Now the entry is skipped and the valid one resolves.
+        monkeypatch.setattr(
+            md,
+            "_list_backend_models",
+            lambda backend: {
+                "good-id": {"input_per_1k": 0.003, "output_per_1k": 0.015},
+                "bad-id": {"input_per_1k": "free"},
+            },
+        )
+        d = BackendModelDiscovery(
+            tier_config={ModelTier.TIER_0: "bad-id", ModelTier.TIER_2: "good-id"},
+            backend="claude",
+        )
+        with caplog.at_level("WARNING", logger="bluei.engine.model_discovery"):
+            out = d.discover()
+        assert [m.model_id for m in out] == ["good-id"]
+        assert out[0].input_per_1k == 0.003
+        assert any(
+            "malformed catalog entry" in r.message and "bad-id" in r.message
+            for r in caplog.records
+        )
+
+    def test_malformed_non_numeric_output_rate_also_skipped(self, monkeypatch):
+        # Same guard covers output_per_1k and non-numeric shapes (None →
+        # TypeError from float()).
+        monkeypatch.setattr(
+            md,
+            "_list_backend_models",
+            lambda backend: {
+                "null-rate": {"input_per_1k": 0.001, "output_per_1k": None},
+            },
+        )
+        d = BackendModelDiscovery(
+            tier_config={ModelTier.TIER_1: "null-rate"}, backend="claude"
+        )
+        assert d.discover() == []
+
+    def test_catalog_probed_once_per_instance(self, monkeypatch):
+        # D5-F7: an N-Finding cycle must not spawn N --list-models
+        # subprocesses. discover() reuses the instance's cached catalog.
+        calls: List[str] = []
+
+        def _probe(backend):
+            calls.append(backend)
+            return {"good-id": {"input_per_1k": 0.003}}
+
+        monkeypatch.setattr(md, "_list_backend_models", _probe)
+        d = BackendModelDiscovery(
+            tier_config={ModelTier.TIER_2: "good-id"}, backend="claude"
+        )
+        assert len(d.discover()) == 1
+        assert len(d.discover()) == 1
+        assert len(d.discover()) == 1
+        assert calls == ["claude"]  # one probe, not three subprocesses
+
+    def test_unavailable_listing_warns_exactly_once(self, monkeypatch, caplog):
+        # D5-F7: the --list-models CLI contract is an unverified guess — when
+        # the backend returns no listing and tiers ARE configured, exactly one
+        # loud line across repeated discover() calls.
+        monkeypatch.setattr(md, "_list_backend_models", lambda backend: {})
+        d = BackendModelDiscovery(
+            tier_config={ModelTier.TIER_2: "ghost-id"}, backend="claude"
+        )
+        with caplog.at_level("WARNING", logger="bluei.engine.model_discovery"):
+            assert d.discover() == []
+            assert d.discover() == []
+        loud = [
+            r
+            for r in caplog.records
+            if r.message.startswith("model discovery unavailable on backend")
+        ]
+        assert len(loud) == 1
+
+    def test_empty_tier_config_no_loud_warning(self, monkeypatch, caplog):
+        # Inert default (C2): empty operator config never needed a listing —
+        # the loud line must stay silent.
+        monkeypatch.setattr(md, "_list_backend_models", lambda backend: {})
+        d = BackendModelDiscovery(tier_config={}, backend="claude")
+        with caplog.at_level("WARNING", logger="bluei.engine.model_discovery"):
+            assert d.discover() == []
+        assert not any(
+            "model discovery unavailable" in r.message for r in caplog.records
+        )
+
+
 # ─── _list_backend_models robustness (AC-P2-5 boundary) ────────────────────
 
 

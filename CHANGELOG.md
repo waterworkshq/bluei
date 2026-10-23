@@ -6,6 +6,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.2.0-beta.4] — Review-and-Fix (Sprint 3: Seed Factory)
+
+The third hardening sprint: the seeds/foundry/hatchery/benchmark domain's first deep review, plus the discovery and governance items deferred from sprint 2.
+
+### Deferred fixes landed
+
+- **The `demote` decision maps to paused.** The operator vocabulary documented it; the projection silently ignored it. Soft demotion stays re-promotable, per the SPRT design.
+- **Torn governance trail lines surface.** A crash mid-append could silently erase the newest decision; the canonical trail reader now counts and warns on unreadable lines (including valid-JSON non-dict payloads, which previously crashed the projection) while still applying the valid records.
+- **Model discovery fails soft and speaks once.** A malformed catalog entry no longer crashes the cycle through the governor call path; the backend listing is probed once per cycle instead of once per finding; and an unavailable listing produces a single loud "tier routing is inert" line instead of per-tier whispers.
+
+### Review-driven fixes (one fresh-context review; 6 HIGH, all verified, 3 fixed / 3 deferred with rationale)
+
+- **Recipe ids are validated before touching the filesystem** — LLM-authored ids containing path separators could escape the staging directory; the schema gate now accepts only conservative identifier characters, with a second guard at the write site.
+- **The foundry's authoring gate reads its command from configuration** and is cleanly disabled when unconfigured — the documented inert-posture guard previously existed only in the design record while the script hardcoded an invocation.
+- **Seed regeneration validates everything before deleting anything** — the script wiped the shipped seeded patterns before validating the bundles it would rebuild from, and the validator fails closed without linters on PATH, so a linter-less machine silently deleted the shipped corpus and reported success. Two-pass now; failures and zero-write runs exit non-zero.
+
+### Deferred with rationale (roadmap)
+
+SPRT calibration data-side wiring (empty variation generators, no production caller for the calibration harness, shipped keys matching no real family); the foundry oracle validating the pattern rather than the recipe it authors; benchmark `is_gap` semantics (every corpus entry self-counts into coverage — the flag cannot fire on the real corpus; real gap analysis needs a rulespace scan); and the recorded minors.
+
+- 6710 → **6749 tests** (+39, 0 regressions). Zero ADRs. C1 holds — no live runs.
+
+---
+
 ## [0.2.0-beta.3] — Review-and-Fix (Sprint 2: B1 Neighborhood)
 
 The second beta hardening sprint, per the recorded slicing: the governor/discovery/cost and governance/learn domains — where the one historical silent-failure lived — plus the fix slices deferred from sprint 1.

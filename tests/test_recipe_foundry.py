@@ -17,7 +17,7 @@ from bluei.engine.bundle_loader import GoldenBundle
 from bluei.engine.governance import PromotionResult
 from bluei.engine.jsonl import read_jsonl
 from bluei.engine.pattern_store import FixPattern
-from bluei.engine.recipe_schema import load_recipe, parse_recipe
+from bluei.engine.recipe_schema import Recipe, load_recipe, parse_recipe
 from bluei.engine.shared_pattern_library import resume_pending_promotion
 from bluei.tools.foundry.models import RecipeProposal
 from bluei.tools.foundry.oracle import _run_detector_oracle
@@ -434,6 +434,85 @@ class TestRunFoundryRejections:
             )
         assert summary.rejected == 1
         assert summary.proposed == 0
+
+
+class TestUnsafeRecipeIdRejected:
+    """D3-03: an LLM-authored recipe id like ``../../escape`` is used verbatim
+    as a filename (``staged_dir / f"{id}.yaml"``) and as the asset_ref — it
+    must be rejected at the parse gate, and the pipeline's point-of-use guard
+    must skip (not crash, not write outside staged_dir) any proposal that
+    bypassed the gate."""
+
+    def test_proposer_rejects_escape_id_at_parse_gate(self):
+        pattern = _make_pattern()
+        escape_yaml = GOOD_YAML.replace(
+            "id: foundry-ruff-b904", 'id: "../../escape"'
+        )
+        cb = lambda prompt: _fenced(escape_yaml)  # noqa: E731
+        with patch(
+            "bluei.tools.foundry.proposer._run_detector_oracle",
+            return_value=(True, ""),
+        ):
+            proposal = propose_recipe(pattern, None, cb)
+        assert proposal is None  # parse_recipe ValueError -> rejected
+
+    def test_escape_id_proposal_skipped_and_run_continues(self, tmp_path):
+        # Feed the pipeline a proposal whose parsed id is an escape string
+        # (mocking propose_recipe simulates a bypassed/changed schema gate)
+        # and a second GOOD proposal: the escape is skipped, the run continues.
+        escape_proposal = RecipeProposal(
+            recipe_yaml='id: "../../escape"\nrule: ruff-b904\n',
+            parsed=Recipe(id="../../escape", rule="ruff-b904"),
+            source_pattern_id="seed-ruff-b904",
+            source_bundle_id=None,
+            detector_passed=True,
+            rejection_reason=None,
+        )
+        good_proposal = RecipeProposal(
+            recipe_yaml=GOOD_YAML,
+            parsed=parse_recipe(GOOD_YAML),
+            source_pattern_id="seed-eslint-no-unused-vars",
+            source_bundle_id=None,
+            detector_passed=True,
+            rejection_reason=None,
+        )
+        bad_pattern = _make_pattern()
+        good_pattern = _make_pattern(
+            pattern_id="seed-eslint-no-unused-vars",
+            rule="eslint-no-unused-vars",
+            language="javascript",
+        )
+        staged = tmp_path / "staged"
+
+        def fake_propose(pattern, bundle, callback, **kwargs):
+            return (
+                escape_proposal if pattern.rule == "ruff-b904" else good_proposal
+            )
+
+        with patch(
+            "bluei.tools.foundry.pipeline.propose_recipe",
+            side_effect=fake_propose,
+        ):
+            summary = run_foundry(
+                [bad_pattern, good_pattern],
+                [],
+                llm_callback=lambda prompt: "",
+                staged_dir=staged,
+            )
+
+        assert summary.rejected == 1
+        assert "ruff-b904" in summary.rejected_topics
+        assert summary.written == 1  # run continued past the escape
+        assert summary.auto_promoted == 1
+
+        # Nothing escaped staged_dir: no yaml outside it, exactly one inside.
+        assert list(staged.glob("*.yaml")) == [staged / "foundry-ruff-b904.yaml"]
+        outside = [
+            p for p in tmp_path.rglob("*.yaml") if p.parent != staged
+        ]
+        assert outside == []
+        assert not (tmp_path.parent / "escape.yaml").exists()
+        assert not (tmp_path.parent / "x.yaml").exists()
 
 
 class TestResumePendingPromotion:
