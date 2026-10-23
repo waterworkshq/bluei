@@ -345,3 +345,40 @@ class TestBatchCostLedger:
         assert rows[0]["input_tokens"] == 3000
         assert rows[0]["output_tokens"] == 300
         assert "aborting batch" in (tmp_path / "log.txt").read_text()
+
+
+class TestBatchTimeoutAbortsBatchNotCycle:
+    def test_process_batch_timeout_returns_batch_failure(self, tmp_path, make_finding):
+        # A timed-out fix escapes the per-finding loop and is caught at the
+        # BATCH boundary: the batch is abandoned (failed status, no commit,
+        # no PR) and process_batch returns a failure result — the exception
+        # must not escape to kill the whole cycle's remaining batches.
+        import subprocess as _sp
+
+        from bluei.engine.batch_pr import process_batch
+        from bluei.engine.models import BatchGroup
+
+        finding = make_finding(rule="ruff-b904", safe_to_autofix=False)
+        batch = BatchGroup(
+            batch_id="b-timeout",
+            rule_pattern="ruff-b904",
+            findings=[finding, finding],
+        )
+        args = _make_args()
+        args.dry_run = True
+
+        with patch("bluei.engine.batch_pr._create_worktree", return_value=True):
+            with patch(
+                "bluei.engine.batch_execution._apply_single_fix",
+                side_effect=_sp.TimeoutExpired(cmd="claude", timeout=120),
+            ):
+                ok, detail = process_batch(
+                    batch=batch,
+                    repo_path=tmp_path,
+                    args=args,
+                    log_file=tmp_path / "log.txt",
+                )
+
+        assert ok is False
+        assert detail == "claude-timeout-batch-aborted"
+        assert "batch-aborted" in (tmp_path / "log.txt").read_text()

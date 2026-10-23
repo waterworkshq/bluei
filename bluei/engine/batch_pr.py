@@ -9,6 +9,7 @@ Phase 3: Split/recovery logic → bluei.engine.batch_recovery
 from __future__ import annotations
 
 import logging
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple, TYPE_CHECKING
@@ -176,18 +177,31 @@ def process_batch(
         hydrate_worktree(repo_path, worktree_path, log_file=log_file)
 
         # Apply all fixes sequentially
-        successes, failures = apply_batch_fixes(
-            batch=batch,
-            worktree_path=worktree_path,
-            repo_path=repo_path,
-            args=args,
-            log_file=log_file,
-            selection_fn=selection_fn,
-            governor_ledger_path=governor_ledger_path,
-            run_id=run_id,
-            discovery=discovery,
-            cost_tracker=cost_tracker,
-        )
+        try:
+            successes, failures = apply_batch_fixes(
+                batch=batch,
+                worktree_path=worktree_path,
+                repo_path=repo_path,
+                args=args,
+                log_file=log_file,
+                selection_fn=selection_fn,
+                governor_ledger_path=governor_ledger_path,
+                run_id=run_id,
+                discovery=discovery,
+                cost_tracker=cost_tracker,
+            )
+        except subprocess.TimeoutExpired:
+            # A timed-out Claude fix re-raises from the per-finding loop: its
+            # partial edits may sit in this batch's worktree, so the BATCH is
+            # abandoned (no commit, no PR — the worktree is discarded) while
+            # the cycle continues with the remaining batches and findings.
+            batch.status = BatchStatus.FAILED.value
+            _append_text(
+                log_file,
+                f"batch-aborted: {batch.batch_id} reason=claude-timeout "
+                "(worktree discarded; no commit, no PR)",
+            )
+            return False, "claude-timeout-batch-aborted"
 
         _append_text(
             log_file,
