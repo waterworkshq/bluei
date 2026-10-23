@@ -246,6 +246,57 @@ class TestResolveBaseBranch:
         assert resolve_base_branch(safety, {}) == "main"
 
 
+class TestResolveBaseBranchRepoConfigShape:
+    """D7-C-1 regression: production passes a RepoConfig DATACLASS (stored on
+    RunContext.repo_config at pr_cycle cycle-start), not a dict. The dataclass
+    has no ``.get`` and no ``base_branch``/``default_branch`` fields — the old
+    dict-only lookup raised AttributeError at the first live PR creation.
+    resolve_base_branch must accept both shapes.
+    """
+
+    def _repo_config(self, **safety) -> "RepoConfig":
+        from bluei.common.models import RepoConfig
+
+        base_safety = {"mode": "pr", "protected_branches": ["main", "master"]}
+        base_safety.update(safety)
+        return RepoConfig(
+            id="repo-1",
+            name="demo",
+            path="/tmp/demo",
+            language="python",
+            safety=base_safety,
+        )
+
+    def test_dataclass_no_attribute_error_resolves_via_safety(self) -> None:
+        # Exact reviewer repro: a RepoConfig dataclass reaches the gate.
+        # RepoConfig carries no base_branch/default_branch fields, so the
+        # resolution falls through to safety.protected_branches[0].
+        cfg = self._repo_config(protected_branches=["develop", "main"])
+        resolved = resolve_base_branch(cfg.safety, cfg)
+        assert resolved == "develop"
+
+    def test_dataclass_defaults_fall_back_to_main(self) -> None:
+        cfg = self._repo_config()  # protected_branches ["main", "master"]
+        assert resolve_base_branch(cfg.safety, cfg) == "main"
+
+    def test_dataclass_with_no_safety_config_falls_back_to_main(self) -> None:
+        cfg = self._repo_config()
+        assert resolve_base_branch(None, cfg) == "main"
+
+    def test_dict_shape_behaviour_unchanged(self) -> None:
+        safety = {"protected_branches": ["main"]}
+        repo = {"base_branch": "develop"}
+        assert resolve_base_branch(safety, repo) == "develop"
+
+    def test_dataclass_and_its_dict_projection_agree(self) -> None:
+        # The dataclass path and its to_dict() projection resolve identically
+        # (the dataclass simply has no base-branch override fields).
+        cfg = self._repo_config(protected_branches=["release", "main"])
+        assert resolve_base_branch(cfg.safety, cfg) == resolve_base_branch(
+            cfg.safety, cfg.to_dict()
+        )
+
+
 # ---------------------------------------------------------------------------
 # Integration: create_or_update_github_pr
 # ---------------------------------------------------------------------------

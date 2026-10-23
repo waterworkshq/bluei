@@ -662,6 +662,86 @@ class TestCommitPartialBatch:
         ):
             assert commit_partial_batch([f], batch, log) is True
 
+    def test_dry_run_threads_dry_run_to_commit_and_push(
+        self, tmp_path, make_finding
+    ):
+        """D7-H-2: dry_run=True must reach BOTH git helpers — previously both
+        hard-coded dry_run=False, so a dry-run split REALLY committed and
+        pushed to origin."""
+        from bluei.engine.batch_pr import commit_partial_batch
+
+        f = _mf(make_finding)
+        batch = _make_batch(
+            make_finding, findings=[f], worktree_path=tmp_path, branch="br"
+        )
+        log = tmp_path / "log.txt"
+
+        with (
+            patch("bluei.engine.utils.run_no_capture") as mock_add,
+            patch(
+                "bluei.engine.git_ops.git_commit_all", return_value="committed"
+            ) as mock_commit,
+            patch(
+                "bluei.engine.git_ops.git_push_branch", return_value=True
+            ) as mock_push,
+        ):
+            assert commit_partial_batch([f], batch, log, dry_run=True) is True
+
+        assert mock_commit.call_args[1]["dry_run"] is True
+        assert mock_push.call_args[1]["dry_run"] is True
+        # No real staging either in dry-run
+        mock_add.assert_not_called()
+        assert "dry-run" in log.read_text()
+
+    def test_dry_run_never_executes_git_commit_or_push(
+        self, tmp_path, make_finding
+    ):
+        """D7-H-2 (transport level): with the REAL git helpers active and only
+        the subprocess transport patched, a dry-run partial commit must never
+        execute `git commit` or `git push`."""
+        from bluei.engine.batch_pr import commit_partial_batch
+        from bluei.engine import git_ops
+
+        f = _mf(make_finding)
+        batch = _make_batch(
+            make_finding, findings=[f], worktree_path=tmp_path, branch="br"
+        )
+        log = tmp_path / "log.txt"
+        executed = []
+
+        def fake_run_capture(cmd, cwd=None):
+            executed.append(list(cmd))
+            if cmd[:3] == ["git", "diff", "--cached"]:
+                return 1, ""  # rc=1 → staged changes exist
+            return 0, ""
+
+        with patch.object(git_ops, "run_capture", side_effect=fake_run_capture):
+            assert commit_partial_batch([f], batch, log, dry_run=True) is True
+
+        mutating = [c for c in executed if c[1] in ("commit", "push")]
+        assert mutating == []
+        assert any(c[:2] == ["git", "add"] for c in executed)  # staging probe ran
+
+    def test_non_dry_run_defaults_to_real_ops(self, tmp_path, make_finding):
+        """D7-H-2: the non-dry path is unchanged — default dry_run=False."""
+        from bluei.engine.batch_pr import commit_partial_batch
+
+        f = _mf(make_finding)
+        batch = _make_batch(
+            make_finding, findings=[f], worktree_path=tmp_path, branch="br"
+        )
+        log = tmp_path / "log.txt"
+
+        with (
+            patch("bluei.engine.utils.run_no_capture"),
+            patch("bluei.engine.git_ops.git_commit_all", return_value="committed") as mock_commit,
+            patch("bluei.engine.git_ops.git_push_branch", return_value=True) as mock_push,
+        ):
+            assert commit_partial_batch([f], batch, log) is True
+
+        assert mock_commit.call_args[1]["dry_run"] is False
+        assert mock_push.call_args[1]["dry_run"] is False
+
 
 # ── split_batch ──────────────────────────────────────────────────────
 

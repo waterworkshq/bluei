@@ -266,6 +266,17 @@ class CostTracker:
         """Return the total cost accumulated for the current cycle."""
         return self._cycle_cost
 
+    def cycle_invocation_count(self) -> int:
+        """Return the number of cost-recorded invocations this cycle.
+
+        Pairs with :meth:`cycle_total` so per-cycle averages divide a
+        cycle-scoped numerator by a cycle-scoped denominator (D7-H5: the
+        status artifact previously divided the all-history log total by this
+        cycle's invocation count, inflating ``avg_cost_per_run`` ~N× after
+        N cycles). Savings records are not invocations and are not counted.
+        """
+        return self._invocations
+
     def cycle_savings(self) -> float:
         """Return the total pattern replay savings for the current cycle."""
         return self._cycle_savings

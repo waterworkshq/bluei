@@ -110,6 +110,14 @@ class RunContext:
     # to read RepoConfig.framework. Forward-ref string avoids an import cycle.
     repo_config: Optional["RepoConfig"] = None
 
+    # Runtime safety policy (D7-H1) — ``RepoConfig.safety`` dict lifted once
+    # at cycle start, right next to the repo_config resolution above. Before
+    # this field existed, ``getattr(ctx, "safety_config", None)`` in
+    # pr_cycle/merge_cycle was structurally always None, so the protected-
+    # branch / safety-mode gates never saw a policy and defaulted permissive.
+    # ``RepoConfig`` is a dataclass whose ``safety`` attribute holds the dict.
+    safety_config: Optional[Dict[str, Any]] = None
+
     # Baseline checks (per-repo, resolved once)
     PER_REPO_BASELINE_CHECKS: Dict[str, List[str]] = field(default_factory=dict)
 

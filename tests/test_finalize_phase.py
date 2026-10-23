@@ -859,14 +859,25 @@ class TestFinalizeHealthEnrich:
 
         mock_enrich.side_effect = mutate
 
-        kwargs = _finalize_kwargs(tmp_path, status_file=status_file)
+        ct = _cost_tracker()
+        ct.cycle_invocation_count.return_value = 2
+        kwargs = _finalize_kwargs(tmp_path, status_file=status_file, cost_tracker=ct)
         rc = run_finalize_phase(**kwargs)
 
         assert rc == 0
         mock_enrich.assert_called_once()
-        # cost_log_path and total_runs (max of claude_invocations, 1) are passed through
+        # cost_log_path and the per-cycle pair are passed through.
+        # SEMANTIC UPDATE (D7-H5): the old assertion here pinned
+        # total_runs == max(claude_invocations, 1) — a per-cycle denominator
+        # paired with an all-history numerator inside enrich_health_with_cost,
+        # which inflated avg_cost_per_run ~N× after N cycles. The caller now
+        # sends the cycle's own cost and the cycle's own invocation count.
         assert mock_enrich.call_args[1]["cost_log_path"] == kwargs["cost_log_path"]
-        assert mock_enrich.call_args[1]["total_runs"] == 1  # max(0, 1)
+        assert mock_enrich.call_args[1]["cycle_cost_usd"] == 0.05  # ct.cycle_total()
+        assert (
+            mock_enrich.call_args[1]["cycle_invocations"] == 2
+        )  # ct.cycle_invocation_count()
+        assert "total_runs" not in mock_enrich.call_args[1]
         # status file was rewritten with the enriched data, sorted keys
         rewritten = json.loads(status_file.read_text())
         assert rewritten["enriched"] is True
@@ -901,6 +912,271 @@ class TestFinalizeHealthEnrich:
 
         assert rc == 0
         mock_enrich.assert_not_called()
+
+
+class TestBuildFlywheelLedger:
+    """D6-H3: direct unit tests for the ledger producer — previously every
+    report/dashboard test hand-built the ledger dict, so outcome counting,
+    stage breakdown, rate strings, and the pattern-store snapshot (including
+    its own except branch) were unpinned.
+    """
+
+    def _make_pattern(self, **overrides):
+        from bluei.engine.pattern_store import FixPattern
+
+        data = {
+            "pattern_id": "",
+            "rule": "broad-except",
+            "language": "python",
+            "file_path": "src/*.py",
+            "before_snippet": "except:\n    pass",
+            "after_snippet": "except Exception:\n    pass",
+            "diff_patch": "--- a/src/file.py\n+++ b/src/file.py\n-except:\n+except Exception:\n",
+            "confidence": 0.99,
+            "success_count": 0,
+            "failure_count": 0,
+            "skip_count": 0,
+            "source": "claude",
+            "created_at": "2026-05-17T00:00:00+00:00",
+            "last_used_at": None,
+            "last_verified_at": None,
+            "source_finding_ids": ["finding-1"],
+        }
+        data.update(overrides)
+        return FixPattern(**data)
+
+    def test_shape_from_real_counter_inputs(self, tmp_path):
+        from bluei.engine.commands.finalize import _build_flywheel_ledger
+        from bluei.engine.cost_tracker import CostTracker
+        from bluei.engine.pattern_store import FixPatternStore
+
+        records = [
+            {"outcome": "resolved_deterministic", "final_stage": "pattern-replay"},
+            {"outcome": "resolved_deterministic", "final_stage": "structural"},
+            {"outcome": "resolved_llm"},
+            {"outcome": "exhausted"},
+        ]
+        tracker = CostTracker(log_path=tmp_path / "cost_log.jsonl", run_id="r1")
+        tracker.record_invocation(
+            "claude-sonnet-4", input_tokens=100_000, output_tokens=0
+        )  # $0.30
+        tracker.record_pattern_replay_savings(
+            "claude-sonnet-4", 0.05, "fp-x", "broad-except"
+        )
+
+        store = FixPatternStore(tmp_path / "patterns.jsonl")
+        store.append(self._make_pattern(failure_count=5, before_snippet="a\n", after_snippet="b\n", rule="r1"))
+        store.append(self._make_pattern(failure_count=2, before_snippet="c\n", after_snippet="d\n", rule="r2"))
+        store.append(self._make_pattern(failure_count=0, before_snippet="e\n", after_snippet="f\n", rule="r3"))
+
+        block = _build_flywheel_ledger(records, tracker, store)
+
+        assert block["findings_attempted"] == 4
+        assert block["resolved_deterministic_by_stage"] == {
+            "pattern-replay": 1,
+            "structural": 1,
+        }
+        assert block["resolved_deterministic_total"] == 2
+        assert block["resolved_llm"] == 1
+        assert block["exhausted"] == 1
+        assert block["pattern_replay_resolutions"] == 1
+        assert block["cost_total_usd"] == 0.3
+        assert block["savings_usd"] == 0.05
+        assert block["rates"]["deterministic_resolution"] == "2/4 (50.0%)"
+        assert block["rates"]["llm_fallback"] == "1/4 (25.0%)"
+        assert block["rates"]["exhausted"] == "1/4 (25.0%)"
+        assert block["active_pattern_count"] == 3
+        # top-3 by failure_count, only patterns with failures
+        assert [p["failure_count"] for p in block["top_failing_patterns"]] == [5, 2]
+        assert {p["rule"] for p in block["top_failing_patterns"]} == {"r1", "r2"}
+
+    def test_empty_records_produce_zeroed_block(self, tmp_path):
+        from bluei.engine.commands.finalize import _build_flywheel_ledger
+        from bluei.engine.cost_tracker import CostTracker
+
+        tracker = CostTracker(log_path=tmp_path / "cost_log.jsonl", run_id="r1")
+        block = _build_flywheel_ledger([], tracker, None)
+
+        assert block["findings_attempted"] == 0
+        assert block["resolved_deterministic_total"] == 0
+        assert block["rates"] == {
+            "deterministic_resolution": "0/0 (n/a)",
+            "llm_fallback": "0/0 (n/a)",
+            "exhausted": "0/0 (n/a)",
+        }
+        assert block["active_pattern_count"] == 0
+        assert block["top_failing_patterns"] == []
+
+
+class TestFinalizeLedgerPreservation:
+    """D6-H3 (ledger-loss half): a finalize with no ledger counters this
+    cycle (the merge-cycle phase reaches run_finalize_phase without
+    processing findings) must PRESERVE a populated ledger in status.json
+    instead of overwriting it with zeros."""
+
+    POPULATED_LEDGER = {
+        "findings_attempted": 3,
+        "resolved_deterministic_by_stage": {"pattern-replay": 1},
+        "resolved_deterministic_total": 1,
+        "resolved_llm": 1,
+        "exhausted": 1,
+        "pattern_replay_resolutions": 1,
+        "savings_usd": 0.5,
+        "cost_total_usd": 0.2,
+        "rates": {"deterministic_resolution": "1/3 (33.3%)"},
+    }
+
+    @patch("bluei.engine.commands.finalize._append_text")
+    @patch("bluei.engine.commands.finalize.update_status_artifact")
+    @patch("bluei.engine.commands.finalize.save_state")
+    @patch("bluei.engine.commands.finalize.save_issues")
+    def test_populated_ledger_preserved_on_counterless_finalize(
+        self, mock_si, mock_ss, mock_status, mock_log, tmp_path
+    ):
+        from bluei.engine.cost_tracker import CostTracker
+
+        status_file = tmp_path / "status.json"
+        status_file.write_text(
+            json.dumps({"flywheel_ledger": self.POPULATED_LEDGER})
+        )
+
+        rc = run_finalize_phase(
+            **_finalize_kwargs(
+                tmp_path,
+                status_file=status_file,
+                # merge-cycle: reaches finalize with zero ledger records
+                args=_args(run_phase="merge-cycle", dry_run=True),
+                ledger_records=[],
+                cost_tracker=CostTracker(
+                    log_path=tmp_path / "cost_log.jsonl", run_id="r1"
+                ),
+            )
+        )
+
+        assert rc == 0
+        # The last fix-cycle's ledger survived the merge-cycle finalize.
+        assert (
+            json.loads(status_file.read_text())["flywheel_ledger"]
+            == self.POPULATED_LEDGER
+        )
+
+    @patch("bluei.engine.commands.finalize._append_text")
+    @patch("bluei.engine.commands.finalize.update_status_artifact")
+    @patch("bluei.engine.commands.finalize.save_state")
+    @patch("bluei.engine.commands.finalize.save_issues")
+    def test_fresh_ledger_written_when_cycle_has_counters(
+        self, mock_si, mock_ss, mock_status, mock_log, tmp_path
+    ):
+        from bluei.engine.cost_tracker import CostTracker
+
+        status_file = tmp_path / "status.json"
+        status_file.write_text(
+            json.dumps({"flywheel_ledger": self.POPULATED_LEDGER})
+        )
+
+        rc = run_finalize_phase(
+            **_finalize_kwargs(
+                tmp_path,
+                status_file=status_file,
+                args=_args(run_phase="pr-cycle", dry_run=True),
+                ledger_records=[
+                    {"outcome": "resolved_deterministic", "final_stage": "structural"}
+                ],
+                cost_tracker=CostTracker(
+                    log_path=tmp_path / "cost_log.jsonl", run_id="r1"
+                ),
+            )
+        )
+
+        assert rc == 0
+        written = json.loads(status_file.read_text())["flywheel_ledger"]
+        # This cycle HAS counters → the fresh block replaces the old one.
+        assert written["findings_attempted"] == 1
+        assert written["resolved_deterministic_total"] == 1
+
+    @patch("bluei.engine.commands.finalize._append_text")
+    @patch("bluei.engine.commands.finalize.update_status_artifact")
+    @patch("bluei.engine.commands.finalize.save_state")
+    @patch("bluei.engine.commands.finalize.save_issues")
+    def test_zero_ledger_written_when_no_prior_ledger(
+        self, mock_si, mock_ss, mock_status, mock_log, tmp_path
+    ):
+        from bluei.engine.cost_tracker import CostTracker
+
+        status_file = tmp_path / "status.json"
+        status_file.write_text(json.dumps({"score": 80}))
+
+        rc = run_finalize_phase(
+            **_finalize_kwargs(
+                tmp_path,
+                status_file=status_file,
+                args=_args(run_phase="merge-cycle", dry_run=True),
+                ledger_records=[],
+                cost_tracker=CostTracker(
+                    log_path=tmp_path / "cost_log.jsonl", run_id="r1"
+                ),
+            )
+        )
+
+        assert rc == 0
+        # Nothing to preserve → the zeroed block is written as before.
+        written = json.loads(status_file.read_text())["flywheel_ledger"]
+        assert written["findings_attempted"] == 0
+
+
+class TestFinalizeCostAverageSemantics:
+    """D7-H5: the status artifact's avg_cost_per_run must divide THIS cycle's
+    cost by THIS cycle's invocations. Previously finalize fed the helper the
+    all-history cost log (cumulative numerator) with max(claude_invocations,1)
+    (per-cycle denominator) — after N cycles the reported average drifted to
+    ~N× the true value.
+    """
+
+    @patch("bluei.engine.commands.finalize._append_text")
+    @patch("bluei.engine.commands.finalize.update_status_artifact")
+    @patch("bluei.engine.commands.finalize.save_state")
+    @patch("bluei.engine.commands.finalize.save_issues")
+    def test_avg_is_cycle_cost_over_cycle_invocations(
+        self, mock_si, mock_ss, mock_status, mock_log, tmp_path
+    ):
+        from bluei.engine.cost_tracker import CostTracker
+
+        cost_log = tmp_path / "cost_log.jsonl"
+        # Two prior "cycles" in the persistent log: cumulative $2.00.
+        cost_log.write_text(
+            json.dumps({"cost": 1.00, "model": "claude-sonnet-4", "run_id": "old-1"})
+            + "\n"
+            + json.dumps({"cost": 1.00, "model": "claude-sonnet-4", "run_id": "old-2"})
+            + "\n"
+        )
+        # This cycle's tracker: one recorded invocation costing $0.30 (also
+        # appended to the same persistent log → cumulative on disk = $2.30).
+        tracker = CostTracker(log_path=cost_log, run_id="new-1")
+        tracker.record_invocation(
+            "claude-sonnet-4", input_tokens=100_000, output_tokens=0
+        )
+
+        status_file = tmp_path / "status.json"
+        status_file.write_text(json.dumps({"score": 80}))
+
+        rc = run_finalize_phase(
+            **_finalize_kwargs(
+                tmp_path,
+                status_file=status_file,
+                cost_tracker=tracker,
+                cost_log_path=cost_log,
+                claude_invocations=1,  # the old (wrong) denominator input
+            )
+        )
+
+        assert rc == 0
+        cost_block = json.loads(status_file.read_text())["cost"]
+        # Per-cycle: $0.30 / 1 invocation — NOT cumulative $2.30 / 1.
+        assert cost_block["avg_cost_per_run"] == 0.3
+        assert cost_block["avg_cost_per_run"] != 2.3
+        # The cumulative figure stays visible under its explicit key.
+        assert cost_block["cumulative_cost_all_runs"] == 2.3
+        assert cost_block["total_invocations"] == 3
 
 
 class TestFinalizeEscalation:

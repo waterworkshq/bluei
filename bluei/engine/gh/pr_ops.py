@@ -237,7 +237,9 @@ def create_or_update_github_pr(
     log_file: Path,
     cwd: Path,
     safety_config: Optional[Dict[str, Any]] = None,
-    repo_config: Optional[Dict[str, Any]] = None,
+    # D7-C-1: production passes the RepoConfig DATACLASS stored on
+    # RunContext.repo_config; resolve_base_branch accepts both shapes.
+    repo_config: Any = None,
 ) -> Dict[str, Any]:
     """Create a GitHub PR for a finding, or reuse an existing one.
 
@@ -252,9 +254,10 @@ def create_or_update_github_pr(
         safety_config: Optional safety policy dict. When provided, PR creation
             is blocked unless the safety mode allows it (``pr`` or ``merge``).
             When omitted/empty, no enforcement is applied (backward compat).
-        repo_config: Optional repo config dict used to resolve the PR base
-            branch (``base_branch`` / ``default_branch`` override). When
-            omitted, the base falls back to ``protected_branches[0]`` then
+        repo_config: Optional repo config (dict OR ``RepoConfig`` dataclass)
+            used to resolve the PR base branch (``base_branch`` /
+            ``default_branch`` override). When omitted, the base falls back
+            to ``protected_branches[0]`` then
             ``"main"``.
 
     Returns:

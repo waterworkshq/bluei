@@ -27,7 +27,9 @@ def create_batch_pr(
     repo_slug: str,
     log_file: Path,
     safety_config: Optional[dict] = None,
-    repo_config: Optional[dict] = None,
+    # D7-C-1: production passes the RepoConfig DATACLASS stored on
+    # RunContext.repo_config; resolve_base_branch accepts both shapes.
+    repo_config: Any = None,
 ) -> Dict[str, Any]:
     """Create a GitHub PR for the batch.
 

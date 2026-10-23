@@ -24,10 +24,27 @@ The expected shape of ``safety_config`` mirrors ``RepoConfig.safety``::
 
 ``repo_config`` (for :func:`resolve_base_branch`) mirrors the flat
 ``RepoConfig`` dict and may carry an explicit ``base_branch`` /
-``default_branch`` override.
+``default_branch`` override. It is accepted in BOTH shapes: a plain dict
+(the historical/test shape) and a ``RepoConfig`` dataclass (what the cycle
+actually stores on ``RunContext.repo_config`` — D7-C-1: the dataclass has
+no ``.get`` and previously crashed ``resolve_base_branch`` with an
+AttributeError at first live PR creation).
 """
 
 from typing import Any, Dict, List, Optional, Tuple
+
+
+def _cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
+    """Read ``key`` from a dict-shaped OR attribute-shaped config object.
+
+    Production callers pass a ``RepoConfig`` dataclass (attribute access);
+    tests and older call sites pass plain dicts (``.get``). Both carry the
+    same field names, so both shapes are accepted here. A missing key on
+    either shape yields ``default``.
+    """
+    if isinstance(cfg, dict):
+        return cfg.get(key, default)
+    return getattr(cfg, key, default)
 
 # Canonical fallback when nothing else is configured. This preserves the
 # pre-enforcement behaviour where ``--base main`` was hardcoded.
@@ -163,7 +180,7 @@ def check_merge_allowed(
 
 def resolve_base_branch(
     safety_config: Optional[Dict[str, Any]],
-    repo_config: Optional[Dict[str, Any]],
+    repo_config: Any = None,
 ) -> str:
     """Determine the PR base branch without ever hardcoding ``"main"``.
 
@@ -174,12 +191,18 @@ def resolve_base_branch(
     3. ``safety_config['protected_branches'][0]`` — typically ``"main"``
     4. ``DEFAULT_BASE_BRANCH`` (``"main"``) — final fallback for backward compat
 
+    ``repo_config`` may be a plain dict OR a ``RepoConfig`` dataclass
+    (D7-C-1: the cycle stores the dataclass on ``RunContext.repo_config``;
+    the dataclass carries no ``base_branch``/``default_branch`` fields, so
+    it falls through to the safety/protected-branches order above instead
+    of raising AttributeError).
+
     Returns:
         The resolved base branch name (trimmed, non-empty).
     """
     if repo_config:
         for key in ("base_branch", "default_branch"):
-            val = repo_config.get(key)
+            val = _cfg_get(repo_config, key)
             if isinstance(val, str) and val.strip():
                 return val.strip()
     if safety_config:

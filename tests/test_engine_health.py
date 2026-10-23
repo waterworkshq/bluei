@@ -136,6 +136,83 @@ class TestEnrichHealthWithCost:
         assert "cost" not in result
 
 
+class TestPerCycleAverage:
+    """D7-H5: when per-cycle figures are supplied, ``avg_cost_per_run`` is
+    cycle cost ÷ cycle invocations — never the all-history log total ÷ a
+    per-cycle count (the old mix inflated the average ~N× after N cycles).
+    """
+
+    def test_per_cycle_avg_ignores_cumulative_numerator(self, tmp_path):
+        log_path = tmp_path / "cost_log.jsonl"
+        # Three prior cycles' entries: cumulative 0.90 across 3 invocations.
+        _write_jsonl(
+            log_path,
+            [
+                {"cost": 0.30, "model": "gpt-4"},
+                {"cost": 0.30, "model": "gpt-4"},
+                {"cost": 0.30, "model": "gpt-4"},
+            ],
+        )
+
+        summary = {}
+        result = enrich_health_with_cost(
+            summary,
+            cost_log_path=log_path,
+            cycle_cost_usd=0.30,
+            cycle_invocations=2,
+        )
+        # cycle 0.30 / 2 invocations — NOT cumulative 0.90 / 2 (= 0.45).
+        assert result["cost"]["avg_cost_per_run"] == round(0.30 / 2, 6)
+        assert result["cost"]["avg_cost_per_run"] != round(0.90 / 2, 6)
+
+    def test_cumulative_key_carries_log_total(self, tmp_path):
+        log_path = tmp_path / "cost_log.jsonl"
+        _write_jsonl(
+            log_path,
+            [
+                {"cost": 0.30, "model": "gpt-4"},
+                {"cost": 0.30, "model": "gpt-4"},
+            ],
+        )
+
+        summary = {}
+        result = enrich_health_with_cost(
+            summary,
+            cost_log_path=log_path,
+            cycle_cost_usd=0.10,
+            cycle_invocations=1,
+        )
+        # The all-history figure stays visible under an explicitly-cumulative
+        # key, sourced from the same log read as total_cost.
+        assert result["cost"]["cumulative_cost_all_runs"] == 0.6
+        assert result["cost"]["total_cost"] == 0.6
+
+    def test_zero_cycle_invocations_yields_zero_avg(self, tmp_path):
+        log_path = tmp_path / "cost_log.jsonl"
+        _write_jsonl(log_path, [{"cost": 0.30, "model": "gpt-4"}])
+
+        summary = {}
+        result = enrich_health_with_cost(
+            summary,
+            cost_log_path=log_path,
+            cycle_cost_usd=0.0,
+            cycle_invocations=0,
+        )
+        # No invocations this cycle → no per-cycle spend → avg 0.0 (the old
+        # bug made this cumulative_cost / 1).
+        assert result["cost"]["avg_cost_per_run"] == 0.0
+
+    def test_legacy_denominator_path_still_available(self, tmp_path):
+        # Without per-cycle figures, the legacy branch (all-log total ÷
+        # total_runs, or ÷ log invocations when 0) is unchanged.
+        log_path = tmp_path / "cost_log.jsonl"
+        _write_jsonl(log_path, [{"cost": 0.30, "model": "gpt-4"}])
+
+        summary = {}
+        result = enrich_health_with_cost(summary, cost_log_path=log_path, total_runs=10)
+        assert result["cost"]["avg_cost_per_run"] == round(0.30 / 10, 6)
+
+
 class TestBuildCostHealthSummary:
     def test_returns_empty_without_log(self):
         result = build_cost_health_summary()

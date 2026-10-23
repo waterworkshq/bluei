@@ -326,7 +326,10 @@ def _finalize_pr_for_issue(
     args: Any,
     state: Dict[str, Any],
     safety_config: Optional[Dict[str, Any]] = None,
-    repo_config: Optional[Dict[str, Any]] = None,
+    # D7-C-1: receives the RepoConfig DATACLASS from RunContext.repo_config;
+    # resolve_base_branch (via create_or_update_github_pr) accepts both
+    # dict and dataclass shapes.
+    repo_config: Any = None
 ) -> FinalizeResult:
     """Commit, push, create PR, and link to issue after a successful fix verification.
 
@@ -1470,6 +1473,13 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
     except Exception:
         ctx.repo_config = None
 
+    # Runtime safety gates (D7-H1): lift RepoConfig.safety into the cycle
+    # projection so the pr/merge safety gates see the configured policy.
+    # Previously ``getattr(ctx, "safety_config", None)`` downstream was
+    # structurally always None (RunContext had no such field), so
+    # protected-branch / safety-mode enforcement never activated.
+    ctx.safety_config = ctx.repo_config.safety if ctx.repo_config else None
+
     # Learning mode (ADR-0013): resolve the global tri-state ceiling once at
     # cycle start. Defaults to ``active`` when no config.yaml is present.
     from bluei.app.config import load_global_config
@@ -1555,6 +1565,8 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
                     repo_path=repo_path,
                     args=args,
                     log_file=log_file,
+                    safety_config=ctx.safety_config,
+                    repo_config=ctx.repo_config,
                     selection_fn=ctx.selection_fn,
                     governor_ledger_path=ctx.governor_ledger_path,
                     run_id=ctx.run_id,

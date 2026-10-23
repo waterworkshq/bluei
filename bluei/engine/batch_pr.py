@@ -12,7 +12,7 @@ import logging
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import Any, Optional, Tuple, TYPE_CHECKING
 from uuid import uuid4
 
 from bluei.engine.models import (
@@ -101,7 +101,9 @@ def process_batch(
     args,
     log_file: Path,
     safety_config: Optional[dict] = None,
-    repo_config: Optional[dict] = None,
+    # D7-C-1/H-1: production passes the RepoConfig DATACLASS stored on
+    # RunContext.repo_config; resolve_base_branch accepts both shapes.
+    repo_config: Any = None,
     *,
     selection_fn: Optional[SelectionFn] = None,
     governor_ledger_path: Optional[Path] = None,
