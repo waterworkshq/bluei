@@ -734,6 +734,7 @@ def _process_one_issue(
         replay_succeeded = False
         replay_pid: Optional[str] = None
         replay_pattern_hint: Optional[str] = None
+        _gov_candidate: Optional[Any] = None
 
         if pattern_store is not None:
             from bluei.engine.governance import (
@@ -767,17 +768,20 @@ def _process_one_issue(
                 )
             else:
                 _replay_t0 = time.monotonic()
-                # record_outcome=True: try_replay's internal three-way
-                # recording (HIT/MISS/FAILURE per ADR-0004) is authoritative
-                # — mainline MISS/FAILURE reach failure_count/last_failed_at
-                # instead of being silently dropped.
+                # record_outcome: try_replay's internal three-way recording
+                # (HIT/MISS/FAILURE per ADR-0004) is authoritative on the
+                # mainline — MISS/FAILURE reach failure_count/last_failed_at
+                # instead of being silently dropped. Under
+                # learning_mode == "paused" (ADR-0013 full freeze) the replay
+                # may still run and deliver value, but the store must not
+                # mutate: evidence recording is gated, not the application.
                 replayed, replay_pid = try_replay(
                     worktree_path=worktree_path,
                     finding=finding,
                     store=pattern_store,
                     baseline_checks=PER_REPO_BASELINE_CHECKS,
                     log_file=log_file,
-                    record_outcome=True,
+                    record_outcome=(ctx.learning_mode != "paused"),
                 )
                 _replay_latency_ms = int((time.monotonic() - _replay_t0) * 1000)
                 if replayed:
@@ -836,6 +840,22 @@ def _process_one_issue(
                     run_id=ctx.run_id,
                     cost_tracker=ctx.cost_tracker,
                     governance_state=ctx.governance_state,
+                    # The standalone replay already attempted (and recorded)
+                    # this pattern for the finding — the cascade's pattern
+                    # stage must not re-attempt and double-record it. The
+                    # gate-resolved candidate is the reliable id source:
+                    # try_replay returns the pid only on some outcomes
+                    # (a snippet-not-found MISS records internally but
+                    # returns None).
+                    attempted_pattern_ids={
+                        pid
+                        for pid in (
+                            getattr(_gov_candidate, "pattern_id", None),
+                            replay_pid,
+                        )
+                        if pid
+                    }
+                    or None,
                 )
                 if applied:
                     run_status = "fix-applied:cascade"
@@ -1495,6 +1515,7 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
                     governor_ledger_path=ctx.governor_ledger_path,
                     run_id=ctx.run_id,
                     discovery=ctx.discovery,
+                    cost_tracker=ctx.cost_tracker,
                 )
                 if _success:
                     created_prs += 1

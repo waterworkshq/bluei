@@ -86,6 +86,10 @@ class CascadeContext:
     # Governance State projection (ADR-0008) — consulted by cascade stages to
     # skip PAUSED/RETIRED assets. Empty dict ⇒ all assets ACTIVE (no-op).
     governance_state: Dict[str, str] = field(default_factory=dict)
+    # Pattern ids the caller already attempted for THIS finding (e.g. the
+    # standalone mainline replay) — the pattern stage excludes them so one
+    # finding yields at most one attempt and one recorded outcome per pattern.
+    attempted_pattern_ids: Optional[set] = None
 
 
 class CascadeStage(ABC):
@@ -563,6 +567,7 @@ class PatternReplayCascadeStage(CascadeStage):
                 context.baseline_results,
                 context.log_file,
                 shared_library=getattr(context, "shared_library", None),
+                exclude_pattern_ids=getattr(context, "attempted_pattern_ids", None),
             )
             if replayed and context.cost_tracker and pattern_id:
                 saved = context.cost_tracker.estimate_invocation_cost(

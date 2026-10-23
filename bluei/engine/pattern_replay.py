@@ -80,6 +80,7 @@ def try_replay(
     log_file: Path,
     shared_library: Any = None,
     record_outcome: bool = True,
+    exclude_pattern_ids: Optional[set] = None,
 ) -> Tuple[bool, Optional[str]]:
     try:
         return _try_replay_inner(
@@ -90,6 +91,7 @@ def try_replay(
             log_file,
             shared_library,
             record_outcome,
+            exclude_pattern_ids,
         )
     except Exception as exc:
         try:
@@ -110,14 +112,34 @@ def _resolve_pattern(
     store: FixPatternStore,
     log_file: Path,
     shared_library: Any = None,
+    exclude_pattern_ids: Optional[set] = None,
 ) -> Optional[FixPattern]:
+    def _excluded(candidate: Optional[FixPattern]) -> bool:
+        # A pattern the caller already attempted for this finding (e.g. the
+        # standalone mainline replay before the cascade re-tries) resolves as
+        # not-found, so the second path cannot re-attempt and double-record
+        # the same outcome.
+        if candidate is None or not exclude_pattern_ids:
+            return False
+        if candidate.pattern_id in exclude_pattern_ids:
+            append_log(
+                log_file,
+                (
+                    f"pattern-replay-skip: rule={finding.rule} "
+                    f"pattern_id={candidate.pattern_id} "
+                    f"reason=excluded_upstream_attempt"
+                ),
+            )
+            return True
+        return False
+
     cache_key = (
         f"{finding.rule}::{finding.path}::{normalize_snippet(finding.snippet)[:64]}"
     )
     now = time.monotonic()
     cached = _PATTERN_CACHE.get(cache_key)
     if cached is not None and (now - cached[0]) < _PATTERN_CACHE_TTL:
-        return cached[1]
+        return None if _excluded(cached[1]) else cached[1]
 
     normalized = normalize_snippet(finding.snippet)
     language = getattr(finding, "language", None) or infer_language_from_path(
@@ -211,7 +233,7 @@ def _resolve_pattern(
         oldest = sorted(_PATTERN_CACHE.items(), key=lambda x: x[1][0])[:256]
         for k, _ in oldest:
             _PATTERN_CACHE.pop(k, None)
-    return result
+    return None if _excluded(result) else result
 
 
 def _clear_pattern_cache() -> None:
@@ -285,8 +307,11 @@ def _try_replay_inner(
     log_file: Path,
     shared_library: Any = None,
     record_outcome: bool = True,
+    exclude_pattern_ids: Optional[set] = None,
 ) -> Tuple[bool, Optional[str]]:
-    pattern = _resolve_pattern(finding, store, log_file, shared_library)
+    pattern = _resolve_pattern(
+        finding, store, log_file, shared_library, exclude_pattern_ids
+    )
 
     if pattern is None:
         append_log(
