@@ -286,9 +286,15 @@ def process_batch(
                     pr_budget=pr_budget,
                 )
                 sub_results.append((_ok, _detail))
-                if pr_budget is not None and _ok:
-                    # Nested splits report their own PR count — draw them
-                    # all from the shared budget.
+                if (
+                    pr_budget is not None
+                    and _ok
+                    and not _detail.startswith("split-and-retried:")
+                ):
+                    # A child that itself split already drew its own PRs
+                    # from this shared budget inside its recursion — only
+                    # draw here for children that consumed nothing
+                    # themselves, or nested splits would decrement twice.
                     pr_budget[0] -= parse_pr_count(_detail)
             if sub_results and any(ok for ok, _detail in sub_results):
                 # Carry the number of PRs the sub-batches actually created

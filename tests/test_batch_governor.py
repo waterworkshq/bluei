@@ -846,3 +846,60 @@ class TestNestedSplitBudget:
         log = (tmp_path / "log.txt").read_text()
         assert "n8-a" in log and "pr-budget-exhausted" in log
         assert "would create PR for n8-b" not in log
+
+    def test_nested_child_does_not_double_draw_budget(self, tmp_path, make_finding):
+        # A child that splits draws its grandchildren's PRs from the shared
+        # budget itself; the parent must not draw again on the child's
+        # split-and-retried:N return, or later siblings lose slots they
+        # still had.
+        from bluei.engine.batch_pr import process_batch
+        from bluei.engine.models import BatchGroup
+
+        finding = make_finding(rule="ruff-b904", safe_to_autofix=False)
+
+        def _bg(bid, n):
+            return BatchGroup(
+                batch_id=bid, rule_pattern="ruff-b904", findings=[finding] * n
+            )
+
+        parent, mid, sib = _bg("parent9", 6), _bg("mid9", 3), _bg("sib9", 3)
+        leaf1, leaf2 = _bg("leaf9a", 2), _bg("leaf9b", 1)
+        args = _make_args()
+        args.dry_run = True
+
+        def _apply(batch, **kwargs):
+            if batch.batch_id in ("parent9", "mid9"):
+                return 1, 5
+            return 3, 0
+
+        with patch("bluei.engine.batch_pr._create_worktree", return_value=True), patch(
+            "bluei.engine.batch_pr.apply_batch_fixes", side_effect=_apply
+        ), patch(
+            "bluei.engine.batch_pr.should_split_batch",
+            side_effect=lambda batch, max_depth=3: batch.batch_id
+            in ("parent9", "mid9"),
+        ), patch(
+            "bluei.engine.batch_pr.handle_batch_failure",
+            side_effect=lambda batch, *a, **k: [mid, sib]
+            if batch.batch_id == "parent9"
+            else [leaf1, leaf2],
+        ), patch(
+            "bluei.engine.git_ops.git_commit_all", return_value="ok"
+        ), patch(
+            "bluei.engine.git_ops.git_push_branch", return_value=True
+        ):
+            ok, detail = process_batch(
+                batch=parent,
+                repo_path=tmp_path,
+                args=args,
+                log_file=tmp_path / "log.txt",
+                pr_budget=[3],
+            )
+
+        # mid drew 2 (its leaves); parent must not draw again for mid's
+        # :2 — sib still gets its slot and its PR.
+        assert ok is True
+        assert detail == "split-and-retried:3"
+        log = (tmp_path / "log.txt").read_text()
+        assert "would create PR for sib9" in log
+        assert "pr-budget-exhausted" not in log
