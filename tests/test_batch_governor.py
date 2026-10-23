@@ -194,3 +194,74 @@ class TestBatchGovernorWiring:
 
         gov_mock.assert_called_once()
         assert result is not None
+
+
+class TestBatchCostLedger:
+    """D5-F4: batch Claude invocations reach the cost ledger via a threaded
+    CostTracker (same threading pattern as the Governor kwargs). Without a
+    tracker the batch path is unchanged — no crash, no rows."""
+
+    def test_threaded_tracker_records_invocation_with_discovered_rates(
+        self, tmp_path, make_finding
+    ):
+        from bluei.engine.cost_tracker import CostTracker
+
+        finding = make_finding(rule="ruff-b904", safe_to_autofix=False)
+        ledger = tmp_path / "governor_recommendations.jsonl"
+        cost_log = tmp_path / "cost_log.jsonl"
+        log_file = tmp_path / "log.txt"
+        args = _make_args()
+        discovery = _FakeDiscovery([_tier0_claude_model()])
+        tracker = CostTracker(log_path=cost_log)
+
+        with patch(
+            "bluei.engine.lifecycle.apply_claude_fix",
+            return_value=(0, "claude output", None),
+        ):
+            _apply_single_fix(
+                finding=finding,
+                worktree_path=tmp_path,
+                repo_path=tmp_path,
+                args=args,
+                log_file=log_file,
+                selection_fn=_fake_select_tier_0,
+                governor_ledger_path=ledger,
+                run_id="run-batch-cost",
+                discovery=discovery,
+                cost_tracker=tracker,
+            )
+
+        rows = _read_ledger(cost_log)
+        assert len(rows) == 1
+        # The Governor-resolved model id (not a guess) with discovered rates.
+        assert rows[0]["model"] == "claude-3-5-haiku"
+        assert rows[0]["rates_source"] == "discovered"
+        assert rows[0]["input_tokens"] == 3000
+        assert rows[0]["output_tokens"] == 300
+
+    def test_no_tracker_no_crash_no_rows(self, tmp_path, make_finding):
+        finding = make_finding(rule="ruff-b904", safe_to_autofix=False)
+        ledger = tmp_path / "governor_recommendations.jsonl"
+        cost_log = tmp_path / "cost_log.jsonl"
+        log_file = tmp_path / "log.txt"
+        args = _make_args()
+
+        with patch(
+            "bluei.engine.lifecycle.apply_claude_fix",
+            return_value=(0, "claude output", None),
+        ):
+            result = _apply_single_fix(
+                finding=finding,
+                worktree_path=tmp_path,
+                repo_path=tmp_path,
+                args=args,
+                log_file=log_file,
+                selection_fn=_fake_select_tier_0,
+                governor_ledger_path=ledger,
+                run_id="run-batch-no-cost",
+                discovery=_FakeDiscovery([_tier0_claude_model()]),
+                # cost_tracker omitted → default None → no crash, no rows
+            )
+
+        assert result is not None
+        assert not cost_log.exists()

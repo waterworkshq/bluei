@@ -92,6 +92,7 @@ def process_batch(
     governor_ledger_path: Optional[Path] = None,
     run_id: str = "",
     discovery: Optional[ModelDiscovery] = None,
+    cost_tracker: Optional["object"] = None,
 ) -> Tuple[bool, Optional[str]]:
     """Process a multi-finding batch: worktree → fixes → PR.
 
@@ -185,6 +186,7 @@ def process_batch(
             governor_ledger_path=governor_ledger_path,
             run_id=run_id,
             discovery=discovery,
+            cost_tracker=cost_tracker,
         )
 
         _append_text(
@@ -215,6 +217,7 @@ def process_batch(
                     governor_ledger_path=governor_ledger_path,
                     run_id=run_id,
                     discovery=discovery,
+                    cost_tracker=cost_tracker,
                 )
             return True, "split-and-retried"
         elif (

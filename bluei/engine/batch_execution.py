@@ -89,6 +89,7 @@ def apply_batch_fixes(
     governor_ledger_path: Optional[Path] = None,
     run_id: str = "",
     discovery: Optional[ModelDiscovery] = None,
+    cost_tracker: Any = None,
 ) -> Tuple[int, int]:
     """Apply all fixes within a shared worktree sequentially.
 
@@ -116,6 +117,7 @@ def apply_batch_fixes(
             governor_ledger_path=governor_ledger_path,
             run_id=run_id,
             discovery=discovery,
+            cost_tracker=cost_tracker,
         )
         batch.fix_results[finding.finding_id] = result
 
@@ -154,6 +156,7 @@ def _apply_single_fix(
     governor_ledger_path: Optional[Path] = None,
     run_id: str = "",
     discovery: Optional[ModelDiscovery] = None,
+    cost_tracker: Any = None,
 ) -> FixResult:
     """Apply one fix within a shared batch worktree.
 
@@ -314,6 +317,25 @@ def _apply_single_fix(
             status=FixStatus.FAILED.value,
             error=f"claude-exception: {exc}",
             fix_method="claude",
+        )
+
+    # Cost ledger (D5-F4): record the Claude invocation mirroring the pr-cycle
+    # call site so batch spend is visible to cost_log.jsonl and the hard
+    # limit. Rates validation (usable-discovered) lives inside
+    # record_invocation — delegating keeps the two lanes identical. When
+    # injection no-oped or discovery resolved nothing, _gov_resolved is None
+    # → rates None → MODEL_RATES fallback anchored at the estimate label.
+    if cost_tracker is not None:
+        cost_tracker.record_invocation(
+            model=_model_name,
+            input_tokens=3000,
+            output_tokens=300,
+            rates={
+                "input_per_1k": _gov_resolved.input_per_1k,
+                "output_per_1k": _gov_resolved.output_per_1k,
+            }
+            if _gov_resolved is not None
+            else None,
         )
 
     # FIX: rc=0 does not mean Claude applied a fix. In --print non-interactive mode,
