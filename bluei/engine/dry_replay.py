@@ -20,7 +20,11 @@ from typing import Any, Dict, List, Optional
 from bluei.engine.governance import format_asset_ref, is_governance_active
 from bluei.engine.jsonl import append_jsonl
 from bluei.engine.models import Finding, now_iso
-from bluei.engine.pattern_replay import _run_baseline_validation, apply_pattern_to_text
+from bluei.engine.pattern_replay import (
+    _matches_file_pattern,
+    _run_baseline_validation,
+    apply_pattern_to_text,
+)
 from bluei.engine.pattern_store import FixPattern, FixPatternStore, normalize_snippet
 from bluei.engine.report import infer_language_from_path
 
@@ -136,27 +140,42 @@ def run_dry_replay(
         passing_checks: List[str] = []
         infra_error = False
         try:
-            target_file.write_text(original_content, encoding="utf-8")
-
-            application = apply_pattern_to_text(
-                original_content,
-                pattern,
-                getattr(pattern, "language", None)
-                or infer_language_from_path(finding.path, fallback="python"),
-                target_line=finding.line,
-            )
-            if application is None:
-                outcome = "MISS"
-            else:
-                target_file.write_text(application.new_text, encoding="utf-8")
-
-                all_passed, passing_checks = _run_baseline_validation(
-                    worktree_path, baseline_checks, log_file
+            # file_pattern scope parity with live replay: live replay skips
+            # application when the finding's path is outside the Pattern's
+            # glob (``_matches_file_pattern``). The counterfactual outcome
+            # of that skip is a MISS — record it WITHOUT applying (or
+            # validating) the pattern, so Dry Replay cannot claim a HIT a
+            # live replay would never have attempted.
+            if not _matches_file_pattern(finding.path, pattern.file_pattern):
+                _logger.debug(
+                    "dry-replay candidate out of file_pattern scope: "
+                    "pattern_id=%s pattern=%s path=%s",
+                    pattern.pattern_id,
+                    pattern.file_pattern,
+                    finding.path,
                 )
-                if all_passed:
-                    outcome = "HIT"
+            else:
+                target_file.write_text(original_content, encoding="utf-8")
+
+                application = apply_pattern_to_text(
+                    original_content,
+                    pattern,
+                    getattr(pattern, "language", None)
+                    or infer_language_from_path(finding.path, fallback="python"),
+                    target_line=finding.line,
+                )
+                if application is None:
+                    outcome = "MISS"
                 else:
-                    outcome = "FAILURE"
+                    target_file.write_text(application.new_text, encoding="utf-8")
+
+                    all_passed, passing_checks = _run_baseline_validation(
+                        worktree_path, baseline_checks, log_file
+                    )
+                    if all_passed:
+                        outcome = "HIT"
+                    else:
+                        outcome = "FAILURE"
         except Exception as exc:
             _logger.warning(
                 "dry-replay candidate failed: pattern_id=%s error=%s",

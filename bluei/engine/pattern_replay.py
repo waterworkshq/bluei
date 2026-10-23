@@ -285,6 +285,16 @@ def apply_pattern_to_text(
         )
         return PatternApplication(new_text=new_text, mechanism="literal")
 
+    # Structural-rung confidence gate (ADR-0019): the AST rung only fires
+    # for Patterns at/above AUTO_REPLAY_THRESHOLD. Live replay enforced
+    # this before the ladder call; housing it IN the ladder gives the Dry
+    # Replay path the same gate (a low-confidence structurally-shaped
+    # candidate records a MISS instead of applying). No live behavior
+    # change: _try_replay_inner only reaches the ladder when confidence
+    # is already >= AUTO_REPLAY_THRESHOLD.
+    if pattern.confidence < AUTO_REPLAY_THRESHOLD:
+        return None
+
     from bluei.engine.structural_replay import apply_structural_replay
 
     structural = apply_structural_replay(

@@ -463,6 +463,48 @@ def test_run_sprt_check_extreme_calibration_falls_back_no_exception(
     assert snap["p_broken"] == pytest.approx(0.50)
 
 
+def test_run_sprt_check_huge_int_calibration_falls_back_no_exception(
+    tmp_path: Path, monkeypatch
+):
+    """A calibration entry whose value is an int beyond float range
+    (10**400 — YAML parses it as an arbitrary-precision int; float() then
+    raises OverflowError, which is NOT a ValueError) must fall back to
+    defaults without raising."""
+    from bluei.engine import sprt as sprt_mod
+
+    calib = tmp_path / "calibration.yaml"
+    calib.write_text(
+        "families:\n"
+        "  fam-huge:\n"
+        f"    p_healthy: {10**400}\n"
+        "    p_broken: 0.20\n"
+        "    degenerate: false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sprt_mod, "_CALIBRATION_PATH", calib)
+    monkeypatch.setattr(sprt_mod, "_CALIBRATION_CACHE", None)
+    monkeypatch.setattr(sprt_mod, "_CALIBRATION_MTIME", None)
+
+    # Direct unit level: _sprt_params falls back to defaults, no exception.
+    params = sprt_mod._sprt_params({}, "fam-huge")
+    assert params["p_healthy"] == pytest.approx(0.90)
+    assert params["p_broken"] == pytest.approx(0.50)
+
+    # End to end through run_sprt_check.
+    dr = tmp_path / "dry_replay.jsonl"
+    ar = tmp_path / "approval_records.jsonl"
+    _write_jsonl(ar, [])
+    _write_jsonl(dr, _twenty_hits("p1", "01"))
+
+    [record] = run_sprt_check(
+        ["p1"], dr, ar, config={}, pattern_families={"p1": "fam-huge"}
+    )
+
+    snap = record["evidence_snapshot"]
+    assert snap["p_healthy"] == pytest.approx(0.90)
+    assert snap["p_broken"] == pytest.approx(0.50)
+
+
 # ---------------------------------------------------------------------------
 # Integration guard (T7.3)
 # ---------------------------------------------------------------------------
@@ -539,3 +581,88 @@ def test_pr_cycle_sprt_wires_pattern_families(tmp_path, monkeypatch):
     )
     assert record["evidence_snapshot"]["p_healthy"] == pytest.approx(0.90)
     assert _math.isfinite(record["evidence_snapshot"]["llr"])
+
+    # Wiring seam (tightened): drive run_pr_cycle_phase itself — empty issue
+    # queue, a dry_replay.jsonl next to the state file referencing a stored
+    # Pattern whose rule_family is set — with run_sprt_check patched at its
+    # source module (pr_cycle imports it function-locally). The patched
+    # check must receive a pattern_families map containing the store's
+    # family for that pattern; broken propagation (the map no longer built
+    # from ctx.pattern_store) fails here.
+    from unittest.mock import patch
+
+    from bluei.engine.commands.context import RunContext
+    from bluei.engine.pattern_store import FixPattern, FixPatternStore
+
+    store = FixPatternStore(tmp_path / "patterns.jsonl")
+    pid = store.append(
+        FixPattern(
+            pattern_id="",
+            rule="broad-except",
+            language="python",
+            file_path="src/example.py",
+            before_snippet="except:\n    pass",
+            after_snippet="except Exception:\n    pass",
+            diff_patch="",
+            confidence=0.95,
+            success_count=0,
+            failure_count=0,
+            skip_count=0,
+            source="claude",
+            created_at="2026-01-01T00:00:00+00:00",
+            last_used_at=None,
+            last_verified_at=None,
+            source_finding_ids=["f001"],
+            rule_family="synthetic-raise",
+        )
+    )
+    store._rebuild_from_disk()
+    assert store.get_pattern(pid) is not None
+    assert store.get_pattern(pid).rule_family == "synthetic-raise"
+
+    state_file = tmp_path / "state" / "status.json"
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    _write_jsonl(
+        state_file.parent / "dry_replay.jsonl",
+        [_dr_record(pattern_id=pid, outcome="hit", timestamp="2026-10-23T00:00:00+00:00")],
+    )
+
+    ctx = RunContext(
+        args=SimpleNamespace(
+            batch_pr_enabled=False,
+            allow_main_commit=False,
+            max_prs_per_run=0,
+        ),
+        repo_path=tmp_path / "repo",
+        state_file=state_file,
+        log_file=tmp_path / "run.log",
+        findings_file=tmp_path / "findings.jsonl",
+        worktree_root=tmp_path / "worktrees",
+        gh_repo_slug="acme/widget",
+        issues_data={"issues": []},
+        eligible_findings=[],
+        findings=[],
+        PER_REPO_BASELINE_CHECKS={},
+        pattern_store=store,
+        learning_mode="active",
+    )
+
+    with (
+        patch("bluei.engine.commands.pr_cycle.get_branch", return_value="main"),
+        patch(
+            "bluei.engine.commands.pr_cycle._select_candidates",
+            return_value=([], 0),
+        ),
+        patch("bluei.app.config.load_global_config", return_value={}),
+        patch("bluei.engine.sprt.run_sprt_check", return_value=[]) as mock_sprt,
+    ):
+        pr_cycle.run_pr_cycle_phase(ctx)
+
+    mock_sprt.assert_called_once()
+    wired_families = mock_sprt.call_args.kwargs.get("pattern_families")
+    assert wired_families is not None, (
+        "run_pr_cycle_phase must thread pattern_families into run_sprt_check"
+    )
+    assert wired_families.get(pid) == "synthetic-raise", (
+        "the store's rule_family for the dry-replayed pattern must propagate"
+    )

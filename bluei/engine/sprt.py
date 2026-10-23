@@ -114,7 +114,9 @@ def _sprt_params(
             try:
                 p_healthy = float(entry.get("p_healthy"))
                 p_broken = float(entry.get("p_broken"))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
+                # OverflowError: YAML ints beyond float range (e.g. 10**400)
+                # overflow on float() — degenerate, fall back to defaults.
                 p_healthy = p_broken = None
             if (
                 p_healthy is not None

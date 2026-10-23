@@ -37,7 +37,12 @@ def _make_pattern(
     language: str = "python",
     before: str = "x = 1   ",
     after: str = "x = 1",
+    confidence: float | None = None,
+    file_pattern: str = "**/*",
 ) -> FixPattern:
+    overrides: dict = {"file_pattern": file_pattern}
+    if confidence is not None:
+        overrides["confidence"] = confidence
     return FixPattern(
         pattern_id=pid,
         rule=rule,
@@ -46,6 +51,7 @@ def _make_pattern(
         before_snippet=before,
         after_snippet=after,
         diff_patch="",
+        **overrides,
     )
 
 
@@ -198,6 +204,10 @@ def test_run_dry_replay_structural_fallback_records_hit(tmp_path, make_finding):
         rule="ruff-c408",
         before='raise ValueError("bad")',
         after='raise ValueError("bad") from err',
+        # ADR-0019: the structural rung only fires at/above
+        # AUTO_REPLAY_THRESHOLD (0.9) — live replay would only apply this
+        # pattern at auto-replay tier, so the counterfactual must too.
+        confidence=0.95,
     )
     finding = make_finding(
         rule="ruff-c408",
@@ -244,6 +254,8 @@ def test_run_dry_replay_structural_fallback_failure_when_validation_fails(
         rule="ruff-c408",
         before='raise ValueError("bad")',
         after='raise ValueError("bad") from err',
+        # ADR-0019: structural rung requires auto-replay-tier confidence.
+        confidence=0.95,
     )
     finding = make_finding(
         rule="ruff-c408",
@@ -269,6 +281,97 @@ def test_run_dry_replay_structural_fallback_failure_when_validation_fails(
     recs = _read_records(dr_path)
     assert len(recs) == 1
     assert recs[0]["would_have_outcome"] == "FAILURE"
+    assert (worktree / "src" / "app.py").read_text() == winner
+
+
+def test_run_dry_replay_out_of_scope_file_pattern_records_miss(
+    tmp_path, make_finding
+):
+    """file_pattern scope parity with live replay: live replay SKIPS
+    application when the finding's path is outside the Pattern's glob. Dry
+    replay must not apply the pattern either — the counterfactual outcome of
+    the skip is a MISS (no application, no validation), never a HIT."""
+    original = "x = 1   \n"
+    winner = "x = 1\n"
+    worktree = _setup_worktree(tmp_path, original)
+
+    # The snippet WOULD match literally (so only the scope guard can cause
+    # the MISS); the file_pattern confines the Pattern to tests/**.
+    pattern = _make_pattern(
+        "fp-scope", before="x = 1   ", after="x = 1", file_pattern="tests/**"
+    )
+    finding = make_finding(
+        rule="trailing-whitespace", path="src/app.py", snippet="x = 1   "
+    )
+
+    dr_path = tmp_path / "dry_replay.jsonl"
+
+    run_dry_replay(
+        finding,
+        [pattern],
+        worktree,
+        original_content=original,
+        winner_content=winner,
+        # Would FAIL (not MISS) if the pattern were applied + validated.
+        baseline_checks={"lint": "false"},
+        log_file=tmp_path / "log.txt",
+        run_id="run-scope",
+        dry_replay_path=dr_path,
+    )
+
+    recs = _read_records(dr_path)
+    assert len(recs) == 1
+    assert recs[0]["would_have_outcome"] == "MISS"
+    assert recs[0]["pattern_id"] == "fp-scope"
+    assert recs[0]["validation_commands_passed"] == []
+    # Worktree untouched by the skipped candidate
+    assert (worktree / "src" / "app.py").read_text() == winner
+
+
+def test_run_dry_replay_low_confidence_structural_records_miss(
+    tmp_path, make_finding
+):
+    """Structural-rung confidence gate parity (ADR-0019): a sub-threshold
+    Pattern with structural shape must NOT be applied on the dry path —
+    live replay does not apply below AUTO_REPLAY_THRESHOLD, so the honest
+    counterfactual is a MISS."""
+    original = "def f():\n    raise CustomError(custom_msg)\n"
+    winner = original
+    worktree = _setup_worktree(tmp_path, original)
+
+    pattern = _make_pattern(
+        "fp-structural-lowconf",
+        rule="ruff-c408",
+        before='raise ValueError("bad")',
+        after='raise ValueError("bad") from err',
+        confidence=0.6,  # structural shape, below AUTO_REPLAY_THRESHOLD
+    )
+    finding = make_finding(
+        rule="ruff-c408",
+        path="src/app.py",
+        line=2,
+        snippet="raise CustomError(custom_msg)",
+    )
+
+    dr_path = tmp_path / "dry_replay.jsonl"
+
+    run_dry_replay(
+        finding,
+        [pattern],
+        worktree,
+        original_content=original,
+        winner_content=winner,
+        # Would FAIL (not MISS) if the structural rung applied + validated.
+        baseline_checks={"lint": "false"},
+        log_file=tmp_path / "log.txt",
+        run_id="run-structural-lowconf",
+        dry_replay_path=dr_path,
+    )
+
+    recs = _read_records(dr_path)
+    assert len(recs) == 1
+    assert recs[0]["would_have_outcome"] == "MISS"
+    assert recs[0]["pattern_id"] == "fp-structural-lowconf"
     assert (worktree / "src" / "app.py").read_text() == winner
 
 
