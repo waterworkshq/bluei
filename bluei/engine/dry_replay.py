@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 from bluei.engine.governance import format_asset_ref, is_governance_active
 from bluei.engine.jsonl import append_jsonl
 from bluei.engine.models import Finding, now_iso
-from bluei.engine.pattern_replay import _find_snippet_in_file, _run_baseline_validation
+from bluei.engine.pattern_replay import _run_baseline_validation, apply_pattern_to_text
 from bluei.engine.pattern_store import FixPattern, FixPatternStore, normalize_snippet
 from bluei.engine.report import infer_language_from_path
 
@@ -113,12 +113,19 @@ def run_dry_replay(
 
     For each candidate (up to ``cap``):
       1. Restore original (pre-fix) content on the target file.
-      2. Apply the Pattern via ``_find_snippet_in_file`` + replace.
-      3. If snippet not found → outcome = ``"MISS"`` (skip validation).
-      4. If snippet found → run ``_run_baseline_validation`` → ``"HIT"`` /
+      2. Apply the Pattern via the SAME application ladder live replay uses
+         (``apply_pattern_to_text``: literal normalized match, then AST
+         structural replay on miss).
+      3. If neither rung applies → outcome = ``"MISS"`` (skip validation).
+      4. Otherwise → run ``_run_baseline_validation`` → ``"HIT"`` /
          ``"FAILURE"``.
       5. Record to ``dry_replay_path``.
       6. Restore winner content (worktree unchanged across the call).
+
+    The recorded ``would_have_outcome`` reflects what live replay would have
+    done — structural/fuzzy-matched candidates whose canonical snippet is
+    not a literal substring of the file are applied structurally instead of
+    being written off as MISS.
     """
     target_rel = finding.path
     target_file = Path(worktree_path) / target_rel
@@ -131,19 +138,17 @@ def run_dry_replay(
         try:
             target_file.write_text(original_content, encoding="utf-8")
 
-            match_result = _find_snippet_in_file(
-                original_content, pattern.before_snippet
+            application = apply_pattern_to_text(
+                original_content,
+                pattern,
+                getattr(pattern, "language", None)
+                or infer_language_from_path(finding.path, fallback="python"),
+                target_line=finding.line,
             )
-            if match_result is None:
+            if application is None:
                 outcome = "MISS"
             else:
-                match_pos, matched_length = match_result
-                new_text = (
-                    original_content[:match_pos]
-                    + pattern.after_snippet
-                    + original_content[match_pos + matched_length :]
-                )
-                target_file.write_text(new_text, encoding="utf-8")
+                target_file.write_text(application.new_text, encoding="utf-8")
 
                 all_passed, passing_checks = _run_baseline_validation(
                     worktree_path, baseline_checks, log_file

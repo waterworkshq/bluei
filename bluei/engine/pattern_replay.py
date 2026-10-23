@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import fnmatch
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -217,6 +218,65 @@ def _clear_pattern_cache() -> None:
     _PATTERN_CACHE.clear()
 
 
+@dataclass
+class PatternApplication:
+    """One successful rung of the pattern-application ladder.
+
+    ``mechanism`` is ``"literal"`` (normalized snippet splice) or
+    ``"structural"`` (AST structural replay, ADR-0019). ``structural``
+    carries the :class:`StructuralReplayResult` when the structural rung
+    applied, else ``None``.
+    """
+
+    new_text: str
+    mechanism: str
+    structural: Optional[Any] = None
+
+
+def apply_pattern_to_text(
+    file_text: str,
+    pattern: FixPattern,
+    language: str,
+    target_line: int = 0,
+) -> Optional[PatternApplication]:
+    """Apply a Pattern's before→after transformation to file text.
+
+    This is the SINGLE application ladder shared by live replay
+    (``_try_replay_inner``) and Dry Replay (``run_dry_replay``):
+
+      1. Literal (indentation-normalized) snippet match → text splice.
+      2. On literal miss → AST structural replay (ADR-0019): rename-tolerant
+         application via variable bindings.
+
+    Returns a :class:`PatternApplication` with the new file text and which
+    rung applied, or ``None`` when neither rung applies (the caller records
+    a MISS). Purely functional — nothing is written to disk; the caller owns
+    checkpointing, validation, and restoration.
+    """
+    match_result = _find_snippet_in_file(file_text, pattern.before_snippet)
+    if match_result is not None:
+        match_pos, matched_length = match_result
+        new_text = (
+            file_text[:match_pos]
+            + pattern.after_snippet
+            + file_text[match_pos + matched_length :]
+        )
+        return PatternApplication(new_text=new_text, mechanism="literal")
+
+    from bluei.engine.structural_replay import apply_structural_replay
+
+    structural = apply_structural_replay(
+        file_text, pattern, language, target_line=target_line
+    )
+    if structural is not None:
+        return PatternApplication(
+            new_text=structural.new_source,
+            mechanism="structural",
+            structural=structural,
+        )
+    return None
+
+
 def _try_replay_inner(
     worktree_path: Path,
     finding: Finding,
@@ -275,51 +335,17 @@ def _try_replay_inner(
         return (False, None)
 
     file_text = target_file.read_text(encoding="utf-8")
-    before_snippet = pattern.before_snippet
-    after_snippet = pattern.after_snippet
+    language = getattr(pattern, "language", None) or infer_language_from_path(
+        finding.path, fallback="python"
+    )
 
-    match_result = _find_snippet_in_file(file_text, before_snippet)
-    if match_result is None:
-        from bluei.engine.structural_replay import apply_structural_replay
-
-        language = getattr(pattern, "language", None) or infer_language_from_path(
-            finding.path, fallback="python"
-        )
-        structural = apply_structural_replay(
-            file_text, pattern, language, target_line=finding.line
-        )
-        if structural is not None:
-            target_file.write_text(structural.new_source, encoding="utf-8")
-            validation_passed = _run_baseline_validation(
-                worktree_path, baseline_checks, log_file
-            )[0]
-            if not validation_passed:
-                run_capture(
-                    ["git", "checkout", "--", finding.path],
-                    cwd=Path(worktree_path),
-                    timeout=30,
-                )
-                if record_outcome:
-                    store.record_replay_outcome(pid, ReplayOutcome.FAILURE)
-                append_log(
-                    log_file,
-                    (
-                        f"pattern-replay-structural-fail: pattern_id={pid} "
-                        f"reason=validation_failed"
-                    ),
-                )
-                return (False, None)
-            if record_outcome:
-                store.record_replay_outcome(pid, ReplayOutcome.HIT)
-            append_log(
-                log_file,
-                (
-                    f"pattern-replay-structural-success: pattern_id={pid} "
-                    f"binding_map_size={len(structural.binding_map)} "
-                    f"fuzzy={structural.fuzzy_score:.2f}"
-                ),
-            )
-            return (True, pid)
+    # Shared application ladder (literal → structural). Dry Replay uses the
+    # same helper so counterfactual outcomes mirror what live replay would
+    # have done.
+    application = apply_pattern_to_text(
+        file_text, pattern, language, target_line=finding.line
+    )
+    if application is None:
         if record_outcome:
             store.record_replay_outcome(pid, ReplayOutcome.MISS)
         append_log(
@@ -328,11 +354,7 @@ def _try_replay_inner(
         )
         return (False, None)
 
-    match_pos, matched_length = match_result
-    new_text = (
-        file_text[:match_pos] + after_snippet + file_text[match_pos + matched_length :]
-    )
-    target_file.write_text(new_text, encoding="utf-8")
+    target_file.write_text(application.new_text, encoding="utf-8")
 
     validation_passed = _run_baseline_validation(
         worktree_path,
@@ -348,17 +370,36 @@ def _try_replay_inner(
         )
         if record_outcome:
             store.record_replay_outcome(pid, ReplayOutcome.FAILURE)
-        append_log(
-            log_file,
-            (f"pattern-replay-fail: pattern_id={pid} reason=validation_failed"),
-        )
+        if application.mechanism == "structural":
+            append_log(
+                log_file,
+                (
+                    f"pattern-replay-structural-fail: pattern_id={pid} "
+                    f"reason=validation_failed"
+                ),
+            )
+        else:
+            append_log(
+                log_file,
+                (f"pattern-replay-fail: pattern_id={pid} reason=validation_failed"),
+            )
         return (False, None)
 
     if record_outcome:
         store.record_replay_outcome(pid, ReplayOutcome.HIT)
-    append_log(
-        log_file, (f"pattern-replay-success: pattern_id={pid} validation=passed")
-    )
+    if application.mechanism == "structural":
+        append_log(
+            log_file,
+            (
+                f"pattern-replay-structural-success: pattern_id={pid} "
+                f"binding_map_size={len(application.structural.binding_map)} "
+                f"fuzzy={application.structural.fuzzy_score:.2f}"
+            ),
+        )
+    else:
+        append_log(
+            log_file, (f"pattern-replay-success: pattern_id={pid} validation=passed")
+        )
     return (True, pid)
 
 

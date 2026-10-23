@@ -182,6 +182,96 @@ def test_run_dry_replay_miss_when_snippet_absent(tmp_path, make_finding):
     assert (worktree / "src" / "app.py").read_text() == winner
 
 
+def test_run_dry_replay_structural_fallback_records_hit(tmp_path, make_finding):
+    """Dry Replay must mirror the live application ladder: a candidate whose
+    canonical before_snippet is NOT a literal substring of the file (different
+    identifiers) but has the same shape is applied via the structural rung.
+    Live replay would have HIT, so the counterfactual records HIT — before
+    the shared ladder this candidate could only ever record MISS, leaving the
+    SPRT evidence stream empty for exactly the seeded population."""
+    original = "def f():\n    raise CustomError(custom_msg)\n"
+    winner = "def f():\n    raise CustomError(custom_msg) from cause\n"
+    worktree = _setup_worktree(tmp_path, original)
+
+    pattern = _make_pattern(
+        "fp-structural",
+        rule="ruff-c408",
+        before='raise ValueError("bad")',
+        after='raise ValueError("bad") from err',
+    )
+    finding = make_finding(
+        rule="ruff-c408",
+        path="src/app.py",
+        line=2,
+        snippet="raise CustomError(custom_msg)",
+    )
+
+    dr_path = tmp_path / "dry_replay.jsonl"
+
+    count = run_dry_replay(
+        finding,
+        [pattern],
+        worktree,
+        original_content=original,
+        winner_content=winner,
+        baseline_checks={},
+        log_file=tmp_path / "log.txt",
+        run_id="run-structural",
+        dry_replay_path=dr_path,
+    )
+
+    assert count == 1
+    recs = _read_records(dr_path)
+    assert len(recs) == 1
+    assert recs[0]["would_have_outcome"] == "HIT"
+    assert recs[0]["pattern_id"] == "fp-structural"
+    assert recs[0]["run_id"] == "run-structural"
+    # Worktree restored to winner content (non-mutating contract preserved)
+    assert (worktree / "src" / "app.py").read_text() == winner
+
+
+def test_run_dry_replay_structural_fallback_failure_when_validation_fails(
+    tmp_path, make_finding
+):
+    """Structural application + failing baseline → honest FAILURE (live replay
+    would have rolled back and recorded FAILURE)."""
+    original = "def f():\n    raise CustomError(custom_msg)\n"
+    winner = "def f():\n    raise CustomError(custom_msg) from cause\n"
+    worktree = _setup_worktree(tmp_path, original)
+
+    pattern = _make_pattern(
+        "fp-structural-fail",
+        rule="ruff-c408",
+        before='raise ValueError("bad")',
+        after='raise ValueError("bad") from err',
+    )
+    finding = make_finding(
+        rule="ruff-c408",
+        path="src/app.py",
+        line=2,
+        snippet="raise CustomError(custom_msg)",
+    )
+
+    dr_path = tmp_path / "dry_replay.jsonl"
+
+    run_dry_replay(
+        finding,
+        [pattern],
+        worktree,
+        original_content=original,
+        winner_content=winner,
+        baseline_checks={"lint": "false"},
+        log_file=tmp_path / "log.txt",
+        run_id="run-structural-fail",
+        dry_replay_path=dr_path,
+    )
+
+    recs = _read_records(dr_path)
+    assert len(recs) == 1
+    assert recs[0]["would_have_outcome"] == "FAILURE"
+    assert (worktree / "src" / "app.py").read_text() == winner
+
+
 def test_run_dry_replay_failure_when_validation_fails(tmp_path, make_finding):
     original = "x = 1   \n"
     winner = "x = 1\n"
