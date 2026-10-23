@@ -453,6 +453,61 @@ class TestResolveGovernedModelWiring:
         )
         assert entry_empty["rates_source"] == "model_rates"
 
+    def test_injection_noop_returns_none_resolved_and_default_rates(
+        self, tmp_path, make_finding
+    ):
+        # D5-F2: when inject_model_flag no-ops (the template's first token is
+        # NOT claude/opencode — e.g. an operator wrapper script), the
+        # invocation runs the base template's default model. resolve_governed_model
+        # must return resolved=None so the pr-cycle call site's
+        # ``rates={...} if _gov_resolved is not None else None`` yields None —
+        # discovered pricing must not leak past the no-op guard (12x undercount
+        # with rates_source="discovered" was the reproduced defect).
+        finding = make_finding(rule="ruff-b904")
+        family = derive_rule_family(finding.rule)
+        ledger = tmp_path / "governor_recommendations.jsonl"
+        base_template = "mywrapper --run"  # first token is NOT claude/opencode
+
+        store = _FakeStore([_FakePattern(family) for _ in range(4)])
+
+        rec, resolved, tmpl, name = resolve_governed_model(
+            finding=finding,
+            selection_fn=select_tier,
+            pattern_store=store,
+            discovery=_FakeDiscovery([_tier0_claude_model()]),
+            base_template=base_template,
+            ledger_path=ledger,
+            run_id="run-noop",
+        )
+        assert rec is not None  # recommendation still recorded
+        assert resolved is None  # no honest discovered identity to claim
+        assert tmpl == base_template  # template unchanged (injection no-op)
+        assert name == DEFAULT_ESTIMATE_LABEL
+
+        # The exact rates expression from the pr-cycle call site must now
+        # yield None → CostTracker falls back to MODEL_RATES anchored at
+        # DEFAULT_ESTIMATE_LABEL (rates_source "model_rates"), not the
+        # discovered tier-0 pricing.
+        rates = (
+            {
+                "input_per_1k": resolved.input_per_1k,
+                "output_per_1k": resolved.output_per_1k,
+            }
+            if resolved is not None
+            else None
+        )
+        assert rates is None
+
+        cost_tracker = CostTracker(log_path=tmp_path / "cost_log.jsonl")
+        cost_tracker.record_invocation(
+            model=name, input_tokens=3000, output_tokens=300, rates=rates
+        )
+        entry = json.loads(
+            cost_tracker._log_path.read_text().strip().splitlines()[-1]
+        )
+        assert entry["model"] == DEFAULT_ESTIMATE_LABEL
+        assert entry["rates_source"] == "model_rates"
+
     def test_pr_cycle_record_invocation_threads_rates(self):
         # Structural pin of the PRODUCTION call site (pr_cycle._process_one_issue):
         # the record_invocation call must carry a ``rates=`` keyword whose value

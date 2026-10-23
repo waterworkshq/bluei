@@ -322,6 +322,11 @@ def resolve_governed_model(
       pr_cycle.py:880-883 guard).
     * ``discovery`` None or tier unmapped → ``resolved_model`` None → template
       unchanged (identity), ``model_name == DEFAULT_ESTIMATE_LABEL``.
+    * Injection no-op (the template's first token is not a recognized
+      backend token, e.g. an operator wrapper script) → ``resolved_model``
+      None and ``model_name == DEFAULT_ESTIMATE_LABEL``: the invocation runs
+      the base template's default model, so no discovered id or discovered
+      pricing may be claimed downstream.
     * Otherwise the discovered model id is spliced into the template via
       ``inject_model_flag`` and returned as ``model_name``.
 
@@ -351,6 +356,10 @@ def resolve_governed_model(
         # Injection no-oped (unrecognized backend in the template): the
         # invocation will run the base template's default model, so the
         # ledger must not claim the discovered id or discovered pricing.
-        return rec, resolved_model, resolved_template, DEFAULT_ESTIMATE_LABEL
+        # ``resolved_model`` is returned as None for the same reason — a
+        # non-None second return would let call sites pass the discovered
+        # per-1k rates for an invocation that ran the default model
+        # (wrong provenance + undercounted cost).
+        return rec, None, resolved_template, DEFAULT_ESTIMATE_LABEL
     model_name = resolved_model.model_id if resolved_model else DEFAULT_ESTIMATE_LABEL
     return rec, resolved_model, resolved_template, model_name
