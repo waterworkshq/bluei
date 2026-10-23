@@ -220,8 +220,12 @@ def process_batch(
         if split_warranted and getattr(args, "batch_pr_split_on_failure", True):
             batch.retry_count += 1
             sub_batches = handle_batch_failure(batch, repo_path, args, log_file)
-            # Process sub-batches recursively
-            for sub_batch in sub_batches:
+            # Process sub-batches recursively; propagate their results —
+            # "split-and-retried" is success only if at least one sub-batch
+            # produced a PR. Reporting success when every sub-batch failed
+            # (e.g. each timed out) makes the cycle count a PR that was
+            # never created and can consume the PR cap for nothing.
+            sub_results = [
                 process_batch(
                     sub_batch,
                     repo_path,
@@ -233,7 +237,17 @@ def process_batch(
                     discovery=discovery,
                     cost_tracker=cost_tracker,
                 )
-            return True, "split-and-retried"
+                for sub_batch in sub_batches
+            ]
+            if sub_results and any(ok for ok, _detail in sub_results):
+                return True, "split-and-retried"
+            batch.status = BatchStatus.FAILED.value
+            _append_text(
+                log_file,
+                f"batch-abort: {batch.batch_id} split produced no successful "
+                "sub-batches (no PR created)",
+            )
+            return False, "split-all-sub-batches-failed"
         elif (
             not split_warranted
             and batch.retry_count >= max_depth

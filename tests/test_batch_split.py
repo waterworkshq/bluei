@@ -652,7 +652,18 @@ class TestProcessBatchSplitWiring:
     ):
         """process_batch calls handle_batch_failure when failure_rate > 50%."""
         mock_create_wt.return_value = True
-        mock_handle.return_value = []
+        # Two sub-batches: the first produces a PR (success), the second
+        # fails — the parent's "split-and-retried" is success only because
+        # at least one sub-batch produced a PR (result propagation).
+        sub_a = make_batch(
+            findings=[make_finding(finding_id=f"s{i}") for i in range(4)]
+        )
+        sub_a.batch_id = "batch-split-sub-a"
+        sub_b = make_batch(
+            findings=[make_finding(finding_id=f"t{i}") for i in range(6)]
+        )
+        sub_b.batch_id = "batch-split-sub-b"
+        mock_handle.return_value = [sub_a, sub_b]
         batch = make_batch(
             findings=[make_finding(finding_id=f"f{i}") for i in range(10)]
         )
@@ -681,6 +692,12 @@ class TestProcessBatchSplitWiring:
         with (
             patch("bluei.engine.utils.run_no_capture"),
             patch("bluei.engine.worktree.run_no_capture"),
+            patch(
+                # The recursive sub-batch calls hit the module-attribute
+                # mock; the outer call under test runs the real function.
+                "bluei.engine.batch_pr.process_batch",
+                side_effect=[(True, "dry-run-pr-simulated"), (False, "x")],
+            ),
         ):
             ok, reason = process_batch(
                 batch, Path("/tmp/repo"), FakeArgs(), Path("/tmp/batch.log")
