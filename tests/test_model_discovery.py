@@ -25,6 +25,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import bluei.engine.model_discovery as md
+from unittest.mock import patch
 from bluei.engine.model_discovery import (
     BackendModelDiscovery,
     ModelDiscovery,
@@ -684,3 +685,41 @@ class TestNoRealSubprocess:
             assert fn_name == "_list_backend_models", (
                 f"subprocess.run referenced outside _list_backend_models: {fn_name}"
             )
+
+
+class TestNonFiniteRateRejection:
+    """NaN/inf/negative rates parse fine but poison consumers — rejected."""
+
+    def _discover_with_meta(self, meta):
+        discovery = BackendModelDiscovery(
+            backend="claude",
+            tier_config={ModelTier.TIER_0: "model-x"},
+        )
+        with patch(
+            "bluei.engine.model_discovery._list_backend_models",
+            return_value={"model-x": meta},
+        ):
+            return discovery.discover()
+
+    def test_nan_rate_skipped(self):
+        assert self._discover_with_meta(
+            {"input_per_1k": float("nan"), "output_per_1k": 0.001}
+        ) == []
+
+    def test_inf_rate_skipped(self):
+        assert self._discover_with_meta(
+            {"input_per_1k": 0.001, "output_per_1k": float("inf")}
+        ) == []
+
+    def test_negative_rate_skipped(self):
+        assert self._discover_with_meta(
+            {"input_per_1k": -0.5, "output_per_1k": 0.001}
+        ) == []
+
+    def test_zero_rates_still_allowed(self):
+        # Both-zero = "no pricing metadata" — a legitimate state downstream
+        # handles by falling back; only NaN/inf/negative are malformed.
+        resolved = self._discover_with_meta(
+            {"input_per_1k": 0.0, "output_per_1k": 0.0}
+        )
+        assert len(resolved) == 1

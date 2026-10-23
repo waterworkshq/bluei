@@ -104,3 +104,72 @@ class TestMainGate:
         monkeypatch.setattr(script, "load_seeded_patterns", _boom)
         monkeypatch.setattr(script, "make_claude_callback", _boom)
         assert script.main(config={}) == 0
+
+
+class TestGovernanceConfigPassthrough:
+    def test_main_passes_loaded_config_to_pipeline(self, script, monkeypatch, tmp_path):
+        # An empty config at the pipeline call silently resolves every
+        # governance gate to its permissive default — learning.mode=paused
+        # or a gate_closed policy would not hold. The loaded config must
+        # flow through.
+        paused_cfg = {"learning": {"mode": "paused"}}
+
+        captured = {}
+
+        class _Summary:
+            proposed = written = rejected = held_paused = auto_promoted = 0
+            queued_pending = 0
+            rejected_topics = []
+
+        def _fake_run_foundry(**kwargs):
+            captured.update(kwargs)
+            summary = _Summary()
+            summary.written = 1  # productive run -> exit 0
+            return summary
+
+        monkeypatch.setattr(script, "load_seeded_patterns", lambda: [])
+        monkeypatch.setattr(script, "load_bundles", lambda: [])
+        monkeypatch.setattr(script, "resolve_author_cmd_template", lambda c: "cmd {prompt}")
+        monkeypatch.setattr(script, "make_claude_callback", lambda t: None)
+        monkeypatch.setattr(script, "run_foundry", _fake_run_foundry)
+
+        rc = script.main(
+            config=paused_cfg, approval_records_path=tmp_path / "approvals.jsonl"
+        )
+        assert rc == 0
+        assert captured["config"] == paused_cfg
+        assert captured["approval_records_path"] == tmp_path / "approvals.jsonl"
+
+    def test_gate_closed_run_forwards_records_path_and_exits_zero(self, script, monkeypatch, tmp_path):
+        # Script-level scope: the records path forwarded to the pipeline is
+        # real (never None — a None path makes gate-closed proposals
+        # vanish), and a queued-not-written run exits 0. The pipeline-level
+        # persistence contract (pending_approval record with cached YAML
+        # written to the records file) is verified end-to-end in
+        # test_recipe_foundry.py::TestRunFoundryGateClosed.
+        cfg = {
+            "foundry": {"claude_author_cmd_template": "cmd {prompt}"},
+            "learning": {"asset_classes": {"recipe": {"write_producing": "gate_closed"}}},
+        }
+
+        captured = {}
+
+        class S:
+            proposed = written = rejected = held_paused = auto_promoted = 0
+            queued_pending = 0
+            rejected_topics = []
+
+        def _fake_run_foundry(**kwargs):
+            captured.update(kwargs)
+            summary = S()
+            summary.proposed = 1
+            summary.queued_pending = 1  # real gate-closed outcome shape
+            return summary
+
+        monkeypatch.setattr(script, "load_seeded_patterns", lambda: [])
+        monkeypatch.setattr(script, "load_bundles", lambda: [])
+        monkeypatch.setattr(script, "run_foundry", _fake_run_foundry)
+
+        rc = script.main(config=cfg, approval_records_path=tmp_path / "appr.jsonl")
+        assert rc == 0
+        assert captured["approval_records_path"] == tmp_path / "appr.jsonl"
