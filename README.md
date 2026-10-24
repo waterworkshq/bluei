@@ -86,6 +86,10 @@ bluei scan my-project
 # Preview specks without creating anything
 bluei duster my-project
 
+# Retain a validated F401 patch and report without changing the checkout
+# Output must be a new directory outside the registered repository.
+bluei fix-preview my-project --rule F401 --output-dir /tmp/my-project-preview
+
 # Fix issues and open PRs
 bluei clean my-project
 
