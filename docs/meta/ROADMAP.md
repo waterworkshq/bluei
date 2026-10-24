@@ -30,6 +30,10 @@ What's been built, and what's next.
 
 ## Upcoming
 
+### Controlled first-run readiness
+
+The user selected **patch and report** as the next boundary after completing the domain-review ladder. The `fix-preview` implementation is under review: one safe Ruff F401 fix in an isolated local copy, retained patch/report, unchanged source checkout, no model/publishing/learning machinery. Proof is limited to temporary fixtures; it does not authorize an owned-repository run or establish overall beta readiness. Recipe execution, automatic learning, campaigns, and live model routing remain outside this first boundary.
+
 Each minor release should tell one coherent story. The `0.2.0` line is the deterministic flywheel era: each release increments the alpha counter through the flywheel build-out, aiming for `0.2.0-beta` → `0.2.0-rc` → `0.2.0` stable once the arc is feature-complete and proven on real repos. Release boundaries are risk-management decisions: substrate, evidence population, structural replay, repo taste, and model routing should not all ship in one batch.
 
 > **Arc restructured 2026-06-27** (alpha.2 grilling). Original plan had alpha.3="Deterministic Assets" absorbing alpha.2 deferrals directly. Two corrections: (1) inserting alpha.3 "Evidence Foundation" between substrate and exploitation prevents scope snowball; (2) the system will not run on any live or simulated repo before 0.2.0 stable, so evidence must be self-seeded from open-source vetted data, not grown from production fixes. Original alpha.3→alpha.4, alpha.4→alpha.5, alpha.5→alpha.6.

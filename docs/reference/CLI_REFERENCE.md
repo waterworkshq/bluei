@@ -13,7 +13,7 @@ rendering, and dispatch to the canonical `bluei` app and engine modules.
 
 ```
 bin/bluei (bash shebang)
-  → bin/bluei.py (CLI dispatcher — 592 lines, ~27 commands)
+  → bin/bluei.py (CLI dispatcher — ~27 commands)
     → bluei/app/ (runner, config, health, registry, etc.)
       → bluei/engine/ (execution engine)
         → repo worktrees / GitHub / linters / LLM fixers
@@ -26,7 +26,7 @@ four invocation patterns:
 | Pattern | Example commands | How they pass arguments |
 |---------|-----------------|------------------------|
 | Zero-arg | `init`, `install`, `update`, `dashboard`, `languages` | Handled inline or dispatched to engine |
-| Named-project | `scan`, `clean`, `duster`, `run`, `health`, `report`, `ci`, `install-hook`, `install-cron` | Positional `<name>` + flags forwarded to engine |
+| Named-project | `scan`, `clean`, `duster`, `run`, `health`, `report`, `ci`, `install-hook`, `install-cron`, `fix-preview` | Positional `<name>` + flags forwarded to engine |
 | Named-argument | `onboard`, `preflight`, `heal`, `patterns`, `campaign`, `emergent`, `lesson`, `upgrade-config` | Uses `--repo`, `--mode`, etc. |
 | Path | `secrets` | Positional `<path>` argument |
 
@@ -34,7 +34,7 @@ four invocation patterns:
 
 ## Command Index
 
-All 29 commands sorted alphabetically:
+All 30 commands sorted alphabetically:
 
 | # | Command | Description |
 |---|---------|-------------|
@@ -46,27 +46,28 @@ All 29 commands sorted alphabetically:
 | 6 | `doctor` | Run operational checks/diagnostics |
 | 7 | `duster` | Dry-run scan — preview specks, no changes |
 | 8 | `emergent` | Inspect and manage proposed emergent rules |
-| 9 | `heal` | Heal dirty worktrees from transient artifacts |
-| 10 | `health` | Show vitality score (0–100) |
-| 11 | `help` | Show help for a command or overview |
-| 12 | `init` | Register a project (interactive or `--path`) |
-| 13 | `install` | Print installation/setup instructions |
-| 14 | `install-cron` | Install host cron schedule for project cycles |
-| 15 | `install-hook` | Install pre-commit hook |
-| 16 | `languages` | List installed language packs and rules |
-| 17 | `learn` | Inspect governance state, pending approvals, and create Golden Validation Bundles |
-| 18 | `lesson` | Inspect and manage per-repo lesson entries |
-| 19 | `onboard` | Headless onboarding for a new project |
-| 20 | `patterns` | Inspect and manage learned fix patterns |
-| 21 | `preflight` | Assess a project before registering |
-| 22 | `report` | Generate a vitality report (PDF by default) |
-| 23 | `run` | Run full orchestrated sweep (scan → clean → verify) |
-| 24 | `scan` | Run discovery/issue-cycle scan on a project |
-| 25 | `secrets` | Scan for hardcoded secrets |
-| 26 | `status` | Show agent or project status |
-| 27 | `update` | Self-update to the latest version |
-| 28 | `upgrade-config` | Upgrade repo configuration to latest schema |
-| 29 | `version` | Print version info (`--version` or `-v` flag) |
+| 9 | `fix-preview` | Produce a local patch artifact for the F401 Ruff rule (no run, no PR) |
+| 10 | `heal` | Heal dirty worktrees from transient artifacts |
+| 11 | `health` | Show vitality score (0–100) |
+| 12 | `help` | Show help for a command or overview |
+| 13 | `init` | Register a project (interactive or `--path`) |
+| 14 | `install` | Print installation/setup instructions |
+| 15 | `install-cron` | Install host cron schedule for project cycles |
+| 16 | `install-hook` | Install pre-commit hook |
+| 17 | `languages` | List installed language packs and rules |
+| 18 | `learn` | Inspect governance state, pending approvals, and create Golden Validation Bundles |
+| 19 | `lesson` | Inspect and manage per-repo lesson entries |
+| 20 | `onboard` | Headless onboarding for a new project |
+| 21 | `patterns` | Inspect and manage learned fix patterns |
+| 22 | `preflight` | Assess a project before registering |
+| 23 | `report` | Generate a vitality report (PDF by default) |
+| 24 | `run` | Run full orchestrated sweep (scan → clean → verify) |
+| 25 | `scan` | Run discovery/issue-cycle scan on a project |
+| 26 | `secrets` | Scan for hardcoded secrets |
+| 27 | `status` | Show agent or project status |
+| 28 | `update` | Self-update to the latest version |
+| 29 | `upgrade-config` | Upgrade repo configuration to latest schema |
+| 30 | `version` | Print version info (`--version` or `-v` flag) |
 
 > **Alias:** `setup` is an alias for `install`.
 
@@ -384,7 +385,95 @@ bluei emergent gc --repo my-app
 
 ---
 
-### 8. `heal`
+### 8. `fix-preview`
+
+Produce a local, inspectable patch artifact for the F401 (unused-import)
+Ruff rule on ONE tracked regular Python file of a registered project — the
+bounded first-run proof from `docs/plans/FIRST-RUN-READINESS.md`. Nothing is
+committed, pushed, PR'd, or written to agent state; no LLM is invoked; the
+source checkout is only read (it must be clean and committed).
+
+Isolation mechanics (exact, not a sandbox claim):
+
+- Only four read-only git commands touch the source (toplevel, HEAD,
+  `status --porcelain`, one `ls-files -s -z`), each with every inherited
+  `GIT_*` environment variable dropped and `-c core.hooksPath= -c
+  core.fsmonitor=false` overrides, so no user/repo-configured hook, filter,
+  or fsmonitor command can execute.
+- The fix runs in a disposable `git clone --local --no-hardlinks
+  --template=<empty dir>` — a local object-database copy with no transport
+  (no upload-pack), no hooks directory, and no repo-local config beyond the
+  fresh clone defaults. The clone HEAD is explicitly pinned with
+  `checkout --detach <baseline HEAD>` and verified; a concurrent source move
+  is rejected instead of silently mis-patched.
+- Discovery runs inside the clone over the explicitly listed tracked
+  regular `*.py` files only (NUL-parsed, so unusual/non-ASCII names work;
+  tracked symlinks and submodules are not candidates).
+- git and Ruff are resolved to absolute executable paths before the clone
+  exists (relative PATH entries are rejected), and every child PATH is
+  stripped of relative/empty entries — a bare tool name can never resolve
+  against the clone's directory, so a tracked `git`/`ruff` file cannot be
+  executed as a tool.
+- The fixed tool invocation is `ruff check --isolated --no-cache --fix
+  --no-unsafe-fixes --select F401 -- <one tracked file>` (`--isolated`
+  ignores the target repo's own Ruff configuration). The diff is taken with
+  `git diff --no-ext-diff --no-textconv`, captured as raw bytes, and
+  persisted before the temporary clone is removed. If an artifact cannot be
+  written the run exits non-zero and retains the clone as recovery
+  evidence. The rule is validated against a static allowlist (F401 only in
+  this first proof) before any tool runs.
+
+**Syntax:**
+
+```
+bluei fix-preview <project> --rule F401 --output-dir <new-dir>
+```
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--rule F401` | Required. Only F401 (unused-import) is supported |
+| `--output-dir <new-dir>` | Required. Must not exist and must be outside the source checkout |
+
+Flags from other commands (`--live`, `--fix-engine`, `--dry-run`, `--phase`)
+are rejected — this path is local-patch-only by design.
+
+**Output:** `fix.patch` (unified diff of the single-file fix) and
+`report.json` (status, baseline HEAD, Ruff version, rule, target file,
+validation results, and zero-counts for LLM/PR/remote activity). Only one
+file is ever fixed per invocation, even when multiple files carry the rule.
+
+**Statuses:** `patch_produced`, `no_findings` (including when findings exist
+only behind tracked symlinks — they are not candidates), `no_safe_fix`
+(findings exist but no safe fix applies — unsafe fixes are never shipped),
+`validation_failed` (Ruff re-check or AST compile failed — no patch
+shipped), `tool_error`, `artifact_write_failed` (the temporary clone is
+retained as recovery evidence; its path is printed to stderr and stored in
+the report).
+
+**Exit codes:**
+
+| Code | Meaning |
+|------|---------|
+| `0` | patch produced, or verified no-op (`no_findings` / `no_safe_fix`) |
+| `1` | tool failure (including timeout), validation failure, or artifact/report write failure |
+| `2` | precondition rejected (dirty repo, unregistered project, malformed/unsupported rule, existing or in-repo output dir, no ruff on PATH, submodules, >5000 tracked Python files) |
+
+**Example:**
+
+```
+bluei fix-preview my-app --rule F401 --output-dir /tmp/my-app-f401-preview
+```
+
+> Boundary: trusted fixed tool on trusted code, not a sandbox and not a
+> general run mode. Validation is Ruff re-check plus AST compile (no
+> execution) — no recipes, plugins, dynamic discovery, batching, or
+> publishing.
+
+---
+
+### 9. `heal`
 
 Heal a dirty worktree caused by transient artifacts (pycache, lock files, stale
 worktrees). By default runs as a dry-run — add `--no-dry-run` to actually heal.
@@ -414,7 +503,7 @@ bluei heal --repo my-app --no-dry-run --remove-artifacts
 
 ---
 
-### 9. `health`
+### 10. `health`
 
 Show the vitality score (0–100) for a project.
 
@@ -445,7 +534,7 @@ bluei health my-app --format whatsapp
 
 ---
 
-### 10. `help`
+### 11. `help`
 
 Show help text.
 
@@ -469,7 +558,7 @@ bluei campaign --help
 
 ---
 
-### 11. `init`
+### 12. `init`
 
 Register a project with bluei. When run without `--path`, launches an
 interactive first-run wizard. With `--path`, performs quick auto-registration:
@@ -510,7 +599,7 @@ bluei init -p . -n my-app           # Register cwd with custom name
 
 ---
 
-### 12. `install`
+### 13. `install`
 
 Print installation/setup instructions.
 
@@ -525,7 +614,7 @@ bluei setup     # alias
 
 ---
 
-### 13. `install-cron`
+### 14. `install-cron`
 
 Install host cron schedule for project cycle automation. Sets up crontab entries
 for issue-cycle, PR-cycle, review-cycle, and merge-cycle.
@@ -558,7 +647,7 @@ bluei install-cron my-app --issue-schedule "0 */2 * * *"
 
 ---
 
-### 14. `install-hook`
+### 15. `install-hook`
 
 Install a pre-commit hook that runs `bluei duster` on every commit.
 
@@ -587,7 +676,7 @@ bluei install-hook my-app --force
 
 ---
 
-### 15. `languages`
+### 16. `languages`
 
 List installed language packs and their declared detector rules. Each pack shows
 its supported languages, rule count, and per-rule metadata (category, confidence,
@@ -614,7 +703,7 @@ python [python] 23 rule(s)
 
 ---
 
-### 16. `learn`
+### 17. `learn`
 
 Inspect governance state, pending approvals, decision history, and create Golden Validation Bundles from known-good fixes. The unified read/inbox surface for the Operator Control Plane. Write-verbs (pause, resume, retire) stay in their native namespaces (`patterns`, `emergent`).
 
@@ -655,7 +744,7 @@ bluei learn bundle fp-a1b2c3d4 --worktree /path/to/worktree --from-finding f-001
 
 ---
 
-### 17. `lesson`
+### 18. `lesson`
 
 Inspect and manage per-repo lesson entries that feed the fix feedback loop.
 Lessons record what broke, what changed, and what worked for cross-finding hints.
@@ -699,7 +788,7 @@ bluei lesson show abc123def --repo my-app
 
 ---
 
-### 18. `onboard`
+### 19. `onboard`
 
 Headless onboarding for an existing local project. Registers the repo with
 custom care level and profile without interactive prompts.
@@ -733,7 +822,7 @@ bluei onboard --repo ~/my-project --mode watch-only --profile conservative
 
 ---
 
-### 19. `patterns`
+### 20. `patterns`
 
 Inspect and manage learned fix patterns. bluei records successful fix patterns
 and can reuse them before spending another LLM call on similar findings.
@@ -772,7 +861,7 @@ bluei patterns reactivate fp-a1b2c3d4e5f6 --repo my-app
 
 ---
 
-### 20. `preflight`
+### 21. `preflight`
 
 Assess whether a project is ready for bluei registration. Runs checks before
 onboarding to surface potential issues.
@@ -793,7 +882,7 @@ bluei preflight --repo /path/to/new-project
 
 ---
 
-### 21. `report`
+### 22. `report`
 
 Generate a comprehensive vitality report for a project. PDF by default. Also
 supports text, JSON, HTML, and WhatsApp formats.
@@ -827,7 +916,7 @@ bluei report my-app --format text --days 7     # Last 7 days
 
 ---
 
-### 22. `run`
+### 23. `run`
 
 Run a full orchestrated sweep (discover, fix, review, merge). Equivalent to
 running `scan → clean → verify` in sequence.
@@ -861,7 +950,7 @@ bluei run my-app --fix-engine claude # Use Claude for fixes
 
 ---
 
-### 23. `scan`
+### 24. `scan`
 
 Run a discovery/issue-cycle scan on a project. Discovers specks and creates
 GitHub issues for them. (Contrast with `clean` which also opens PRs.)
@@ -893,7 +982,7 @@ bluei scan my-app --fix-engine deterministic
 
 ---
 
-### 24. `secrets`
+### 25. `secrets`
 
 Scan a directory for hardcoded secrets (API keys, tokens, passwords, private
 keys, high-entropy strings). Delegates to `bin/bluei_secrets.py`.
@@ -915,7 +1004,7 @@ bluei secrets ~/my-project
 
 ---
 
-### 25. `status`
+### 26. `status`
 
 Show agent-wide status or per-project status.
 
@@ -942,7 +1031,7 @@ bluei status --repo my-app          # Per-project status
 
 ---
 
-### 26. `update`
+### 27. `update`
 
 Self-update bluei to the latest version. Delegates to the engine's update
 mechanism.
@@ -957,7 +1046,7 @@ bluei update
 
 ---
 
-### 27. `upgrade-config`
+### 28. `upgrade-config`
 
 Upgrade a repository's configuration to the latest schema. Uses the
 `OnboardEngine.upgrade_config()` path.
@@ -978,7 +1067,7 @@ bluei upgrade-config --repo my-app
 
 ---
 
-### 28. `version`
+### 29. `version`
 
 Print version information for the bluei CLI and the engine backend.
 
