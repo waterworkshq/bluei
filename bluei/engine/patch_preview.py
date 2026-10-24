@@ -7,19 +7,27 @@ remote, LLM, PR, or learned-state activity. Trusted fixed tool on trusted
 code — not a sandbox. Boundary details: docs/plans/FIRST-RUN-READINESS.md
 and docs/reference/CLI_REFERENCE.md § fix-preview. Safety invariants:
 
-- Source worktree must be clean and committed. Only four read-only git
+- Source worktree must be clean and committed. Only six read-only git
   commands touch it (toplevel, HEAD, ``status --porcelain``, one
-  ``ls-files -s -z``), each with a whitelisted environment (every inherited
+  ``ls-files -s -z``, and two ``rev-parse`` resolutions of the git/common
+  directories that keep the output directory out of git metadata), each
+  with a whitelisted environment (every inherited
   ``GIT_*`` variable dropped; user/system config /dev/null; optional locks
   disabled) and ``-c core.hooksPath= -c core.fsmonitor=false`` overrides, so
   no repository/user-configured hook, filter, or fsmonitor can execute.
 - The fix runs in a disposable ``git clone --local --no-hardlinks
   --template=<empty>`` — a local object copy with no transport (no
   upload-pack), no hooks directory, no repo-local config. The clone HEAD is
-  pinned via ``checkout --detach <baseline HEAD>`` and verified; a
-  concurrent source move is rejected, never silently mis-patched.
+  pinned via ``checkout --detach <baseline HEAD>`` and verified against the
+  captured sha as a command-sanity check. The patch baseline is that
+  captured commit: the source may move concurrently without changing what
+  is patched — no source lock is taken or needed.
 - Discovery runs in the clone over the explicitly listed tracked regular
-  ``*.py`` files only (NUL-parsed paths). Fix command is pinned:
+  ``*.py`` files only (NUL-parsed paths). Tracked candidates with
+  non-UTF-8 filenames, or whose checked-out content is not valid UTF-8,
+  are rejected up front: Ruff reports lossy filenames for the former and
+  silently skips linting the latter (rc 0, empty JSON), and fix-preview
+  refuses to turn either into a false clean result. Fix command is pinned:
   ``ruff check --isolated --no-cache --fix --no-unsafe-fixes --select F401
   -- <file>``. git and Ruff are resolved to absolute executable paths before
   the clone exists (relative PATH entries are rejected), and every child
@@ -80,7 +88,12 @@ REPORT_SCHEMA = "bluei.fix-preview.report/1"
 
 
 class PatchPreviewError(Exception):
-    """Precondition rejection — nothing was attempted against the repo."""
+    """Precondition rejection — nothing was attempted against the repo.
+
+    ``exit_code`` is EXIT_REJECTED for usage/precondition rejections and
+    EXIT_ERROR when a pre-tool git failure is normalized into a controlled
+    error so no raw traceback escapes to the CLI.
+    """
 
     def __init__(self, message: str, exit_code: int = EXIT_REJECTED):
         super().__init__(message)
@@ -229,8 +242,11 @@ def validate_rule(rule: str) -> str:
     return rule
 
 
-def validate_output_dir(output_dir: Path, source_root: Path) -> Path:
-    """Validate the artifact directory: required, must not exist, outside source."""
+def validate_output_dir(output_dir: Path, *forbidden_roots: Path) -> Path:
+    """Validate the artifact directory: required, must not exist, outside the
+    source worktree root and its git metadata directories (git-dir and
+    common-dir — the latter is the MAIN repository's ``.git`` for a linked
+    worktree, which the worktree root check alone would miss)."""
     if output_dir is None or str(output_dir) == "":
         raise PatchPreviewError(
             "no output directory provided (required: --output-dir <new-dir>)"
@@ -244,11 +260,20 @@ def validate_output_dir(output_dir: Path, source_root: Path) -> Path:
         ) from exc
     if resolved.exists():
         raise PatchPreviewError(f"output directory already exists: {resolved}")
-    source = source_root.resolve()
-    if resolved == source or source in resolved.parents:
-        raise PatchPreviewError(
-            f"output directory must be outside the source checkout: {resolved}"
-        )
+    for forbidden in forbidden_roots:
+        try:
+            root = Path(forbidden).resolve()
+        except OSError as exc:
+            raise PatchPreviewError(
+                f"cannot resolve source git metadata directory "
+                f"{forbidden}: {exc}"
+            ) from exc
+        if resolved == root or root in resolved.parents:
+            raise PatchPreviewError(
+                f"output directory must be outside the source checkout and "
+                f"its git metadata (including the shared .git of a linked "
+                f"worktree): {resolved}"
+            )
     return resolved
 
 
@@ -298,6 +323,11 @@ def _tracked_listing(root: Path, git_bin: str) -> Tuple[List[str], bool]:
     NUL parsing keeps quoted/non-ASCII paths verbatim (no core.quotePath
     mangling). Modes 120000 (symlinks) and 160000 (gitlinks) are recorded:
     gitlinks or a tracked .gitmodules mean submodules → rejected.
+
+    A tracked *.py candidate whose filename is not valid UTF-8 is rejected
+    here, before any tool runs: Ruff's JSON output names such files lossily,
+    so discovery would silently drop them and report a false no_findings.
+    Non-candidate paths never reach a tool and keep lenient decoding.
     """
     rc, out, _ = _git_bytes(git_bin, ["ls-files", "-s", "-z"], root)
     if rc != 0:
@@ -309,7 +339,18 @@ def _tracked_listing(root: Path, git_bin: str) -> Tuple[List[str], bool]:
             continue
         meta, _, raw_path = record.partition(b"\t")
         mode = meta.split(b" ", 1)[0].decode("ascii", "replace")
-        rel = raw_path.decode("utf-8", "surrogateescape")
+        try:
+            rel = raw_path.decode("utf-8")
+        except UnicodeDecodeError:
+            if mode in ("100644", "100755") and raw_path.endswith(b".py"):
+                raise PatchPreviewError(
+                    "tracked Python file has a non-UTF-8 filename "
+                    f"({raw_path.decode('utf-8', 'backslashreplace')}): "
+                    "Ruff reports such names lossily, so fix-preview cannot "
+                    "honestly match findings for it — rename the file to "
+                    "valid UTF-8"
+                )
+            rel = raw_path.decode("utf-8", "surrogateescape")
         if mode == "160000":
             submodules = True
         if rel == ".gitmodules":
@@ -319,13 +360,37 @@ def _tracked_listing(root: Path, git_bin: str) -> Tuple[List[str], bool]:
     return sorted(py_files), submodules
 
 
+def _git_metadata_dirs(root: Path, git_bin: str) -> Tuple[Path, Path]:
+    """Absolute (git-dir, common-dir) of the source worktree, via the same
+    hardened git invocation as every other source read.
+
+    For a linked worktree the git-dir lives under the MAIN repository's
+    ``.git/worktrees/`` and the common-dir is the main ``.git`` itself —
+    both OUTSIDE the worktree root. Output placement must therefore be
+    checked against them explicitly, or an output directory could be
+    created inside (and corrupt) shared git metadata.
+    """
+    rc, out, _ = _git(git_bin, ["rev-parse", "--absolute-git-dir"], root)
+    if rc != 0 or not out.strip():
+        raise PatchPreviewError(f"cannot resolve git directory: {root}")
+    git_dir = Path(out.strip()).resolve()
+    rc, out, _ = _git(git_bin, ["rev-parse", "--git-common-dir"], root)
+    if rc != 0 or not out.strip():
+        raise PatchPreviewError(f"cannot resolve git common directory: {root}")
+    common = Path(out.strip())
+    common_dir = (common if common.is_absolute() else root / common).resolve()
+    return git_dir, common_dir
+
+
 # ── Disposable clone ────────────────────────────────────────────────────────
 
 
 def _make_clone(root: Path, temp_root: Path, head: str, git_bin: str) -> Path:
     """Local object-database copy: no transport (no upload-pack/hooks), no
     shared hardlinks, no template hooks. HEAD is pinned to the recorded
-    baseline and verified — a concurrent source move is rejected."""
+    baseline sha and the clone is verified to sit at exactly that commit —
+    a command-sanity check. The patch baseline is the captured commit, so
+    a concurrently moving source cannot change what is patched."""
     template_dir = temp_root / "empty-template"
     template_dir.mkdir()
     clone_dir = temp_root / "clone"
@@ -353,10 +418,32 @@ def _make_clone(root: Path, temp_root: Path, head: str, git_bin: str) -> Path:
     rc, out, _ = _git(git_bin, ["rev-parse", "HEAD"], clone_dir)
     if rc != 0 or out.strip() != head:
         raise _ToolFailure(
-            f"clone HEAD {out.strip()[:12]} does not match baseline "
-            f"{head[:12]} — source moved during clone"
+            f"clone HEAD {out.strip()[:12]} does not match the requested "
+            f"baseline {head[:12]} — clone verification failed"
         )
     return clone_dir
+
+
+def _verify_decodable(clone_dir: Path, tracked: List[str]) -> Optional[str]:
+    """Return the first tracked candidate whose checked-out content is not
+    valid UTF-8, or None when every candidate decodes.
+
+    Ruff exits 0 with empty JSON and a 'Failed to lint' warning for files it
+    cannot decode — a Latin-1 coding cookie or a ``working-tree-encoding``
+    working tree would let a mixed-encoding repository masquerade as a clean
+    ``no_findings``. Rejecting undecodable files BEFORE Ruff reads anything
+    is the robust check; grepping Ruff's warning text would be brittle.
+    """
+    for rel in tracked:
+        try:
+            (clone_dir / rel).read_bytes().decode("utf-8")
+        except UnicodeDecodeError:
+            return rel
+        except OSError as exc:
+            raise _ToolFailure(
+                f"cannot read tracked file {rel} in clone: {exc}"
+            ) from exc
+    return None
 
 
 def _discover(
@@ -438,9 +525,19 @@ def run_patch_preview(
     """
     rule = validate_rule(rule)
     git_bin = _resolve_tool("git")
-    root, head = _source_root_and_head(repo_path, git_bin)
-    _require_clean(root, git_bin)
-    tracked, submodules = _tracked_listing(root, git_bin)
+    # Pre-clone source reads. A git timeout/crash here (a _ToolFailure) must
+    # not escape as a raw traceback: the CLI only handles PatchPreviewError,
+    # so normalize to a controlled EXIT_ERROR with a plain stderr message.
+    try:
+        root, head = _source_root_and_head(repo_path, git_bin)
+        _require_clean(root, git_bin)
+        tracked, submodules = _tracked_listing(root, git_bin)
+        git_dir, common_dir = _git_metadata_dirs(root, git_bin)
+    except _ToolFailure as exc:
+        raise PatchPreviewError(
+            f"git failed during precondition checks: {exc}",
+            exit_code=EXIT_ERROR,
+        ) from exc
     if submodules:
         raise PatchPreviewError(
             "submodules are not supported by fix-preview "
@@ -451,7 +548,9 @@ def run_patch_preview(
             f"repository has {len(tracked)} tracked Python files "
             f"(limit {MAX_TRACKED_PY_FILES}); fix-preview is intentionally bounded"
         )
-    out_dir = validate_output_dir(output_dir, root)
+    # Reject output inside the worktree root or either git metadata dir —
+    # for a linked worktree the shared .git lives OUTSIDE the worktree root.
+    out_dir = validate_output_dir(output_dir, root, git_dir, common_dir)
 
     ruff = ruff_bin or _resolve_tool("ruff")
     if not os.path.isabs(ruff):
@@ -556,6 +655,33 @@ def run_patch_preview(
         except _ToolFailure as exc:
             return done(
                 STATUS_TOOL_ERROR, EXIT_ERROR, notes=[f"clone failed: {exc}"]
+            )
+
+        # Encoding gate: every tracked candidate in the checked-out baseline
+        # must be valid UTF-8 BEFORE Ruff reads anything. Ruff skips files it
+        # cannot decode with rc 0 + empty JSON, so an undecodable file would
+        # otherwise shrink discovery and fake a clean result. Even one bad
+        # file fails the whole run — a partial repository is never reported
+        # as fully clean. Nothing was fixed yet, so the clone is not evidence
+        # and normal cleanup applies.
+        try:
+            undecodable = _verify_decodable(clone_dir, tracked)
+        except _ToolFailure as exc:
+            return done(
+                STATUS_TOOL_ERROR,
+                EXIT_ERROR,
+                notes=[f"clone content check failed: {exc}"],
+            )
+        if undecodable is not None:
+            return done(
+                STATUS_TOOL_ERROR,
+                EXIT_ERROR,
+                notes=[
+                    f"unsupported content encoding: tracked Python file "
+                    f"{undecodable} is not valid UTF-8 in the checked-out "
+                    "baseline — Ruff cannot lint it, so fix-preview refuses "
+                    "to report a clean result for this repository"
+                ],
             )
 
         try:

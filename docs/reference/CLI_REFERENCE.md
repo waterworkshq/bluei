@@ -390,13 +390,18 @@ bluei emergent gc --repo my-app
 Produce a local, inspectable patch artifact for the F401 (unused-import)
 Ruff rule on ONE tracked regular Python file of a registered project — the
 bounded first-run proof from `docs/plans/FIRST-RUN-READINESS.md`. Nothing is
-committed, pushed, PR'd, or written to agent state; no LLM is invoked; the
-source checkout is only read (it must be clean and committed).
+committed, pushed, PR'd, or written to agent state (no run-state,
+learned-state, or workspace-initialization writes); no LLM is invoked; the
+source checkout is only read (it must be clean and committed). Like every
+named-project command, `fix-preview` requires a project name; omitting it
+prints a usage error and exits `1` (CLI-wide convention).
 
 Isolation mechanics (exact, not a sandbox claim):
 
-- Only four read-only git commands touch the source (toplevel, HEAD,
-  `status --porcelain`, one `ls-files -s -z`), each with every inherited
+- Only six read-only git commands touch the source (toplevel, HEAD,
+  `status --porcelain`, one `ls-files -s -z`, and two `rev-parse`
+  resolutions of the git/common directories used to keep the output
+  directory out of git metadata), each with every inherited
   `GIT_*` environment variable dropped and `-c core.hooksPath= -c
   core.fsmonitor=false` overrides, so no user/repo-configured hook, filter,
   or fsmonitor command can execute.
@@ -404,11 +409,21 @@ Isolation mechanics (exact, not a sandbox claim):
   --template=<empty dir>` — a local object-database copy with no transport
   (no upload-pack), no hooks directory, and no repo-local config beyond the
   fresh clone defaults. The clone HEAD is explicitly pinned with
-  `checkout --detach <baseline HEAD>` and verified; a concurrent source move
-  is rejected instead of silently mis-patched.
+  `checkout --detach <baseline HEAD>` and verified against the captured sha
+  (a command-sanity check). The patch baseline is the captured commit: the
+  source may move concurrently without changing what is patched — no source
+  lock is taken or needed.
 - Discovery runs inside the clone over the explicitly listed tracked
   regular `*.py` files only (NUL-parsed, so unusual/non-ASCII names work;
-  tracked symlinks and submodules are not candidates).
+  tracked symlinks and submodules are not candidates). Tracked candidates
+  with non-UTF-8 filenames are rejected before any tool runs (Ruff reports
+  such names lossily, which would silently drop them from discovery), and
+  every candidate's checked-out content must be valid UTF-8 before Ruff
+  reads anything — Ruff exits 0 with empty JSON and a `Failed to lint`
+  warning for files it cannot decode (e.g. a Latin-1 coding cookie or a
+  `working-tree-encoding=UTF-16` working tree), so even one undecodable
+  file fails the run as a `tool_error` instead of shrinking discovery into
+  a false clean result.
 - git and Ruff are resolved to absolute executable paths before the clone
   exists (relative PATH entries are rejected), and every child PATH is
   stripped of relative/empty entries — a bare tool name can never resolve
@@ -434,8 +449,9 @@ bluei fix-preview <project> --rule F401 --output-dir <new-dir>
 | Flag | Description |
 |------|-------------|
 | `--rule F401` | Required. Only F401 (unused-import) is supported |
-| `--output-dir <new-dir>` | Required. Must not exist and must be outside the source checkout |
+| `--output-dir <new-dir>` | Required. Must not exist, and must be outside the source worktree AND its git metadata (the git-dir and common-dir — for a linked worktree the shared `.git` lives outside the worktree root) |
 
+The `--repo <name>` alias works like the positional `<project>` form.
 Flags from other commands (`--live`, `--fix-engine`, `--dry-run`, `--phase`)
 are rejected — this path is local-patch-only by design.
 
@@ -443,12 +459,18 @@ are rejected — this path is local-patch-only by design.
 `report.json` (status, baseline HEAD, Ruff version, rule, target file,
 validation results, and zero-counts for LLM/PR/remote activity). Only one
 file is ever fixed per invocation, even when multiple files carry the rule.
+`report.json` is written atomically; the atomic-write helper may briefly
+leave a `report.json.lock` sidecar next to it in the output directory
+(it is not part of the artifact contract).
 
 **Statuses:** `patch_produced`, `no_findings` (including when findings exist
 only behind tracked symlinks — they are not candidates), `no_safe_fix`
 (findings exist but no safe fix applies — unsafe fixes are never shipped),
 `validation_failed` (Ruff re-check or AST compile failed — no patch
-shipped), `tool_error`, `artifact_write_failed` (the temporary clone is
+shipped), `tool_error` (tool failure or timeout — also when any tracked
+candidate has content Ruff cannot decode, e.g. Latin-1 or UTF-16; the run
+exits non-zero instead of reporting a shrunken "clean" result),
+`artifact_write_failed` (the temporary clone is
 retained as recovery evidence; its path is printed to stderr and stored in
 the report).
 
@@ -457,8 +479,8 @@ the report).
 | Code | Meaning |
 |------|---------|
 | `0` | patch produced, or verified no-op (`no_findings` / `no_safe_fix`) |
-| `1` | tool failure (including timeout), validation failure, or artifact/report write failure |
-| `2` | precondition rejected (dirty repo, unregistered project, malformed/unsupported rule, existing or in-repo output dir, no ruff on PATH, submodules, >5000 tracked Python files) |
+| `1` | tool failure (including timeout and undecodable file content), validation failure, or artifact/report write failure — also a missing project name (named-project convention) |
+| `2` | precondition rejected (dirty repo, unregistered project, malformed/unsupported rule, existing or in-repo/in-git-metadata output dir, no ruff on PATH, submodules, >5000 tracked Python files, tracked Python filenames that are not valid UTF-8) |
 
 **Example:**
 

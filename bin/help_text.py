@@ -207,12 +207,15 @@ Only rule supported: F401 (unused-import).{RESET}
 
 {BOLD}Options:{RESET}
   --rule {CYAN}F401{RESET}                Required. Only F401 is supported
-  --output-dir {CYAN}<new-dir>{RESET}     Required. Must not exist; outside the source repo
+  --output-dir {CYAN}<new-dir>{RESET}     Required. Must not exist; outside the source
+                              repo and its git metadata
 
 {BOLD}Exit codes:{RESET}
   0  patch produced, or verified no-op (no findings / no safe fix)
-  1  tool failure, validation failure, or artifact write failure
-  2  precondition rejected (dirty repo, bad rule, bad output dir, ...)
+  1  tool failure (incl. files Ruff cannot decode), validation failure,
+     artifact write failure, or missing project name
+  2  precondition rejected (dirty repo, bad rule, bad output dir,
+     non-UTF-8 tracked filenames, ...)
 """,
     "health": f"""{BOLD}bluei health{RESET} {CYAN}<project-name>{RESET} [{YELLOW}options{RESET}]
 

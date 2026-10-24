@@ -1053,6 +1053,325 @@ class TestEngineUnits:
         assert validate_output_dir(ok, source) == ok.resolve()
 
 
+# ── Regression: encoding honesty (local-review findings) ────────────────────
+
+
+def _non_utf8_fs_bytes():
+    """Raw filename bytes containing a lone 0xFF, or None when this
+    platform's filesystem cannot represent a non-UTF-8 filename."""
+    try:
+        raw = os.fsencode("mod_\udcff.py")
+    except UnicodeEncodeError:
+        return None
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw
+    return None
+
+
+requires_nonutf8_filenames = pytest.mark.skipif(
+    _non_utf8_fs_bytes() is None,
+    reason="filesystem cannot represent non-UTF-8 filenames",
+)
+
+
+class TestFixPreviewFilenameEncoding:
+    @requires_nonutf8_filenames
+    def test_non_utf8_tracked_py_filename_rejected(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A tracked mod_\\xff.py: Ruff's JSON names such files lossily, so
+        discovery silently dropped them and the run reported a FALSE
+        no_findings with exit 0. The candidate must be rejected up front —
+        before any tool runs and before the output directory is created."""
+        repo = tmp_path / "nonutf8-repo"
+        repo.mkdir()
+        _git(["init"], repo)
+        _git(["config", "user.email", "t@t"], repo)
+        _git(["config", "user.name", "t"], repo)
+        (repo / "mod_a.py").write_text(REPO_FILES["mod_a.py"])
+        # os.fsencode maps the lone surrogate to raw byte 0xFF on Linux.
+        (repo / "mod_\udcff.py").write_text(REPO_FILES["mod_b.py"])
+        _commit_repo(repo)
+
+        workspace = tmp_path / "ws-nonutf8"
+        workspace.mkdir()
+        _register(monkeypatch, workspace, repo, "nonutf8-repo")
+
+        import bin.bluei as bluei_main
+
+        out_dir = tmp_path / "nonutf8-out"
+        rc = bluei_main._cmd_fix_preview(
+            "nonutf8-repo", ["--rule", "F401", "--output-dir", str(out_dir)]
+        )
+        captured = capsys.readouterr()
+        assert rc == 2
+        assert "non-UTF-8 filename" in captured.err
+        assert not out_dir.exists()
+
+
+class TestFixPreviewContentEncoding:
+    """File CONTENT Ruff cannot decode must never yield a clean no_findings:
+    Ruff exits 0 with empty JSON and a 'Failed to lint' warning for such
+    files (a Latin-1 coding cookie, or a UTF-16 working tree via stock git
+    working-tree-encoding attributes). Every tracked candidate is
+    decode-validated in the clone BEFORE Ruff reads anything; one bad file
+    fails the whole run — a partially lintable repo is never reported
+    clean."""
+
+    def _run_case(self, tmp_path, monkeypatch, capsys, repo_name):
+        import bin.bluei as bluei_main
+
+        workspace = tmp_path / f"ws-{repo_name}"
+        workspace.mkdir()
+        _register(monkeypatch, workspace, tmp_path / f"{repo_name}-repo", repo_name)
+        out_dir = tmp_path / f"{repo_name}-out"
+        rc = bluei_main._cmd_fix_preview(
+            repo_name, ["--rule", "F401", "--output-dir", str(out_dir)]
+        )
+        captured = capsys.readouterr()
+        return rc, captured, out_dir
+
+    @requires_ruff
+    def test_latin1_coding_cookie_is_tool_error_not_clean(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        repo = tmp_path / "latin1-repo"
+        repo.mkdir()
+        _git(["init"], repo)
+        _git(["config", "user.email", "t@t"], repo)
+        _git(["config", "user.name", "t"], repo)
+        (repo / "mod_latin.py").write_bytes(
+            b'# -*- coding: latin-1 -*-\nX = "caf\xe9"\n'  # 0xE9: invalid UTF-8
+        )
+        _commit_repo(repo)
+
+        rc, captured, out_dir = self._run_case(
+            tmp_path, monkeypatch, capsys, "latin1"
+        )
+
+        assert rc == 1, (captured.out, captured.err)
+        report = json.loads((out_dir / "report.json").read_text())
+        assert report["status"] == "tool_error"
+        assert "unsupported content encoding" in report["notes"][0]
+        assert "mod_latin.py" in report["notes"][0]
+        assert not (out_dir / "fix.patch").exists()
+
+    @requires_ruff
+    def test_utf16_working_tree_encoding_is_tool_error_not_clean(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Stock git attribute working-tree-encoding=UTF-16: the clone's
+        checked-out file is UTF-16, which Ruff silently skips."""
+        repo = tmp_path / "utf16-repo"
+        repo.mkdir()
+        _git(["init"], repo)
+        _git(["config", "user.email", "t@t"], repo)
+        _git(["config", "user.name", "t"], repo)
+        (repo / ".gitattributes").write_text(
+            "mod_utf16.py working-tree-encoding=UTF-16\n"
+        )
+        (repo / "mod_utf16.py").write_bytes("X = 'caf\u00e9'\n".encode("utf-16"))
+        _commit_repo(repo)
+
+        rc, captured, out_dir = self._run_case(
+            tmp_path, monkeypatch, capsys, "utf16"
+        )
+
+        assert rc == 1, (captured.out, captured.err)
+        report = json.loads((out_dir / "report.json").read_text())
+        assert report["status"] == "tool_error"
+        assert "mod_utf16.py" in report["notes"][0]
+        assert not (out_dir / "fix.patch").exists()
+
+    @requires_ruff
+    def test_mixed_decodable_and_undecodable_is_never_clean(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A fixable mod_a.py plus one undecodable file must NOT produce a
+        patch or claim a clean/full result — discovery coverage is broken."""
+        repo = tmp_path / "mixed-repo"
+        repo.mkdir()
+        _git(["init"], repo)
+        _git(["config", "user.email", "t@t"], repo)
+        _git(["config", "user.name", "t"], repo)
+        (repo / "mod_a.py").write_text(REPO_FILES["mod_a.py"])  # fixable F401
+        (repo / "mod_latin.py").write_bytes(
+            b'# -*- coding: latin-1 -*-\nX = "caf\xe9"\n'
+        )
+        _commit_repo(repo)
+
+        rc, captured, out_dir = self._run_case(
+            tmp_path, monkeypatch, capsys, "mixed"
+        )
+
+        assert rc == 1, (captured.out, captured.err)
+        report = json.loads((out_dir / "report.json").read_text())
+        assert report["status"] == "tool_error"
+        assert report["status"] not in ("no_findings", "patch_produced")
+        assert "mod_latin.py" in report["notes"][0]
+        assert not (out_dir / "fix.patch").exists()
+
+
+# ── Regression: pre-clone git failures stay controlled (no traceback) ───────
+
+
+class TestFixPreviewPrecloneToolFailure:
+    """A git timeout/crash BEFORE the clone escaped as a raw _ToolFailure
+    traceback (the CLI handler only catches PatchPreviewError). It must
+    surface through the public handler as a stable exit 1 with a plain
+    stderr message and no output artifacts."""
+
+    def _run_with_git_shim(
+        self, tmp_path, monkeypatch, capsys, shim_body: str, name: str
+    ):
+        repo = tmp_path / f"{name}-repo"
+        repo.mkdir()
+        _git(["init"], repo)
+        _git(["config", "user.email", "t@t"], repo)
+        _git(["config", "user.name", "t"], repo)
+        (repo / "mod.py").write_text(REPO_FILES["mod_a.py"])
+        _commit_repo(repo)
+
+        workspace = tmp_path / f"ws-{name}"
+        workspace.mkdir()
+        _register(monkeypatch, workspace, repo, f"{name}-repo")
+
+        import bin.bluei as bluei_main
+
+        # Fixture setup needed the REAL git; shadow it only now.
+        shim_dir = tmp_path / f"{name}-shim-bin"
+        shim_dir.mkdir()
+        shim = shim_dir / "git"
+        shim.write_text(shim_body)
+        shim.chmod(0o755)
+        monkeypatch.setenv("PATH", str(shim_dir) + os.pathsep + os.environ["PATH"])
+
+        out_dir = tmp_path / f"{name}-out"
+        rc = bluei_main._cmd_fix_preview(
+            f"{name}-repo", ["--rule", "F401", "--output-dir", str(out_dir)]
+        )
+        captured = capsys.readouterr()
+        return rc, captured, out_dir
+
+    def test_preclone_git_timeout_is_controlled_error(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        import bluei.engine.patch_preview as pp
+
+        monkeypatch.setattr(pp, "_TOOL_TIMEOUT", 1)
+        rc, captured, out_dir = self._run_with_git_shim(
+            tmp_path, monkeypatch, capsys, "#!/bin/sh\nsleep 10\n", "gittimeout"
+        )
+        assert rc == 1
+        assert "git failed during precondition checks" in captured.err
+        assert "Traceback" not in captured.out + captured.err
+        assert not out_dir.exists()
+
+    def test_preclone_git_exec_failure_is_controlled_error(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Executable garbage: exec() itself fails (ENOEXEC) → OSError."""
+        rc, captured, out_dir = self._run_with_git_shim(
+            tmp_path, monkeypatch, capsys, "garbage-not-a-script", "gitexecfail"
+        )
+        assert rc == 1
+        assert "git failed during precondition checks" in captured.err
+        assert "Traceback" not in captured.out + captured.err
+        assert not out_dir.exists()
+
+
+# ── Regression: linked worktrees and git metadata placement ─────────────────
+
+
+class TestFixPreviewLinkedWorktree:
+    """A linked worktree keeps its git-dir under the MAIN repository's
+    .git/worktrees/ and its common-dir is the main .git — both OUTSIDE the
+    worktree root. Output placement must be rejected inside either (and
+    inside the worktree root) BEFORE mkdir, while output fully outside the
+    source still succeeds on a linked worktree."""
+
+    def _worktree_fixture(self, tmp_path: Path):
+        main = tmp_path / "wt-main"
+        main.mkdir()
+        _git(["init", "-b", "trunk"], main)
+        _git(["config", "user.email", "t@t"], main)
+        _git(["config", "user.name", "t"], main)
+        (main / "mod_a.py").write_text(REPO_FILES["mod_a.py"])
+        _commit_repo(main)
+        wt = tmp_path / "wt-linked"
+        _git(["worktree", "add", str(wt)], main)
+        return main, wt
+
+    @pytest.mark.parametrize("where", ["common", "gitdir", "root"])
+    def test_output_inside_git_metadata_rejected(
+        self, tmp_path, monkeypatch, capsys, where
+    ):
+        main, wt = self._worktree_fixture(tmp_path)
+        git_dir = Path(
+            _git(["rev-parse", "--absolute-git-dir"], wt).stdout.strip()
+        )
+        common_dir = Path(_git(["rev-parse", "--git-common-dir"], wt).stdout.strip())
+        assert common_dir == (main / ".git").resolve()
+        assert git_dir != common_dir  # linked worktree, not the main checkout
+
+        if where == "common":
+            out_dir = common_dir / "preview-out"
+        elif where == "gitdir":
+            out_dir = git_dir / "preview-out"
+        else:
+            out_dir = wt / "preview-out"
+
+        before = _snapshot_git_state(main)
+        before_wt_head = _git(["rev-parse", "HEAD"], wt).stdout.strip()
+
+        workspace = tmp_path / "ws-wt"
+        workspace.mkdir()
+        _register(monkeypatch, workspace, wt, "wt-repo")
+
+        import bin.bluei as bluei_main
+
+        rc = bluei_main._cmd_fix_preview(
+            "wt-repo", ["--rule", "F401", "--output-dir", str(out_dir)]
+        )
+        captured = capsys.readouterr()
+        assert rc == 2
+        assert "outside the source checkout" in captured.err
+        assert "git metadata" in captured.err
+        assert not out_dir.exists()
+        # No new files or refs anywhere in the shared metadata.
+        assert _snapshot_git_state(main) == before
+        assert _git(["rev-parse", "HEAD"], wt).stdout.strip() == before_wt_head
+
+    @requires_ruff
+    def test_external_output_on_linked_worktree_succeeds(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        main, wt = self._worktree_fixture(tmp_path)
+        before = _snapshot_git_state(main)
+
+        workspace = tmp_path / "ws-wt-ok"
+        workspace.mkdir()
+        _register(monkeypatch, workspace, wt, "wt-ok")
+
+        import bin.bluei as bluei_main
+
+        out_dir = tmp_path / "wt-external-out"  # outside wt AND main/.git
+        rc = bluei_main._cmd_fix_preview(
+            "wt-ok", ["--rule", "F401", "--output-dir", str(out_dir)]
+        )
+        captured = capsys.readouterr()
+        assert rc == 0, captured.err
+        report = json.loads((out_dir / "report.json").read_text())
+        assert report["status"] == "patch_produced"
+        assert report["scope"]["target_file"] == "mod_a.py"
+        assert report["baseline_head"] == before["head"]
+        # Shared metadata untouched; the linked worktree stays clean.
+        assert _snapshot_git_state(main) == before
+        assert _git(["status", "--porcelain"], wt).stdout == ""
+
+
 # ── Public script entry point (subprocess, CLI-shape only) ──────────────────
 
 
@@ -1100,3 +1419,34 @@ class TestPublicScript:
         )
         assert result.returncode == 2
         assert "'--rule' is required" in result.stderr
+
+    @requires_ruff
+    def test_repo_flag_alias_accepted_via_script(self, tmp_path, monkeypatch):
+        """`fix-preview --repo <name>` rides the same named-project dispatch
+        path as the positional form — keep the alias working end-to-end."""
+        repo = tmp_path / "alias-repo"
+        repo.mkdir()
+        _git(["init"], repo)
+        _git(["config", "user.email", "t@t"], repo)
+        _git(["config", "user.name", "t"], repo)
+        (repo / "mod_a.py").write_text(REPO_FILES["mod_a.py"])
+        _commit_repo(repo)
+
+        workspace = tmp_path / "ws-alias"
+        workspace.mkdir()
+        _register(monkeypatch, workspace, repo, "alias-repo")
+
+        out_dir = tmp_path / "alias-out"
+        env = {**os.environ, "QA_AGENT_WORKSPACE": str(workspace)}
+        result = subprocess.run(
+            [
+                sys.executable, str(BLUEI_BIN), "fix-preview", "--repo", "alias-repo",
+                "--rule", "F401", "--output-dir", str(out_dir),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
+        assert (out_dir / "fix.patch").is_file()

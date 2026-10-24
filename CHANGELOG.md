@@ -11,7 +11,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 
 - `bluei fix-preview <repo> --rule F401 --output-dir <new-dir>` creates a validated patch and JSON report from one tracked Python file in an isolated local copy. It does not enter the ordinary run, batch, recipe, model, publishing, or learning paths. The source checkout remains unchanged; artifact failures return non-zero and preserve recoverable evidence. The first boundary is deliberately limited to Ruff's safe F401 fixes and syntax validation, not arbitrary repository commands or a sandbox for untrusted tools.
-- Fixture-only acceptance coverage verifies that the patch applies to the recorded baseline, source checkout/index/refs remain unchanged, forbidden transports are never invoked, and tool/artifact failures report honestly. No owned or live repository run has been performed.
+- Fixture-only acceptance coverage verifies that the patch applies to the recorded baseline, source checkout/index/refs remain unchanged, forbidden transports are never invoked, and tool/artifact failures report honestly. Unsupported filename/content encodings fail explicitly rather than reporting a false clean result; source-inspection failures produce controlled errors; output inside Git metadata is rejected, including linked-worktree common directories. No owned or live repository run has been performed.
 
 ## [0.2.0-beta.5] — Review-and-Fix (Sprint 4: Surfaces)
 
