@@ -450,6 +450,108 @@ def _cmd_report(name: str, passthrough: list[str]):
     return _impl(name, passthrough)
 
 
+# Flags that exist on other bluei commands but contradict the fixed
+# fix-preview boundary (local patch artifact only — never live, never a
+# fix-engine choice, never a run mode).
+_FIX_PREVIEW_INCOMPATIBLE_FLAGS = {
+    "--live",
+    "--dry-run",
+    "--no-dry-run",
+    "--fix-engine",
+    "--phase",
+}
+
+
+def _parse_fix_preview_args(passthrough: list[str]) -> tuple[str, str] | None:
+    """Parse fix-preview options strictly. Returns (rule, output_dir) or None."""
+    options: dict[str, str] = {}
+    i = 0
+    while i < len(passthrough):
+        arg = passthrough[i]
+        if arg in ("--rule", "--output-dir"):
+            if i + 1 >= len(passthrough) or passthrough[i + 1].startswith("--"):
+                print(
+                    f"bluei: fix-preview: '{arg}' needs a value.",
+                    file=sys.stderr,
+                )
+                return None
+            if arg in options:
+                print(
+                    f"bluei: fix-preview: '{arg}' given more than once.",
+                    file=sys.stderr,
+                )
+                return None
+            options[arg] = passthrough[i + 1]
+            i += 2
+        elif arg in _FIX_PREVIEW_INCOMPATIBLE_FLAGS:
+            print(
+                f"bluei: fix-preview: '{arg}' is not applicable to fix-preview "
+                "(local patch artifact only — no live run, no engine selection).",
+                file=sys.stderr,
+            )
+            return None
+        elif arg.startswith("--"):
+            print(
+                f"bluei: fix-preview: unknown option '{arg}'. "
+                "Only --rule and --output-dir are accepted.",
+                file=sys.stderr,
+            )
+            return None
+        else:
+            print(
+                f"bluei: fix-preview: unexpected argument '{arg}'. "
+                "Usage: bluei fix-preview <project> --rule <code> --output-dir <new-dir>.",
+                file=sys.stderr,
+            )
+            return None
+    for required in ("--rule", "--output-dir"):
+        if required not in options:
+            print(
+                f"bluei: fix-preview: '{required}' is required.",
+                file=sys.stderr,
+            )
+            return None
+    return options["--rule"], options["--output-dir"]
+
+
+def _cmd_fix_preview(name: str, passthrough: list[str]) -> int:
+    from bluei.app.config import ConfigManager
+    from bluei.app.registry import RepoRegistry
+    from bluei.engine.patch_preview import EXIT_REJECTED, PatchPreviewError, run_patch_preview
+
+    parsed = _parse_fix_preview_args(passthrough)
+    if parsed is None:
+        return EXIT_REJECTED
+    rule, output_dir = parsed
+
+    # ConfigManager() (no explicit workspace) follows QA_AGENT_WORKSPACE /
+    # the module WORKSPACE default — same convention as status/repos.
+    config_mgr = ConfigManager()
+    registry = RepoRegistry(config_mgr)
+    repo = registry.find_by_name(name)
+    if not repo:
+        print(f"bluei: project not found: {name}", file=sys.stderr)
+        return EXIT_REJECTED
+
+    try:
+        result = run_patch_preview(
+            Path(repo.config.path), rule, Path(output_dir), repo_name=name
+        )
+    except PatchPreviewError as exc:
+        print(f"bluei: fix-preview: {exc}", file=sys.stderr)
+        return exc.exit_code
+
+    for line in result.get("stderr_lines", []):
+        print(line, file=sys.stderr)
+    print(result["summary"])
+    report = result["report"]
+    if result["status"] == "patch_produced":
+        print(f"  target: {report['scope']['target_file']}")
+        print(f"  baseline: {report['baseline_head']} (ruff {report['tool']['version']})")
+        print(f"  report: {report['artifacts']['report']}")
+    return result["exit_code"]
+
+
 def _cmd_dashboard(rest: list[str]) -> int:
     from bin.cmd_report import _cmd_dashboard as _impl
 
@@ -525,6 +627,7 @@ def main():
         "ci",
         "install-hook",
         "install-cron",
+        "fix-preview",
     ):
         if rest and rest[0] == "--repo" and len(rest) > 1:
             name = rest[1]
@@ -544,6 +647,7 @@ def main():
             "ci": _cmd_ci,
             "install-hook": _cmd_install_hook,
             "install-cron": _cmd_install_cron,
+            "fix-preview": _cmd_fix_preview,
         }
         fn = handlers[cmd]
         if cmd == "duster":

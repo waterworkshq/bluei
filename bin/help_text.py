@@ -41,6 +41,7 @@ HELP_TEXT = {
   {GREEN}secrets{RESET}      <path> {DIM}Scan for hardcoded secrets{RESET}
   {GREEN}health{RESET}     <name> {DIM}Show vitality (0–100){RESET}
   {GREEN}report{RESET}     <name> {DIM}Generate a vitality report (PDF by default){RESET}
+  {GREEN}fix-preview{RESET} <name> {DIM}Local patch artifact for one Ruff rule (no run, no PR){RESET}
   {GREEN}dashboard{RESET}        {DIM}Generate a read-only observability dashboard{RESET}
   {GREEN}languages{RESET}        {DIM}List installed language packs and rules{RESET}
   {GREEN}repos{RESET}            {DIM}List registered projects (--all to include disabled){RESET}
@@ -190,6 +191,28 @@ passwords, private keys, high-entropy strings).{RESET}
 
 {BOLD}Usage:{RESET}
   bluei secrets {CYAN}<path>{RESET}
+""",
+    "fix-preview": f"""{BOLD}bluei fix-preview{RESET} {CYAN}<project-name>{RESET} {YELLOW}--rule{RESET} {CYAN}<code>{RESET} {YELLOW}--output-dir{RESET} {CYAN}<new-dir>{RESET}
+
+{DIM}Produce a local patch artifact for the F401 (unused-import) Ruff rule
+on ONE tracked Python file of a registered project. The source checkout is
+only read (must be clean and committed); the fix runs in a disposable local
+clone and the result is persisted as fix.patch + report.json in the new
+output directory. No commits, pushes, PRs, LLM calls, or state writes.
+
+Only rule supported: F401 (unused-import).{RESET}
+
+{BOLD}Usage:{RESET}
+  bluei fix-preview {CYAN}<project>{RESET} {YELLOW}--rule{RESET} {CYAN}F401{RESET} {YELLOW}--output-dir{RESET} {CYAN}/tmp/preview-1{RESET}
+
+{BOLD}Options:{RESET}
+  --rule {CYAN}F401{RESET}                Required. Only F401 is supported
+  --output-dir {CYAN}<new-dir>{RESET}     Required. Must not exist; outside the source repo
+
+{BOLD}Exit codes:{RESET}
+  0  patch produced, or verified no-op (no findings / no safe fix)
+  1  tool failure, validation failure, or artifact write failure
+  2  precondition rejected (dirty repo, bad rule, bad output dir, ...)
 """,
     "health": f"""{BOLD}bluei health{RESET} {CYAN}<project-name>{RESET} [{YELLOW}options{RESET}]
 
