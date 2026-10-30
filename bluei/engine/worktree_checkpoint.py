@@ -203,7 +203,18 @@ def _matches_snapshot(cp: WorktreeCheckpoint, rel: str, entry: _Entry, path: Pat
         return old.target == entry.target
     if entry.kind == "dir":
         return old.mode == entry.mode
-    return old.mode == entry.mode and path.read_bytes() == cp._backup_for(rel).read_bytes()
+    if old.mode != entry.mode:
+        return False
+    backup = cp._backup_for(rel)
+    if path.stat().st_size != backup.stat().st_size:
+        return False
+    with path.open("rb") as current, backup.open("rb") as original:
+        while True:
+            block = current.read(1024 * 1024)
+            if block != original.read(1024 * 1024):
+                return False
+            if not block:
+                return True
 
 
 def restore_checkpoint(cp: WorktreeCheckpoint) -> None:
@@ -283,7 +294,6 @@ def changed_paths(cp: WorktreeCheckpoint) -> set[str]:
             changed.add(rel)
             continue
         path, entry = current[rel]
-        old = cp.entries[rel]
-        if entry != old or (entry.kind == "file" and path.read_bytes() != cp._backup_for(rel).read_bytes()):
+        if not _matches_snapshot(cp, rel, entry, path):
             changed.add(rel)
     return changed

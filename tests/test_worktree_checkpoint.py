@@ -467,7 +467,7 @@ def test_noop_restore_preserves_inode_and_mtime(tmp_path, bk):
     (repo / "tracked.py").write_text("v1\n")
     (repo / "ignored.txt").write_text("noise\n")
     _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "init")
+    _git(repo, "-c", "user.name=Checkpoint test", "-c", "user.email=checkpoint@localhost", "commit", "-m", "init")
     cp = capture_checkpoint(repo, bk)
     tracked = repo / "tracked.py"
     ignored = repo / "ignored.txt"
@@ -494,3 +494,23 @@ def test_restore_special_file_fails_without_deleting_it(tmp_path, bk):
     with pytest.raises(CheckpointRestoreError, match="special file"):
         restore_checkpoint(cp)
     assert stat.S_ISFIFO((wt / "pipe").lstat().st_mode) and cp.retained
+
+
+def test_grown_file_compared_without_unbounded_reads(tmp_path, bk, monkeypatch):
+    from pathlib import Path
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    target = wt / "file.bin"
+    target.write_bytes(b"original")
+    cp = capture_checkpoint(wt, bk)
+    with target.open("wb") as stream:
+        stream.truncate(512 * 1024 * 1024)
+    def forbid_read_bytes(self):
+        raise AssertionError("rollback must not load whole files")
+    monkeypatch.setattr(Path, "read_bytes", forbid_read_bytes)
+    assert changed_paths(cp) == {"file.bin"}
+    restore_checkpoint(cp)
+    with target.open("rb") as stream:
+        assert stream.read() == b"original"
+    assert changed_paths(cp) == set()
+    discard_checkpoint(cp)
