@@ -228,14 +228,15 @@ def test_failed_restore_retains_backup_and_discard_refuses(tmp_path, bk, monkeyp
 
     import bluei.engine.worktree_checkpoint as wcm
 
-    real_copy = wcm.shutil.copyfile
+    real_copy = wcm._fd_copy
 
-    def failing_copy(src, dst, **kwargs):
-        if str(dst).endswith("a.py") and str(dst).startswith(str(wt)):
+    def failing_copy(src, destination_fd, mode=None):
+        if str(src).endswith("a.py"):
+            os.close(destination_fd)
             raise OSError("disk full")
-        return real_copy(src, dst, **kwargs)
+        return real_copy(src, destination_fd, mode)
 
-    monkeypatch.setattr(wcm.shutil, "copyfile", failing_copy)
+    monkeypatch.setattr(wcm, "_fd_copy", failing_copy)
     with pytest.raises(CheckpointRestoreError, match="backup retained"):
         restore_checkpoint(cp)
     monkeypatch.undo()
@@ -514,3 +515,20 @@ def test_grown_file_compared_without_unbounded_reads(tmp_path, bk, monkeypatch):
         assert stream.read() == b"original"
     assert changed_paths(cp) == set()
     discard_checkpoint(cp)
+
+
+@pytest.mark.parametrize("source_bytes,limit,accepted", [(0, 7, False), (0, 8, True), (1, 8, False)])
+def test_index_shares_snapshot_byte_budget(tmp_path, bk, source_bytes, limit, accepted):
+    wt = tmp_path / "wt"
+    (wt / ".git").mkdir(parents=True)
+    (wt / ".git/index").write_bytes(b"12345678")
+    if source_bytes:
+        (wt / "source").write_bytes(b"x" * source_bytes)
+    if accepted:
+        cp = capture_checkpoint(wt, bk, max_bytes=limit)
+        assert cp.index_backup.read_bytes() == b"12345678"
+        discard_checkpoint(cp)
+    else:
+        with pytest.raises(CheckpointError, match="byte ceiling"):
+            capture_checkpoint(wt, bk, max_bytes=limit)
+    assert list(bk.iterdir()) == []
