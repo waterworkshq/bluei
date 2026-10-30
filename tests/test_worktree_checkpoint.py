@@ -247,6 +247,22 @@ def test_failed_restore_retains_backup_and_discard_refuses(tmp_path, bk, monkeyp
     assert cp.backup_dir.exists()
 
 
+def test_checkpoint_discard_normalizes_deletion_error(tmp_path, bk, monkeypatch):
+    from bluei.engine import worktree_checkpoint as checkpoints
+    root = tmp_path / "wt"
+    root.mkdir()
+    cp = capture_checkpoint(root, bk)
+    real_remove = checkpoints.shutil.rmtree
+    with monkeypatch.context() as scoped:
+        scoped.setattr(checkpoints.shutil, "rmtree", lambda path: (_ for _ in ()).throw(PermissionError("denied")))
+        with pytest.raises(CheckpointError, match="cleanup failed") as excinfo:
+            discard_checkpoint(cp)
+    assert isinstance(excinfo.value.__cause__, PermissionError)
+    assert str(cp.backup_dir) in str(excinfo.value)
+    assert cp.git_dir_fd is None and cp.backup_dir.exists()
+    real_remove(cp.backup_dir)
+
+
 def test_symlink_parent_cannot_escape(tmp_path, bk):
     wt = tmp_path / "wt"
     (wt / "dir").mkdir(parents=True)

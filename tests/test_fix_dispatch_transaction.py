@@ -177,6 +177,45 @@ def test_autofix_checkpoint_error_propagates_and_blocks_fallbacks(tmp_path, make
     assert called == ["autofix"], "no fallback may run after unsafe state"
 
 
+@pytest.mark.parametrize('strategy', [FixStrategy.AUTOFIX_FIRST, FixStrategy.CASCADE_FIRST])
+def test_cleanup_failure_after_rejection_blocks_dispatch(tmp_path, make_finding, strategy):
+    from bluei.engine import cascade, worktree_checkpoint as checkpoints
+
+    target = tmp_path / 'src/app.py'
+    target.parent.mkdir()
+    target.write_text('original\n')
+    real_remove = checkpoints.shutil.rmtree
+    leftovers = []
+
+    def fail_delete(path, *args, **kwargs):
+        leftovers.append(path)
+        raise PermissionError('cleanup denied')
+
+    class Reject(cascade.CascadeStage):
+        name = 'reject'
+        def can_handle(self, finding, context):
+            return True
+        def attempt(self, finding, worktree, context):
+            target.write_text('partial\n')
+            return cascade.CascadeResult(success=False, stage_name=self.name)
+
+    with patch.object(checkpoints.shutil, 'rmtree', side_effect=fail_delete), \
+            patch.object(lifecycle, '_get_recipe_engine', return_value=None), \
+            patch.object(cascade, 'default_cascade_stages', return_value=[Reject()]), \
+            patch.object(lifecycle, 'apply_claude_fix', side_effect=AssertionError('model forbidden')) as model, \
+            patch.object(fix_dispatch, '_try_claude_fix', side_effect=AssertionError('fallback forbidden')) as fallback:
+        with pytest.raises(CheckpointError, match='cleanup failed'):
+            dispatch_fix(_finding(make_finding, rule='unsupported-test-rule'), tmp_path, strategy,
+                         repo_path=tmp_path, log_file=tmp_path / 'log', claude_cmd_template='claude')
+    model.assert_not_called()
+    fallback.assert_not_called()
+    assert target.read_text() == 'original\n'
+    assert leftovers
+    for path in set(leftovers):
+        if path.exists():
+            real_remove(path)
+
+
 def test_dispatch_generic_failure_still_falls_back(tmp_path, make_finding):
     """Ordinary failures keep the intended fallback feature (regression guard)."""
     from types import SimpleNamespace

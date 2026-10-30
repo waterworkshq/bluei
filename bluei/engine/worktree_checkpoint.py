@@ -483,11 +483,16 @@ def restore_checkpoint(cp: WorktreeCheckpoint) -> None:
 
 
 def discard_checkpoint(cp: WorktreeCheckpoint) -> None:
-    if cp.git_dir_fd is not None:
-        os.close(cp.git_dir_fd)
-        cp.git_dir_fd = None
-    if not cp.retained:
-        shutil.rmtree(cp.backup_dir)
+    try:
+        if cp.git_dir_fd is not None:
+            descriptor, cp.git_dir_fd = cp.git_dir_fd, None
+            os.close(descriptor)
+        if not cp.retained:
+            shutil.rmtree(cp.backup_dir)
+    except OSError as exc:
+        raise CheckpointError(
+            f"checkpoint cleanup failed; stop before further fixes: {cp.backup_dir}"
+        ) from exc
 
 
 def changed_paths(cp: WorktreeCheckpoint) -> set[str]:
