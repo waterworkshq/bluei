@@ -39,6 +39,13 @@ def test_batch_checkpoint_failure_preserves_real_worktree(git_repo, tmp_path, ma
     assert target.read_text() == "baseline\n"
     assert subprocess.check_output(["git", "rev-parse", batch.branch], cwd=git_repo, text=True).strip() == base
     assert str(batch.worktree_path) in " ".join(excinfo.value.__notes__)
-    subprocess.run(["git", "worktree", "remove", "--force", str(batch.worktree_path)], cwd=git_repo,
-                   check=True, capture_output=True)
-    subprocess.run(["git", "branch", "-D", batch.branch], cwd=git_repo, check=True, capture_output=True)
+    retained_path, retained_branch = batch.worktree_path, batch.branch
+    with patch.object(batch_pr, "apply_batch_fixes", side_effect=interrupted_batch):
+        with pytest.raises(failure):
+            batch_pr.process_batch(batch, git_repo, args, tmp_path / "batch.log")
+    assert batch.worktree_path != retained_path
+    assert (retained_path / "app.py").read_text() == "accepted batch fix\n"
+    for path, branch in ((retained_path, retained_branch), (batch.worktree_path, batch.branch)):
+        subprocess.run(["git", "worktree", "remove", "--force", str(path)], cwd=git_repo,
+                       check=True, capture_output=True)
+        subprocess.run(["git", "branch", "-D", branch], cwd=git_repo, check=True, capture_output=True)

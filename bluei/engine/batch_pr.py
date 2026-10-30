@@ -149,7 +149,7 @@ def process_batch(
     rule_short = batch.rule_pattern.replace("ruff-", "")[:8]
     branch = f"qa/batch-{rule_short}-{ts}-{uniq}"
     worktree_root = Path(getattr(args, "worktree_root", str(DEFAULT_WORKTREE_ROOT)))
-    worktree_path = worktree_root.resolve() / f"qa-batch-{batch.batch_id}"
+    worktree_path = worktree_root.resolve() / f"qa-batch-{batch.batch_id}-{uniq}"
 
     batch.branch = branch
     batch.worktree_path = worktree_path
