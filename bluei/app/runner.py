@@ -620,59 +620,18 @@ class RunEngine:
         run.duration_seconds = int((end_dt - start_dt).total_seconds())
         run.prs_created = result.active_prs
         run.status = "completed"
-        # review-cycle is not a discovery scan; its lifecycle completed.
-        run.scan_complete = True
-
-        findings = self.state.load_findings(repo.config.name)
-        health_score = self.health.calculate(findings)
-        run.health_before = repo.current_health_score
-        run.health_after = health_score.score
-        run.health_delta = health_score.score - repo.current_health_score
-
-        # Health trend — one record per cycle
-        _trend_file = self.config.workspace / "state" / "health_trend.jsonl"
-        try:
-            _trend_file.parent.mkdir(parents=True, exist_ok=True)
-            _tune_state = {}
-            _tune_path = self.config.workspace / "state" / "auto_tune.json"
-            if _tune_path.exists():
-                _tune_state = json.loads(_tune_path.read_text()).get("tuned_fields", {})
-            _trend_record = {
-                "ts": now_iso(),
-                "repo": repo.config.name,
-                "cycle": "review",
-                "health_score": health_score.score,
-                "open_issues": len(findings),
-                "active_prs": result.active_prs,
-                "blocked_prs": result.blocked_prs,
-                "retry_failed": result.retry_failed_prs,
-                "retry_exhausted": result.retry_exhausted_prs,
-                "merge_ready": result.merge_ready_prs,
-                "tune_batch": _tune_state.get("max_prs_per_run"),
-                "tune_cooldown_h": _tune_state.get("finding_cooldown_seconds", 0)
-                // 3600
-                if "finding_cooldown_seconds" in _tune_state
-                else None,
-            }
-            append_jsonl(_trend_file, _trend_record, default=str)
-        except OSError:
-            _logger.debug("Failed to append trend record")
+        # review-cycle is not a discovery scan: leave scan_complete False and
+        # do not republish health — a completed review cycle is not evidence
+        # of a new scan, so the last scan's health/history stand (same rule
+        # as the non-scanning phases in run()).
 
         self.registry.update(
             repo.config.name,
             {
                 "status": RepoStatus.READY.value,
                 "last_run_at": now_iso(),
-                "current_findings_count": len(findings),
-                "current_health_score": health_score.score,
                 "total_prs": max(repo.total_prs, result.active_prs),
             },
-        )
-        self.health.save_health_snapshot(
-            repo.config.name,
-            health_score,
-            len(findings),
-            self.state._get_state_dir(repo.config.name),
         )
         return RunResult(run=run, success=True, output=output)
 

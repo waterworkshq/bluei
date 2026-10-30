@@ -56,6 +56,7 @@ def _xo_repo(tmp: Path) -> Path:
     binary = tmp / "node_modules" / ".bin" / "xo"
     binary.parent.mkdir(parents=True, exist_ok=True)
     binary.touch()
+    binary.chmod(0o755)
     return _log(tmp)
 
 
@@ -200,6 +201,7 @@ class TestDiscoverPythonLinterFindings:
 # ── discover_xo_linter_findings ─────────────────────────────────
 
 
+@patch.dict("os.environ", {"BLUEI_TRUST_REPOSITORY_TOOLS": "1"})
 class TestDiscoverXoLinterFindings:
     @patch("bluei.engine.linters.subprocess.run")
     def test_xo_json_produces_findings(self, mr, tmp_path):
@@ -536,8 +538,9 @@ class TestRunXoLinterInContainerEdgeCases:
         assert res[0]["messages"][0]["ruleId"] == "msg-rule"
 
 
+@patch.dict("os.environ", {"BLUEI_TRUST_REPOSITORY_TOOLS": "1"})
 class TestDiscoverXoLinterFindingsNpxFallbacks:
-    """Non-ky repos run `npx xo` directly — exercise its error/empty/exception paths."""
+    """Explicitly trusted local xo; subprocess output/error handling is mocked."""
 
     @patch("bluei.engine.linters.subprocess.run")
     def test_npx_invalid_json_falls_back_to_empty(self, mr, tmp_path):

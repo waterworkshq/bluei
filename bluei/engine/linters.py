@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import ast
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -21,6 +22,25 @@ from bluei.engine.utils import run_capture
 
 # Cache for ruff rule descriptions
 _Ruff_Rule_Descriptions = {}  # Cache for ruff rule descriptions
+
+
+def _resolve_repository_tool(repo_path: Path, name: str) -> Optional[str]:
+    """Resolve an external tool without executing repository-controlled code.
+
+    Mirrors the plugin wrapper contract (bluei.app.plugins
+    ToolWrapperPlugin._run_tool): a node_modules/.bin entry inside the scanned
+    repository only runs with BLUEI_TRUST_REPOSITORY_TOOLS=1; otherwise an
+    external PATH executable is used, unless it resolves back into the
+    repository. Never installs packages or touches the network.
+    """
+    trusted = os.environ.get("BLUEI_TRUST_REPOSITORY_TOOLS") == "1"
+    local = repo_path / "node_modules" / ".bin" / name
+    installed = str(local) if trusted and os.access(local, os.X_OK) else shutil.which(name)
+    if not installed:
+        return None
+    if not trusted and Path(installed).resolve().is_relative_to(repo_path.resolve()):
+        return None
+    return installed
 
 
 # DEAD CODE - verify before using
@@ -190,15 +210,23 @@ def discover_xo_linter_findings(
         _append_text(log_file, f'xo-discovery: running xo linter in container {container_name}')
         rc, xo_results = run_xo_linter_in_container(container_name)
     else:
-        # Try to run xo directly on the host via npx
-        local_xo = repo_path / 'node_modules' / '.bin' / 'xo'
-        if not local_xo.is_file():
-            _record('unavailable', reason='local xo executable not installed; network installation disabled')
+        # Run xo from an external PATH executable, or the repository's local
+        # xo only with BLUEI_TRUST_REPOSITORY_TOOLS=1 (plugin wrapper contract).
+        xo_bin = _resolve_repository_tool(repo_path, 'xo')
+        if not xo_bin:
+            _record(
+                'unavailable',
+                reason=(
+                    'xo unavailable outside repository control; set '
+                    'BLUEI_TRUST_REPOSITORY_TOOLS=1 to use repository node_modules xo '
+                    '(network installation disabled)'
+                ),
+            )
             return findings
-        _append_text(log_file, 'xo-discovery: running locally installed xo')
+        _append_text(log_file, 'xo-discovery: running resolved xo executable')
         try:
             res = subprocess.run(
-                [str(local_xo), '--format=json'],
+                [xo_bin, '--format=json'],
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -498,10 +526,16 @@ def discover_typescript_type_findings(
         _append_text(log_file, 'type-discovery: no tsconfig.json found, skipping')
         return findings
 
-    local_tsc = repo_path / 'node_modules' / '.bin' / 'tsc'
-    tsc = str(local_tsc) if local_tsc.is_file() else shutil.which('tsc')
+    tsc = _resolve_repository_tool(repo_path, 'tsc')
     if not tsc:
-        _record('unavailable', reason='TypeScript compiler not installed; network installation disabled')
+        _record(
+            'unavailable',
+            reason=(
+                'tsc unavailable outside repository control; set '
+                'BLUEI_TRUST_REPOSITORY_TOOLS=1 to use repository node_modules tsc '
+                '(network installation disabled)'
+            ),
+        )
         return findings
     try:
         rc, output = run_capture(

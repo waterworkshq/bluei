@@ -136,6 +136,57 @@ def test_verify_only_does_not_resolve_issues_when_every_detector_skipped(tmp_pat
     assert issues["issues"][0]["status"] == "open"
 
 
+def test_public_review_cycle_claims_no_scan_and_preserves_prior_health(
+    tmp_path, monkeypatch, capsys
+):
+    """PR11 regression: review-cycle is not a discovery scan. The public CLI
+    must keep scan_complete False, report 'no discovery scan was performed',
+    stay lifecycle-successful, and leave the prior scan's health/history
+    untouched."""
+    from unittest.mock import patch
+
+    from bluei.app import config as config_module
+    from bluei.review.types import ReviewCycleResult
+
+    workspace = tmp_path / "workspace"
+    manager = ConfigManager(workspace)
+    registry = RepoRegistry(manager)
+    target = tmp_path / "target"
+    target.mkdir()
+    repo = registry.create_from_path(target, name="reviewed", language="python")
+    repo.config.fix_engine = "deterministic"
+    manager.save_repo_config(repo.config)
+    # Prior discovery scan state: imperfect health, known findings, one
+    # history record. A review cycle must not overwrite any of it.
+    registry.update(
+        "reviewed", {"current_health_score": 73.0, "current_findings_count": 5}
+    )
+    state = manager.repos_dir / "reviewed/state"
+    state.mkdir(parents=True, exist_ok=True)
+    history = state / "health_history.jsonl"
+    history.write_text('{"score": 73.0, "open_issues": 5}\n')
+
+    monkeypatch.setattr(config_module, "WORKSPACE", workspace)
+    with patch("bluei.app.runner.ReviewCycleEngine") as mock_rce:
+        mock_rce.return_value.run.return_value = ReviewCycleResult(active_prs=1)
+        code = cli._cmd_run("reviewed", ["--phase", "review-cycle", "--dry-run"])
+
+    output = capsys.readouterr()
+    assert code == 0, (output.out, output.err)
+    assert "Completed review-cycle; no discovery scan was performed." in output.out
+    assert "Findings: 0" not in output.out
+    stored = registry.find_by_name("reviewed")
+    assert stored.current_health_score == 73.0
+    assert stored.current_findings_count == 5
+    assert history.read_text() == '{"score": 73.0, "open_issues": 5}\n'
+    assert not (workspace / "state" / "health_trend.jsonl").exists()
+    records = list((manager.repos_dir / "reviewed" / "runs").glob("*.json"))
+    assert len(records) == 1
+    run = json.loads(records[0].read_text())
+    assert run["scan_complete"] is False
+    assert run["status"] == "completed"
+
+
 def test_native_engine_partial_scan_clears_stale_success(tmp_path):
     import os
     import subprocess

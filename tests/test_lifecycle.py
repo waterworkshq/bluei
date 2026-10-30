@@ -361,6 +361,8 @@ class TestApplyCascadeFix:
         mock_ctx_cls.return_value = MagicMock(allow_llm=False)
         cascade = MagicMock()
         cascade.execute.return_value = MagicMock(success=True, stage_name="recipe")
+        # Fully-mocked cascade: stub the post-tier scope recheck contract.
+        cascade._out_of_scope_edits.return_value = None
         mock_cascade_cls.return_value = cascade
         log = tmp_path / "log.txt"
         log.write_text("")

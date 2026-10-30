@@ -997,6 +997,47 @@ def apply_cascade_fix(
             # resolved_llm / exhausted).
             _emit_fallback_record("exhausted", result.stage_name)
             return False
+        # Post-tier scope recheck: tier validation runs AFTER execute()
+        # verified the declared stage scope, and its checks can themselves
+        # edit undeclared files or the Git index. Re-verify the cascade's
+        # declared scope (carried on the result — never the stage's claimed
+        # diff) before learning, recording success, or releasing the backup.
+        # A missing/unusable scope carrier fails closed.
+        try:
+            allowed = result.authorized_scope
+            if allowed is None:
+                out_of_scope = {"<scope-carrier-missing>"}
+            else:
+                out_of_scope = cascade._out_of_scope_edits(
+                    worktree_path, allowed, checkpoint
+                )
+        except Exception as exc:
+            _append_text(
+                log_file,
+                f"cascade: post-tier scope recheck failed stage={result.stage_name} "
+                f"error={type(exc).__name__}: {exc}",
+            )
+            out_of_scope = {"<scope-recheck-failed>"}
+        if out_of_scope is not None:
+            if checkpoint is not None:
+                try:
+                    restore_checkpoint(checkpoint)
+                except Exception:
+                    _append_text(
+                        log_file,
+                        f"cascade: post-tier scope-reject restore failed "
+                        f"stage={result.stage_name} — halting, backup retained",
+                    )
+                    raise
+                _discard_checkpoint()
+            _append_text(
+                log_file,
+                f"cascade: tier validation introduced out-of-scope edits="
+                f"{sorted(out_of_scope)} stage={result.stage_name} "
+                f"— restored pre-attempt state",
+            )
+            _emit_fallback_record("exhausted", result.stage_name)
+            return False
         try:
             _extract_fix_pattern(
                 worktree_path, finding, result.stage_name, pattern_store_path,

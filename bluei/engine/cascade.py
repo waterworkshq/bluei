@@ -73,6 +73,9 @@ class CascadeResult:
     # Telemetry for the winning run; set on cascade-level success so the
     # lifecycle tier can emit the ledger record AFTER its own validation.
     telemetry: Optional["CascadeTelemetry"] = None
+    # Declared stage scope (execute()'s authorized set), carried so the
+    # lifecycle tier can re-verify it AFTER its own validation runs.
+    authorized_scope: Optional[Set[str]] = None
 
 
 @dataclass
@@ -288,6 +291,7 @@ class DeterministicCascade:
                     telemetry.success = True
                     telemetry.total_latency_ms = int((time.monotonic() - t0) * 1000)
                     result.telemetry = telemetry
+                    result.authorized_scope = allowed
                     _append_text(
                         context.log_file, f"cascade: stage={stage.name} succeeded"
                     )
