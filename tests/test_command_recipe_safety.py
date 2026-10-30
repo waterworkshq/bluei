@@ -92,3 +92,20 @@ def test_ruff_formatter_does_not_create_out_of_scope_cache(tmp_path):
     assert result.success
     assert all(len(line) <= 88 for line in target.read_text().splitlines())
     assert not (tmp_path / ".ruff_cache").exists()
+
+
+def test_ruff_formatter_honors_project_line_length(tmp_path):
+    if shutil.which("ruff") is None:
+        pytest.skip("ruff is not installed")
+    from bluei.engine.cascade import CascadeContext, DeterministicCascade, default_linter_stages
+    from bluei.engine.models import Finding
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 79\n")
+    target = tmp_path / "target.py"
+    target.write_text("result = example(" + ", ".join(repr("x" * 8) for _ in range(6)) + ")\n")
+    assert 79 < len(target.read_text().strip()) <= 88
+    finding = Finding("line", str(tmp_path), "target.py", 1, "ruff-e501", "long line", 0.9, False, False)
+    result = DeterministicCascade([default_linter_stages()[1]]).execute(
+        finding, tmp_path, CascadeContext(log_file=tmp_path / "run.log", language="python"))
+    assert result.success
+    assert all(len(line) <= 79 for line in target.read_text().splitlines())
+    assert not (tmp_path / ".ruff_cache").exists()

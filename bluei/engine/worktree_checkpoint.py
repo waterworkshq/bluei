@@ -353,18 +353,27 @@ def restore_checkpoint(cp: WorktreeCheckpoint) -> None:
                     if (current_git.st_dev, current_git.st_ino) != (captured.st_dev, captured.st_ino):
                         raise CheckpointError("Git directory identity changed")
                     if cp.index_existed:
-                        # No O_TRUNC: a hardlinked or special target must be rejected
-                        # by fstat before any byte of it is modified.
-                        fd = os.open(index.name, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=gitfd)
+                        # Writing the live inode in place (fstat then ftruncate)
+                        # races a hardlink created after the check, corrupting
+                        # bytes outside the worktree. Publish a fresh exclusive
+                        # inode instead: replace never mutates the old one, so
+                        # outside links keep their original bytes.
                         try:
-                            st = os.fstat(fd)
-                            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
-                                raise CheckpointError(f"unsupported Git index: {index}")
-                            os.ftruncate(fd, 0)
+                            st = os.stat(index.name, dir_fd=gitfd, follow_symlinks=False)
+                        except FileNotFoundError:
+                            st = None
+                        if st is not None and not stat.S_ISREG(st.st_mode):
+                            raise CheckpointError(f"unsupported Git index: {index}")
+                        mode = stat.S_IMODE(st.st_mode) if st is not None else 0o600
+                        tmp = f"index.bluei-restore-{os.getpid()}.tmp"
+                        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=gitfd)
+                        try:
+                            _fd_copy(cp.index_backup, fd, mode)
+                            os.replace(tmp, index.name, src_dir_fd=gitfd, dst_dir_fd=gitfd)
                         except BaseException:
-                            os.close(fd)
+                            with contextlib.suppress(OSError):
+                                os.unlink(tmp, dir_fd=gitfd)
                             raise
-                        _fd_copy(cp.index_backup, fd)
                     else:
                         try:
                             os.unlink(index.name, dir_fd=gitfd)

@@ -11,6 +11,7 @@ import errno
 import os
 import shutil
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -152,15 +153,14 @@ def test_restore_refuses_index_replaced_by_symlink(tmp_path):
     (git / "index").unlink()
     os.symlink(sentinel, git / "index")
 
-    with pytest.raises(CheckpointRestoreError) as excinfo:
+    with pytest.raises(CheckpointRestoreError, match="unsupported Git index"):
         restore_checkpoint(cp)
-    _assert_symlink_refusal(excinfo)
 
     assert sentinel.read_text() == "do-not-touch"
     assert cp.retained is True
 
 
-def test_restore_refuses_index_hardlinked_to_outside_file(tmp_path):
+def test_restore_replaces_hardlinked_index_without_touching_outside_file(tmp_path):
     root = tmp_path / "wt"
     root.mkdir()
     (root / "file.txt").write_text("data")
@@ -174,13 +174,97 @@ def test_restore_refuses_index_hardlinked_to_outside_file(tmp_path):
     sentinel = outside / "sentinel"
     sentinel.write_bytes(b"sentinel-bytes")
     (git / "index").unlink()
-    os.link(sentinel, git / "index")  # raced index sharing an outside inode
+    os.link(sentinel, git / "index")  # index sharing an outside inode
+    mode = stat.S_IMODE(sentinel.stat().st_mode)
 
-    with pytest.raises(CheckpointRestoreError):
+    restore_checkpoint(cp)
+
+    assert sentinel.read_bytes() == b"sentinel-bytes"  # outside link keeps its bytes
+    assert sentinel.lstat().st_nlink == 1  # old inode unlinked from the index only
+    assert (git / "index").read_bytes() == b"INDEX-DATA"  # fresh inode, backup bytes
+    assert stat.S_IMODE((git / "index").stat().st_mode) == mode
+    assert os.listdir(git) == ["index"]  # no temp residue
+    assert cp.retained is False
+
+
+def _git_index(root: Path) -> Path:
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "tracked.txt").write_text("v1\n")
+    subprocess.run(["git", "-C", str(root), "add", "tracked.txt"], check=True)
+    return root / ".git" / "index"
+
+
+def test_index_hardlink_race_during_restore_leaves_outside_inode_untouched(tmp_path, monkeypatch):
+    """A hardlink created after any pre-check must not let restore bytes escape.
+
+    The hook fires inside _fd_copy, the last pre-write step both the old and
+    new implementations share. Old code had already passed its nlink check and
+    ftruncate'd the live inode, so the link lands in the race window and the
+    copy corrupts the outside file (sentinel bytes != raced). New code copies
+    onto a fresh temp inode, so the linked inode keeps its own bytes.
+    """
+    root = tmp_path / "wt"
+    git_index = _git_index(root)
+    cp = capture_checkpoint(root, tmp_path / "backups")
+    checkpointed = git_index.read_bytes()
+    (root / "tracked.txt").write_text("v2\n")
+    subprocess.run(["git", "-C", str(root), "add", "tracked.txt"], check=True)
+    raced = git_index.read_bytes()  # a real Git process rewrote the index
+    assert raced != checkpointed
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    real_copy = wt._fd_copy
+    fired = []
+
+    def hardlink_before_index_copy(src, fd, mode=None):
+        if Path(src) == cp.index_backup and not fired:
+            fired.append(True)
+            os.link(git_index, sentinel)  # attacker links after every check
+            linked = os.stat(sentinel)
+            live = os.stat(git_index)
+            assert (linked.st_dev, linked.st_ino) == (live.st_dev, live.st_ino)
+        return real_copy(src, fd, mode)
+
+    monkeypatch.setattr(wt, "_fd_copy", hardlink_before_index_copy)
+    restore_checkpoint(cp)
+
+    assert fired  # the race was actually staged, not skipped by an error
+    assert sentinel.read_bytes() == raced  # outside inode never overwritten
+    assert git_index.read_bytes() == checkpointed  # checkpointed index restored
+    assert sentinel.lstat().st_nlink == 1
+    assert not [n for n in os.listdir(root / ".git") if "bluei-restore" in n]
+    wt.discard_checkpoint(cp)
+
+
+def test_index_restore_failure_cleans_temp_and_retains_backup(tmp_path, monkeypatch):
+    root = tmp_path / "wt"
+    root.mkdir()
+    (root / "f.txt").write_text("data")
+    git = root / ".git"
+    git.mkdir()
+    (git / "index").write_bytes(b"INDEX-DATA")
+    cp = capture_checkpoint(root, tmp_path / "backups")
+    (git / "index").write_bytes(b"MUTATED")
+
+    real_replace = os.replace
+
+    def fail_index_replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+        if dst_dir_fd is not None:
+            raise OSError(errno.EIO, "simulated index publish failure")
+        return real_replace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+    monkeypatch.setattr(os, "replace", fail_index_replace)
+    with pytest.raises(CheckpointRestoreError, match="checkpoint restore failed"):
         restore_checkpoint(cp)
 
-    assert sentinel.read_bytes() == b"sentinel-bytes"  # never truncated
+    assert os.listdir(git) == ["index"]  # temp cleaned up
+    assert (git / "index").read_bytes() == b"MUTATED"  # old inode untouched
     assert cp.retained is True
+    assert cp.git_dir_fd is None  # recovery descriptor closed
+    wt.discard_checkpoint(cp)
+    assert cp.backup_dir.exists()  # retained for manual recovery
 
 
 def test_restore_noop_preserves_full_tree_and_modes(tmp_path):
