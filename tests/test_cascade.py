@@ -172,16 +172,39 @@ def test_cascade_respects_max_stages(tmp_path):
 
 
 def test_cascade_rollback_on_validation_failure(tmp_path):
+    """Validation failure restores the exact pre-attempt state transactionally.
+
+    The stage both fails validation AND leaves edits behind, on top of
+    pre-existing unstaged content — the checkpoint restore must return the
+    file to that pre-attempt content (git-checkout rollback would have
+    destroyed it).
+    """
     log = tmp_path / "log.txt"
     log.write_text("")
-    bad = _SucceedButFailValidation()
+    target = tmp_path / "src" / "app.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    pre_attempt = "PRE-EXISTING UNSTAGED CONTENT\n"
+    target.write_text(pre_attempt, encoding="utf-8")
+
+    class _MutateAndFailValidation(_SucceedButFailValidation):
+        def attempt(self, finding, worktree, context):
+            (worktree / finding.path).write_text("STAGE MUTATED\n", encoding="utf-8")
+            return CascadeResult(
+                success=True,
+                stage_name=self.name,
+                changes_made=[finding.path],
+                validation_passed=False,
+                latency_ms=5,
+            )
+
+    bad = _MutateAndFailValidation()
     good = _AlwaysSucceed()
     good.tier = 2
     cascade = DeterministicCascade([bad, good])
     result = cascade.execute(_finding(), tmp_path, CascadeContext(log_file=log))
     assert result.success
     assert result.stage_name == "always-succeed"
-    assert bad.rolled_back
+    assert target.read_text(encoding="utf-8") == pre_attempt
 
 
 def test_cascade_orders_by_tier(tmp_path):
@@ -362,7 +385,33 @@ def test_linter_stage_attempt_returns_failure_when_not_resolved(tmp_path):
         ctx = CascadeContext(language="python", log_file=log)
         result = stage.attempt(_finding(), tmp_path, ctx)
         assert not result.success
-        assert result.error == "error output"
+        assert result.error == "command exited 1: error output"
+
+
+def test_linter_nonzero_exit_restores_and_does_not_verify(tmp_path):
+    from dataclasses import replace
+
+    target = tmp_path / "src" / "app.py"
+    target.parent.mkdir()
+    target.write_text("original\n")
+    finding = replace(_finding(rule="ruff-F401"), safe_to_autofix=True)
+    stage = default_linter_stages()[0]
+
+    def run(cmd, cwd, timeout):
+        assert cmd[-2:] == ["--", str(target)]
+        target.write_text("partial fix\n")
+        return 1, "rule remains"
+
+    with patch("shutil.which", return_value="/usr/bin/ruff"), patch(
+        "bluei.engine.cascade.run_capture", side_effect=run
+    ), patch("bluei.engine.verify.verify_fix_closed") as verify:
+        result = DeterministicCascade([stage]).execute(
+            finding, tmp_path, CascadeContext(language="python", log_file=tmp_path / "log")
+        )
+    assert not result.success
+    assert "command exited 1: rule remains" in result.error
+    assert target.read_text() == "original\n"
+    verify.assert_not_called()
 
 
 def test_linter_stage_rollback_runs_git_checkout(tmp_path):
@@ -1170,6 +1219,185 @@ def test_composite_attempt_exception_returns_failure(tmp_path):
     assert "store boom" in result.error
 
 
+def test_composite_scope_uses_precomputed_targets(tmp_path):
+    from types import SimpleNamespace
+    from bluei.engine.composite_pattern import CompositePattern, CompositePatternStep, CompositePatternStore
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / "target.py").write_text("old")
+    (worktree / "related.py").write_text("old")
+    store_path = tmp_path / "patterns.jsonl"
+    pattern = CompositePattern(
+        "p1", "example-rule", "python", confidence=0.9,
+        steps=[CompositePatternStep(1, "related", "old", "new", "related_file", "related.py")],
+    )
+    CompositePatternStore(store_path.with_name("composite_patterns.jsonl")).append(pattern)
+    stage = CompositePatternCascadeStage()
+    context = CascadeContext(pattern_store=SimpleNamespace(store_path=store_path))
+    assert DeterministicCascade()._stage_scope(stage, _finding("example-rule", "target.py"), worktree, context) == {"target.py", "related.py"}
+
+
+def test_autofix_no_learning_on_rejected_or_out_of_scope(tmp_path, monkeypatch):
+    from bluei.engine import lifecycle
+    from types import SimpleNamespace
+
+    target = tmp_path / "src/app.py"
+    target.parent.mkdir()
+    target.write_text("original")
+    extra = tmp_path / "extra.py"
+    extra.write_text("original extra")
+    learned = []
+    monkeypatch.setattr(
+        lifecycle, "_extract_fix_pattern",
+        lambda wt, f, src, store, log, detected_frameworks=None: learned.append(src),
+    )
+
+    class OutOfScopeRecipe:
+        def match(self, *args, **kwargs):
+            return SimpleNamespace(id="recipe")
+
+        def apply(self, recipe, file_path, worktree, finding=None):
+            file_path.write_text("fixed")
+            extra.write_text("unrelated")
+            return SimpleNamespace(success=True)
+
+    class RejectedRecipe:
+        def match(self, *args, **kwargs):
+            return SimpleNamespace(id="recipe")
+
+        def apply(self, recipe, file_path, worktree, finding=None):
+            file_path.write_text("fixed")
+            return SimpleNamespace(success=True)
+
+    monkeypatch.setattr(lifecycle, "_get_recipe_engine", lambda: OutOfScopeRecipe())
+    monkeypatch.setattr(lifecycle, "_tier_validate", lambda *args: True)
+    assert not lifecycle.apply_autofix(
+        tmp_path, _finding(), tmp_path / "log", pattern_store_path=tmp_path / "store.jsonl"
+    )
+    assert learned == []
+
+    monkeypatch.setattr(lifecycle, "_get_recipe_engine", lambda: RejectedRecipe())
+    monkeypatch.setattr(lifecycle, "_tier_validate", lambda *args: False)
+    assert not lifecycle.apply_autofix(
+        tmp_path, _finding(), tmp_path / "log", pattern_store_path=tmp_path / "store.jsonl"
+    )
+    assert learned == []
+
+    monkeypatch.setattr(lifecycle, "_tier_validate", lambda *args: True)
+    assert lifecycle.apply_autofix(
+        tmp_path, _finding(), tmp_path / "log", pattern_store_path=tmp_path / "store.jsonl"
+    )
+    assert learned == ["recipe"]
+
+
+def test_autofix_extraction_failure_restores_accepted_fix(tmp_path, monkeypatch):
+    from bluei.engine import lifecycle
+    from types import SimpleNamespace
+
+    target = tmp_path / "src/app.py"
+    target.parent.mkdir()
+    target.write_text("original")
+
+    class Recipe:
+        def match(self, *args, **kwargs):
+            return SimpleNamespace(id="recipe")
+
+        def apply(self, recipe, file_path, worktree, finding=None):
+            file_path.write_text("fixed")
+            return SimpleNamespace(success=True)
+
+    def raise_extract(*args, **kwargs):
+        raise OSError("extraction IO failure")
+
+    monkeypatch.setattr(lifecycle, "_get_recipe_engine", lambda: Recipe())
+    monkeypatch.setattr(lifecycle, "_tier_validate", lambda *args: True)
+    monkeypatch.setattr(lifecycle, "_extract_fix_pattern", raise_extract)
+    with pytest.raises(OSError, match="extraction IO failure"):
+        lifecycle.apply_autofix(tmp_path, _finding(), tmp_path / "log")
+    assert target.read_text() == "original"
+
+
+def test_lifecycle_fallback_only_after_clean_exhaustion(tmp_path, monkeypatch):
+    from bluei.engine import lifecycle
+    from bluei.engine.worktree_checkpoint import CheckpointError
+
+    target = tmp_path / "src/app.py"
+    target.parent.mkdir()
+    target.write_text("original")
+    calls = []
+    monkeypatch.setattr(lifecycle, "apply_claude_fix", lambda req: (calls.append(target.read_text()) or (0, "", "")))
+
+    class Fail(CascadeStage):
+        name = "fail"
+        def can_handle(self, finding, context):
+            return True
+        def attempt(self, finding, worktree, context):
+            target.write_text("partial")
+            return CascadeResult(False, self.name, error="failed")
+
+    monkeypatch.setattr("bluei.engine.cascade.default_cascade_stages", lambda: [Fail()])
+    assert lifecycle.apply_cascade_fix(tmp_path, _finding(), tmp_path / "log")
+    assert calls == ["original"]
+
+    def fail_capture(*args, **kwargs):
+        raise CheckpointError("unsupported")
+    monkeypatch.setattr("bluei.engine.worktree_checkpoint.capture_checkpoint", fail_capture)
+    with pytest.raises(CheckpointError, match="unsupported"):
+        lifecycle.apply_cascade_fix(tmp_path, _finding(), tmp_path / "log")
+    assert calls == ["original"]
+
+
+def test_autofix_failed_recipe_never_runs_legacy_on_partial_edit(tmp_path, monkeypatch):
+    from bluei.engine import lifecycle
+    from types import SimpleNamespace
+
+    target = tmp_path / "src/app.py"
+    target.parent.mkdir()
+    original = "queue = []\nqueue.pop(0)\n"
+    target.write_text(original)
+    finding = _finding(rule="perf-pop-front-loop")
+
+    class FailedRecipe:
+        def match(self, *args, **kwargs):
+            return SimpleNamespace(id="failed")
+
+        def apply(self, recipe, file_path, worktree, finding=None):
+            file_path.write_text("queue = []\nqueue.pop(0)\n# partial\n")
+            return SimpleNamespace(success=False, error="command failed")
+
+    monkeypatch.setattr(lifecycle, "_get_recipe_engine", lambda: FailedRecipe())
+    assert not lifecycle.apply_autofix(tmp_path, finding, tmp_path / "log")
+    assert target.read_text() == original
+
+
+def test_autofix_rejects_undeclared_changes(tmp_path, monkeypatch):
+    from bluei.engine import lifecycle
+    from types import SimpleNamespace
+
+    target = tmp_path / "src/app.py"
+    target.parent.mkdir()
+    target.write_text("original")
+    extra = tmp_path / "extra.py"
+    extra.write_text("original extra")
+
+    class Recipe:
+        def match(self, *args, **kwargs):
+            return SimpleNamespace(id="recipe")
+
+        def apply(self, recipe, file_path, worktree, finding=None):
+            file_path.write_text("fixed")
+            extra.write_text("unrelated")
+            return SimpleNamespace(success=True)
+
+    monkeypatch.setattr(lifecycle, "_get_recipe_engine", lambda: Recipe())
+    monkeypatch.setattr(lifecycle, "_tier_validate", lambda *args: True)
+    monkeypatch.setattr(lifecycle, "_extract_fix_pattern", lambda *args, **kwargs: None)
+    assert not lifecycle.apply_autofix(tmp_path, _finding(), tmp_path / "log")
+    assert target.read_text() == "original"
+    assert extra.read_text() == "original extra"
+
+
 # --- PROMPT-03: Ledger emission tests ---
 
 
@@ -1191,8 +1419,10 @@ class _AlwaysSucceedWithTelemetry(CascadeStage):
 
 
 def test_ledger_emit_on_cascade_success_both_destinations(tmp_path):
-    """(a) Successful cascade emits exactly one resolved_deterministic record
-    to BOTH the ledger_path file and ledger_records list."""
+    """(a) Successful cascade does NOT emit — success persistence is deferred
+    to the lifecycle tier (a tier rejection must never over-report). The
+    winning telemetry rides on the result; the caller emits to BOTH the
+    ledger_path file and ledger_records list after acceptance."""
     import json
 
     log = tmp_path / "log.txt"
@@ -1212,6 +1442,21 @@ def test_ledger_emit_on_cascade_success_both_destinations(tmp_path):
     assert result.success
     assert result.stage_name == "always-succeed"
 
+    # Deferred: nothing persisted by the cascade itself.
+    assert ledger_records == []
+    assert not ledger_path.exists()
+
+    # Telemetry needed for the deferred record is attached to the result.
+    assert result.telemetry is not None
+    assert result.telemetry.final_stage == "always-succeed"
+    assert result.telemetry.stages_tried == ["always-succeed"]
+    assert result.telemetry.success is True
+
+    # The caller (lifecycle tier acceptance) emits exactly one record to both
+    # destinations using that telemetry.
+    cascade._emit_ledger_record(
+        ctx, result.telemetry, outcome="resolved_deterministic"
+    )
     assert len(ledger_records) == 1
     record = ledger_records[0]
     assert record["outcome"] == "resolved_deterministic"
