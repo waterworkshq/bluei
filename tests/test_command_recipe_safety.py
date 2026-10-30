@@ -76,3 +76,19 @@ def test_real_ruff_verification_does_not_write_source_cache(tmp_path):
     assert result.success
     assert "import os" not in target.read_text()
     assert not (tmp_path / ".ruff_cache").exists()
+
+
+def test_ruff_formatter_does_not_create_out_of_scope_cache(tmp_path):
+    if shutil.which("ruff") is None:
+        pytest.skip("ruff is not installed")
+    from bluei.engine.cascade import CascadeContext, DeterministicCascade, default_linter_stages
+    from bluei.engine.models import Finding
+    (tmp_path / "setup.py").write_text("")
+    target = tmp_path / "target.py"
+    target.write_text("values = [" + ", ".join(str(number) for number in range(40)) + "]\n")
+    finding = Finding("line", str(tmp_path), "target.py", 1, "ruff-e501", "long line", 0.9, False, False)
+    result = DeterministicCascade([default_linter_stages()[1]]).execute(
+        finding, tmp_path, CascadeContext(log_file=tmp_path / "run.log", language="python"))
+    assert result.success
+    assert all(len(line) <= 88 for line in target.read_text().splitlines())
+    assert not (tmp_path / ".ruff_cache").exists()

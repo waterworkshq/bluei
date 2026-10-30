@@ -88,10 +88,12 @@ class ToolWrapperPlugin(DiscoveryPlugin):
         if tool == "npx":
             name = tool_args.pop(0) if tool_args else ""
             local = repo_path / "node_modules" / ".bin" / name
-            installed = str(local) if name and os.access(local, os.X_OK) else shutil.which(name)
-            if not name or not installed:
+            trusted_local = os.environ.get("BLUEI_TRUST_REPOSITORY_TOOLS") == "1"
+            installed = str(local) if trusted_local and name and os.access(local, os.X_OK) else shutil.which(name)
+            if (not name or not installed
+                    or (Path(installed).resolve().is_relative_to(repo_path.resolve()) and not trusted_local)):
                 self.last_tool_outcome = "tool-missing"
-                return None  # Never allow package installation during discovery.
+                return None  # Never install packages or trust repository executables implicitly.
             tool = installed
         elif not tool or not shutil.which(tool):
             self.last_tool_outcome = "tool-missing" if tool else None

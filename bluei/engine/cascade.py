@@ -638,7 +638,7 @@ def default_linter_stages() -> List[CascadeStage]:
         ),
         LinterFixStage(
             name="ruff-format",
-            command=["ruff", "format", "{file}"],
+            command=["ruff", "format", "--isolated", "--no-cache", "--", "{file}"],
             languages=["python"],
             applicable_rules={"ruff-e501"},
         ),

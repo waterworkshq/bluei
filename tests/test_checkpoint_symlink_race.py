@@ -282,3 +282,26 @@ def test_small_file_special_mode_is_applied_after_buffer_flush(tmp_path):
     assert target.read_bytes() == b"small original content"
     assert stat.S_IMODE(target.stat().st_mode) == 0o4755
     wt.discard_checkpoint(cp)
+
+
+def test_comparison_rechecks_file_kind_after_scan(tmp_path, monkeypatch):
+    root = tmp_path / "wt"
+    root.mkdir()
+    target = root / "file"
+    target.write_text("original")
+    outside = tmp_path / "outside"
+    outside.write_text("original")
+    cp = capture_checkpoint(root, tmp_path / "backups")
+    real_match = wt._matches_snapshot
+    fired = []
+    def swap_before_comparison(snapshot, rel, entry, path):
+        if rel == "file" and not fired:
+            fired.append(True)
+            target.unlink()
+            target.symlink_to(outside)
+        return real_match(snapshot, rel, entry, path)
+    monkeypatch.setattr(wt, "_matches_snapshot", swap_before_comparison)
+    restore_checkpoint(cp)
+    assert fired and not target.is_symlink()
+    assert target.read_text() == outside.read_text() == "original"
+    wt.discard_checkpoint(cp)

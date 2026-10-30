@@ -213,16 +213,26 @@ def _matches_snapshot(cp: WorktreeCheckpoint, rel: str, entry: _Entry, path: Pat
     old = cp.entries.get(rel)
     if old is None or old.kind != entry.kind:
         return False
+    current_stat = path.lstat()
     if entry.kind == "symlink":
-        return old.target == entry.target
+        return stat.S_ISLNK(current_stat.st_mode) and old.target == os.readlink(path)
     if entry.kind == "dir":
-        return old.mode == entry.mode
-    if old.mode != entry.mode:
+        return stat.S_ISDIR(current_stat.st_mode) and old.mode == stat.S_IMODE(current_stat.st_mode)
+    if not stat.S_ISREG(current_stat.st_mode) or old.mode != stat.S_IMODE(current_stat.st_mode):
         return False
     backup = cp._backup_for(rel)
-    if path.stat().st_size != backup.stat().st_size:
+    if current_stat.st_size != backup.stat().st_size:
         return False
-    with path.open("rb") as current, backup.open("rb") as original:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOENT):
+            return False
+        raise
+    with os.fdopen(fd, "rb") as current, backup.open("rb") as original:
+        opened = os.fstat(current.fileno())
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (current_stat.st_dev, current_stat.st_ino):
+            return False
         while True:
             block = current.read(1024 * 1024)
             if block != original.read(1024 * 1024):

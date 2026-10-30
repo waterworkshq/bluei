@@ -307,7 +307,7 @@ bluei duster <project-name>
 bluei duster my-app
 ```
 
-Each detector reports `ran`, `skipped`, `unavailable`, or `failed` with its count and reason. Missing tools, interrupted execution, and scans where no detector ran are incomplete, not clean zero-finding results. Partial findings remain visible, but incomplete scans do not improve health or verify existing issues as resolved. Discovery does not install missing tools or generate coverage by executing project tests.
+Each detector reports `ran`, `skipped`, `unavailable`, or `failed` with its count and reason. Missing tools, interrupted execution, and scans where no detector ran are incomplete, not clean zero-finding results. Partial findings remain visible, but incomplete scans do not improve health or verify existing issues as resolved. Discovery does not install missing tools or generate coverage by executing project tests. Repository-local tool executables are not trusted automatically: use externally installed tools, or explicitly set `BLUEI_TRUST_REPOSITORY_TOOLS=1` only for a repository whose executable dependencies you trust. This opt-in runs repository-controlled code; it is not a sandbox.
 
 **Exit codes:** `0` (completed scan), `1` (incomplete scan, error, or missing project name)
 

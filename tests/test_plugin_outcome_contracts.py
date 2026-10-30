@@ -39,6 +39,9 @@ def test_npx_wrapper_uses_already_installed_local_tool_without_installing(tmp_pa
             return []
     plugin = LocalPlugin({"id": "local-xo", "languages": ["javascript"],
                           "discovery": {"tool": "npx", "tool_args": ["xo", "--reporter=json"]}})
+    assert plugin._run_tool(tmp_path) is None
+    assert plugin.last_tool_outcome == "tool-missing"
+    monkeypatch.setenv("BLUEI_TRUST_REPOSITORY_TOOLS", "1")
     assert plugin._run_tool(tmp_path) == "[]"
     assert plugin.last_tool_outcome == "tool-ran"
     local.unlink()
