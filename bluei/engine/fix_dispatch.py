@@ -55,8 +55,16 @@ def _try_autofix(
     pattern_store_path: Optional[Path] = None,
     detected_frameworks: Optional[list] = None,
 ) -> bool:
-    """Try deterministic autofix. Returns True if applied."""
+    """Try deterministic autofix. Returns True if applied.
+
+    Checkpoint errors propagate: the worktree is in an unsafe, unrestorable
+    state and no fallback method may run on top of it.
+    """
     from bluei.engine.lifecycle import apply_autofix
+    from bluei.engine.worktree_checkpoint import (
+        CheckpointError,
+        CheckpointRestoreError,
+    )
 
     try:
         return apply_autofix(
@@ -66,6 +74,8 @@ def _try_autofix(
             pattern_store_path=pattern_store_path,
             detected_frameworks=detected_frameworks,
         )
+    except (CheckpointError, CheckpointRestoreError):
+        raise
     except Exception as exc:
         _logger.debug("autofix failed for %s: %s", finding.finding_id, exc)
         return False
@@ -156,8 +166,16 @@ def _try_cascade_fix(
     pattern_store_path: Optional[Path] = None,
     deterministic_only: bool = False,
 ) -> bool:
-    """Try cascade fix. Returns True if applied."""
+    """Try cascade fix. Returns True if applied.
+
+    Checkpoint errors propagate: the worktree is in an unsafe, unrestorable
+    state and no fallback method may run on top of it.
+    """
     from bluei.engine.lifecycle import apply_cascade_fix
+    from bluei.engine.worktree_checkpoint import (
+        CheckpointError,
+        CheckpointRestoreError,
+    )
 
     try:
         return apply_cascade_fix(
@@ -167,6 +185,8 @@ def _try_cascade_fix(
             pattern_store_path=pattern_store_path,
             deterministic_only=deterministic_only,
         )
+    except (CheckpointError, CheckpointRestoreError):
+        raise
     except Exception as exc:
         _logger.debug("cascade fix failed for %s: %s", finding.finding_id, exc)
         return False

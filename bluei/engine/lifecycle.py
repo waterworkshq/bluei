@@ -614,12 +614,15 @@ def _transactional_autofix(func):
                     worktree_path, finding, source, pattern_store_path, log_file,
                     detected_frameworks=detected_frameworks,
                 )
-            except Exception:
+            except BaseException:
                 _restore_and_release()
                 raise
             discard_checkpoint(checkpoint)
             return True
-        except Exception:
+        except BaseException:
+            # Includes KeyboardInterrupt/SystemExit: restore unless already
+            # restored or the failed restore retained its backup. Bare raise
+            # keeps the original exception.
             if not restored and not checkpoint.retained:
                 _restore_and_release()
             raise
@@ -920,7 +923,9 @@ def apply_cascade_fix(
     cascade = DeterministicCascade(default_cascade_stages())
     try:
         result = cascade.execute(finding, worktree_path, context)
-    except Exception:
+    except BaseException:
+        # Includes KeyboardInterrupt/SystemExit: restore unless the failed
+        # restore already retained its backup. Bare raise keeps the original.
         if not checkpoint.retained:
             restore_checkpoint(checkpoint)
             discard_checkpoint(checkpoint)
@@ -965,7 +970,7 @@ def apply_cascade_fix(
         try:
             tier = resolve_tier(finding)
             accepted = _tier_validate(tier, worktree_path, finding, log_file)
-        except Exception:
+        except BaseException:
             restore_checkpoint(checkpoint)
             _discard_checkpoint()
             raise
@@ -997,7 +1002,7 @@ def apply_cascade_fix(
                 worktree_path, finding, result.stage_name, pattern_store_path,
                 log_file, detected_frameworks=detected_frameworks,
             )
-        except Exception:
+        except BaseException:
             restore_checkpoint(checkpoint)
             _discard_checkpoint()
             raise

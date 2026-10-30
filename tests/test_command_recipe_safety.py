@@ -59,3 +59,20 @@ def test_shipped_ruff_recipe_only_fixes_selected_safe_rule(tmp_path):
     assert "print(missing_name)" in target.read_text()
     assert "--unsafe-fixes" not in recipe.replacement.command
     assert "--no-unsafe-fixes" in recipe.replacement.command
+
+
+def test_real_ruff_verification_does_not_write_source_cache(tmp_path):
+    if shutil.which("ruff") is None:
+        pytest.skip("ruff is not installed")
+    from bluei.engine.cascade import CascadeContext, DeterministicCascade, default_linter_stages
+    from bluei.engine.models import Finding
+    from bluei.engine.worktree_checkpoint import changed_paths, capture_checkpoint, discard_checkpoint
+    (tmp_path / "setup.py").write_text("")
+    target = tmp_path / "target.py"
+    target.write_text("import os\nprint('ready')\n")
+    finding = Finding("f401", str(tmp_path), "target.py", 1, "ruff-F401", "unused os", 0.9, True, True)
+    result = DeterministicCascade([default_linter_stages()[0]]).execute(
+        finding, tmp_path, CascadeContext(log_file=tmp_path / "run.log", language="python"))
+    assert result.success
+    assert "import os" not in target.read_text()
+    assert not (tmp_path / ".ruff_cache").exists()

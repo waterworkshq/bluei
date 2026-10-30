@@ -459,6 +459,33 @@ def test_hardlinked_files_rejected_without_changes(tmp_path, bk):
     assert list(bk.iterdir()) == []
 
 
+def test_noop_restore_preserves_inode_and_mtime(tmp_path, bk):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    (repo / ".gitignore").write_text("ignored.txt\n")
+    (repo / "tracked.py").write_text("v1\n")
+    (repo / "ignored.txt").write_text("noise\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "init")
+    cp = capture_checkpoint(repo, bk)
+    tracked = repo / "tracked.py"
+    ignored = repo / "ignored.txt"
+    snapshot = {p: (p.stat().st_ino, p.stat().st_mtime_ns) for p in (tracked, ignored)}
+
+    restore_checkpoint(cp)  # nothing changed: no rewrites
+    assert (tracked.stat().st_ino, tracked.stat().st_mtime_ns) == snapshot[tracked]
+    assert (ignored.stat().st_ino, ignored.stat().st_mtime_ns) == snapshot[ignored]
+    assert changed_paths(cp) == set()
+
+    # A changed sibling must be restored while the untouched file stays in place.
+    tracked.write_text("changed\n")
+    restore_checkpoint(cp)
+    assert tracked.read_text() == "v1\n"
+    assert (ignored.stat().st_ino, ignored.stat().st_mtime_ns) == snapshot[ignored]
+    discard_checkpoint(cp)
+
+
 def test_restore_special_file_fails_without_deleting_it(tmp_path, bk):
     wt = tmp_path / "wt"
     wt.mkdir()

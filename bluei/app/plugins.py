@@ -78,6 +78,8 @@ class ToolWrapperPlugin(DiscoveryPlugin):
         if not tool or not shutil.which(tool):
             return None
         cmd = [tool] + self.tool_args + (extra_args or [])
+        if tool == "ruff" and "--no-cache" not in cmd:
+            cmd.insert(2, "--no-cache")
         try:
             result = subprocess.run(
                 cmd,

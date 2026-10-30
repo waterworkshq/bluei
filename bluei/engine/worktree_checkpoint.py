@@ -195,6 +195,17 @@ def capture_checkpoint(root: Path, backup_root: Path, *, exclude_paths: Iterable
         raise CheckpointError(f"checkpoint capture failed: {exc}") from exc
 
 
+def _matches_snapshot(cp: WorktreeCheckpoint, rel: str, entry: _Entry, path: Path) -> bool:
+    old = cp.entries.get(rel)
+    if old is None or old.kind != entry.kind:
+        return False
+    if entry.kind == "symlink":
+        return old.target == entry.target
+    if entry.kind == "dir":
+        return old.mode == entry.mode
+    return old.mode == entry.mode and path.read_bytes() == cp._backup_for(rel).read_bytes()
+
+
 def restore_checkpoint(cp: WorktreeCheckpoint) -> None:
     """Restore without traversing replacement symlinks or deleting excluded data."""
     try:
@@ -203,25 +214,32 @@ def restore_checkpoint(cp: WorktreeCheckpoint) -> None:
         if identity != cp.git_identity or index != cp.index_target:
             raise CheckpointError("root Git metadata changed")
         # Scan before modifying anything: special files and nested repos fail-stop.
-        current = {rel: entry for rel, _, entry in _walk(cp.root, cp.exclude_paths)}
+        scanned = list(_walk(cp.root, cp.exclude_paths))
+        current = {rel: entry for rel, _, entry in scanned}
+        # Unchanged entries (same kind, mode, bytes/link target) are left untouched.
+        kept = {rel for rel, p, entry in scanned if _matches_snapshot(cp, rel, entry, p)}
         # Delete bottom-up, never recursively: excluded children prevent rmdir.
         for rel in sorted(current, key=lambda r: len(Path(r).parts), reverse=True):
-            entry = current[rel]
-            old = cp.entries.get(rel)
-            if old is not None and old.kind == entry.kind and entry.kind == "dir":
+            if rel in kept:
                 continue
+            entry = current[rel]
             path = cp.root / rel
             if entry.kind == "dir":
+                previous = cp.entries.get(rel)
+                if previous is not None and previous.kind == "dir":
+                    continue
                 try:
                     path.rmdir()
                 except OSError as exc:
                     # A new directory containing excluded paths must remain.
-                    if exc.errno in (errno.ENOTEMPTY, errno.EEXIST) and old is None and any(Path(x).is_relative_to(path) for x in cp.exclude_paths):
+                    if exc.errno in (errno.ENOTEMPTY, errno.EEXIST) and cp.entries.get(rel) is None and any(Path(x).is_relative_to(path) for x in cp.exclude_paths):
                         continue
                     raise
             else:
                 path.unlink()
         for rel, entry in sorted(cp.entries.items(), key=lambda item: len(Path(item[0]).parts)):
+            if rel in kept:
+                continue
             dest = cp.root / rel
             if entry.kind == "dir":
                 dest.mkdir(exist_ok=True)
@@ -231,7 +249,7 @@ def restore_checkpoint(cp: WorktreeCheckpoint) -> None:
                 shutil.copyfile(cp._backup_for(rel), dest)
                 os.chmod(dest, entry.mode)
         for rel, entry in sorted(cp.entries.items(), key=lambda item: len(Path(item[0]).parts), reverse=True):
-            if entry.kind == "dir":
+            if entry.kind == "dir" and rel not in kept:
                 os.chmod(cp.root / rel, entry.mode)
         os.chmod(cp.root, cp.root_mode)
         if index is not None:
