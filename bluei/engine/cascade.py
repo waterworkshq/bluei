@@ -6,7 +6,11 @@ cheaper stages fail. Saves roughly 65% of LLM calls on typical repos.
 """
 
 import logging
+import os
+import re
 import shutil
+import subprocess
+import tempfile
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -21,6 +25,38 @@ from bluei.engine.jsonl import append_jsonl
 from bluei.engine.models import Finding, now_iso
 from bluei.engine.state import _append_text
 from bluei.engine.utils import run_capture
+from bluei.engine.worktree_checkpoint import (
+    CheckpointError,
+    CheckpointRestoreError,
+    WorktreeCheckpoint,
+    capture_checkpoint,
+    changed_paths,
+    discard_checkpoint,
+    restore_checkpoint,
+)
+
+# Verbatim ruff selector as emitted by the discovery plugins ("ruff-F401" → "F401").
+# Casing is respected (no transformation): anything the core/plugins do not
+# produce in this exact shape is malformed and must be declined, never run
+# unscoped.
+_RUFF_RULE_RE = re.compile(r"^ruff-([A-Za-z]+[0-9]{3,})$")
+
+
+def ruff_rule_code(rule: str) -> Optional[str]:
+    """Return the ruff selector for a plugin-emitted rule id, or None if malformed."""
+    m = _RUFF_RULE_RE.match(rule or "")
+    return m.group(1).upper() if m else None
+
+
+def default_checkpoint_dir() -> Path:
+    """Backup root for cascade-created checkpoints; always outside the worktree."""
+    env = os.environ.get("BLUEI_CHECKPOINT_DIR")
+    if env:
+        return Path(env)
+    workspace = os.environ.get("QA_AGENT_WORKSPACE")
+    if workspace:
+        return Path(workspace) / "state" / "checkpoints"
+    return Path(tempfile.gettempdir()) / "bluei-checkpoints"
 
 
 @dataclass
@@ -34,6 +70,9 @@ class CascadeResult:
     pattern_id: Optional[str] = None
     latency_ms: int = 0
     error: Optional[str] = None
+    # Telemetry for the winning run; set on cascade-level success so the
+    # lifecycle tier can emit the ledger record AFTER its own validation.
+    telemetry: Optional["CascadeTelemetry"] = None
 
 
 @dataclass
@@ -90,6 +129,12 @@ class CascadeContext:
     # standalone mainline replay) — the pattern stage excludes them so one
     # finding yields at most one attempt and one recorded outcome per pattern.
     attempted_pattern_ids: Optional[set] = None
+    # Caller-owned checkpoint spanning the cascade AND the lifecycle tier
+    # validation that follows; execute() restores it on every failed stage but
+    # never discards it — the owner decides after its tier gate.
+    checkpoint: Optional[WorktreeCheckpoint] = None
+    # Backup root when execute() must create its own checkpoint (direct callers).
+    checkpoint_dir: Optional[Path] = None
 
 
 class CascadeStage(ABC):
@@ -141,14 +186,28 @@ class DeterministicCascade:
     ) -> CascadeResult:
         """Run each applicable stage in tier order; first validated success wins.
 
+        Transactional: a worktree checkpoint is captured before the first stage
+        attempt. Every failed stage, stage exception/timeout, validation failure
+        and out-of-scope edit restores the exact pre-attempt worktree state
+        (bytes, modes, symlinks, staged/untracked/ignored files, git index).
+        A failed restore raises CheckpointRestoreError (backup retained) — the
+        caller must halt; no further stage and no LLM fallback runs.
+
+        The resolved_deterministic ledger record is NOT emitted here: success
+        is provisional until the lifecycle tier validation accepts it. The
+        winning telemetry rides on CascadeResult.telemetry; the caller emits
+        after acceptance (or records an honest exhausted outcome on rejection).
+
         Args:
             finding: The lint/analysis finding to fix.
             worktree: Git worktree where edits are applied.
             context: Shared cascade configuration and services.
 
         Returns:
-            CascadeResult from the first successful stage, or an
-            "cascade_exhausted" failure if no stage resolved the finding.
+            CascadeResult from the first successful stage, or cascade_exhausted
+            after all failed stages have been restored. The caller may then use
+            its normal LLM fallback. Checkpoint capture and restore errors raise;
+            they must never be treated as clean exhaustion or permit fallback.
         """
         telemetry = CascadeTelemetry(
             finding_id=finding.finding_id or "",
@@ -156,31 +215,89 @@ class DeterministicCascade:
         )
         attempts = 0
         t0 = time.monotonic()
+        checkpoint: Optional[WorktreeCheckpoint] = None
+        owned_checkpoint = False
+        accepted = False
 
-        for stage in self._stages:
-            if attempts >= context.max_stages:
+        try:
+            for stage in self._stages:
+                if attempts >= context.max_stages:
+                    _append_text(
+                        context.log_file,
+                        f"cascade: max_stages={context.max_stages} reached, stopping",
+                    )
+                    break
+
+                try:
+                    handled = stage.can_handle(finding, context)
+                except Exception as exc:
+                    _append_text(
+                        context.log_file,
+                        f"cascade: stage={stage.name} can_handle error={exc}",
+                    )
+                    telemetry.stages_skipped.append(stage.name)
+                    continue
+                if not handled:
+                    telemetry.stages_skipped.append(stage.name)
+                    continue
+
+                if checkpoint is None:
+                    try:
+                        checkpoint, owned_checkpoint = self._ensure_checkpoint(
+                            worktree, context
+                        )
+                    except CheckpointError as exc:
+                        _append_text(context.log_file, f"cascade: checkpoint failed: {exc}")
+                        raise
+
                 _append_text(
                     context.log_file,
-                    f"cascade: max_stages={context.max_stages} reached, stopping",
+                    f"cascade: trying stage={stage.name} finding_id={finding.finding_id} rule={finding.rule}",
                 )
-                break
 
-            if not stage.can_handle(finding, context):
-                telemetry.stages_skipped.append(stage.name)
-                continue
+                telemetry.stages_tried.append(stage.name)
+                try:
+                    allowed = self._stage_scope(stage, finding, worktree, context)
+                    result = stage.attempt(finding, worktree, context)
+                except Exception as exc:  # incl. subprocess.TimeoutExpired
+                    result = CascadeResult(
+                        success=False,
+                        stage_name=stage.name,
+                        latency_ms=int((time.monotonic() - t0) * 1000),
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
 
-            _append_text(
-                context.log_file,
-                f"cascade: trying stage={stage.name} finding_id={finding.finding_id} rule={finding.rule}",
-            )
+                if result.success and result.validation_passed:
+                    try:
+                        out_of_scope = self._out_of_scope_edits(worktree, allowed, checkpoint)
+                    except Exception:
+                        self._restore_or_stop(context, checkpoint, stage.name)
+                        raise
+                    if out_of_scope is not None:
+                        _append_text(
+                            context.log_file,
+                            f"cascade: stage={stage.name} out_of_scope_edits={sorted(out_of_scope)} — restoring",
+                        )
+                        telemetry.stages_failed.append(
+                            {"stage": stage.name, "reason": "out_of_scope_edits"}
+                        )
+                        self._restore_or_stop(context, checkpoint, stage.name)
+                        attempts += 1
+                        continue
+                    telemetry.final_stage = stage.name
+                    telemetry.success = True
+                    telemetry.total_latency_ms = int((time.monotonic() - t0) * 1000)
+                    result.telemetry = telemetry
+                    _append_text(
+                        context.log_file, f"cascade: stage={stage.name} succeeded"
+                    )
+                    self._write_telemetry(context, telemetry)
+                    # Ledger record deferred: the lifecycle tier must accept
+                    # before success is persisted (result.telemetry carries it).
+                    accepted = True
+                    return result
 
-            telemetry.stages_tried.append(stage.name)
-            result = stage.attempt(finding, worktree, context)
-
-            if result.success:
-                if not result.validation_passed:
-                    stage.rollback(finding, worktree)
-                    result.success = False
+                if result.success and not result.validation_passed:
                     telemetry.stages_failed.append(
                         {"stage": stage.name, "reason": "validation_failed"}
                     )
@@ -189,48 +306,136 @@ class DeterministicCascade:
                         f"cascade: stage={stage.name} validation_failed",
                     )
                 else:
-                    telemetry.final_stage = stage.name
-                    telemetry.success = True
-                    telemetry.total_latency_ms = int((time.monotonic() - t0) * 1000)
+                    telemetry.stages_failed.append(
+                        {
+                            "stage": stage.name,
+                            "reason": result.error or "unknown",
+                        }
+                    )
                     _append_text(
-                        context.log_file, f"cascade: stage={stage.name} succeeded"
+                        context.log_file,
+                        f"cascade: stage={stage.name} failed error={result.error}",
                     )
-                    self._write_telemetry(context, telemetry)
-                    self._emit_ledger_record(
-                        context, telemetry, outcome="resolved_deterministic"
+                # Transactional rollback: restore exact pre-attempt state. The
+                # old per-stage git-checkout rollback is NOT used here — it
+                # would destroy pre-existing unstaged/staged worktree state.
+                self._restore_or_stop(context, checkpoint, stage.name)
+                attempts += 1
+
+            telemetry.total_latency_ms = int((time.monotonic() - t0) * 1000)
+            telemetry.final_stage = "cascade_exhausted"
+            _append_text(
+                context.log_file,
+                f"cascade: all stages exhausted finding_id={finding.finding_id} attempts={attempts}",
+            )
+            self._write_telemetry(context, telemetry)
+
+            return CascadeResult(
+                success=False,
+                stage_name="cascade_exhausted",
+                changes_made=[],
+                validation_passed=False,
+                pattern_id=None,
+                latency_ms=telemetry.total_latency_ms,
+                error=f"cascade exhausted after {len(telemetry.stages_tried)} stages: " + "; ".join(f"{x['stage']}: {x['reason']}" for x in telemetry.stages_failed),
+            )
+        except BaseException:
+            # Logging, scope checks, and telemetry can fail after a stage edits
+            # files. Restore before releasing even a directly owned backup.
+            # A failed restore retains its evidence and must not be retried here.
+            if checkpoint is not None and not accepted and not checkpoint.retained:
+                restore_checkpoint(checkpoint)
+            raise
+        finally:
+            if checkpoint is not None and owned_checkpoint:
+                # Self-created checkpoint: nothing outside execute() will tier-
+                # validate, so the backup is no longer needed (worktree is
+                # either restored or holds the accepted winning fix).
+                try:
+                    discard_checkpoint(checkpoint)
+                except OSError as exc:
+                    _logger.warning(
+                        "checkpoint cleanup failed for %s: %s",
+                        checkpoint.backup_dir,
+                        exc,
                     )
-                    return result
-            else:
-                telemetry.stages_failed.append(
-                    {
-                        "stage": stage.name,
-                        "reason": result.error or "unknown",
-                    }
-                )
-                _append_text(
-                    context.log_file,
-                    f"cascade: stage={stage.name} failed error={result.error}",
-                )
 
-            attempts += 1
-
-        telemetry.total_latency_ms = int((time.monotonic() - t0) * 1000)
-        telemetry.final_stage = "cascade_exhausted"
-        _append_text(
-            context.log_file,
-            f"cascade: all stages exhausted finding_id={finding.finding_id} attempts={attempts}",
+    def _ensure_checkpoint(
+        self, worktree: Path, context: CascadeContext
+    ) -> tuple:
+        """Return (checkpoint, owned). Uses the caller's checkpoint when given."""
+        if context.checkpoint is not None:
+            return context.checkpoint, False
+        exclude = [context.log_file]
+        if context.ledger_path is not None:
+            exclude.append(context.ledger_path)
+        cp = capture_checkpoint(
+            worktree,
+            context.checkpoint_dir or default_checkpoint_dir(),
+            exclude_paths=exclude,
         )
-        self._write_telemetry(context, telemetry)
+        return cp, True
 
-        return CascadeResult(
-            success=False,
-            stage_name="cascade_exhausted",
-            changes_made=[],
-            validation_passed=False,
-            pattern_id=None,
-            latency_ms=telemetry.total_latency_ms,
-            error=f"cascade exhausted after {len(telemetry.stages_tried)} stages",
-        )
+    def _restore_or_stop(
+        self,
+        context: CascadeContext,
+        checkpoint: Optional[WorktreeCheckpoint],
+        stage_name: str,
+    ) -> None:
+        """Restore the pre-attempt worktree; a failed restore halts everything."""
+        if checkpoint is None:
+            return
+        try:
+            restore_checkpoint(checkpoint)
+        except CheckpointRestoreError as exc:
+            _append_text(
+                context.log_file,
+                f"cascade: RESTORE FAILED stage={stage_name} error={exc} — halting, backup retained",
+            )
+            raise
+
+    def _stage_scope(self, stage, finding, worktree, context) -> Set[str]:
+        """Resolve authorized targets before the stage can mutate the tree."""
+        root = Path(worktree).resolve()
+        def normalize(path):
+            path = Path(path)
+            if not path.is_absolute():
+                path = root / path
+            return path.resolve().relative_to(root).as_posix()
+
+        allowed = {normalize(finding.path)}
+        if isinstance(stage, CompositePatternCascadeStage):
+            from bluei.engine.composite_pattern import CompositePatternApplier, CompositePatternStore
+            store = CompositePatternStore(context.pattern_store.store_path.with_name("composite_patterns.jsonl"))
+            pattern = store.lookup(finding.rule)
+            if pattern is None:
+                raise ValueError("composite pattern disappeared")
+            applier = CompositePatternApplier()
+            for step in pattern.steps:
+                target = applier._resolve_target(step, finding.path, worktree)
+                if target is None:
+                    raise ValueError("composite target not found")
+                allowed.add(normalize(target))
+        return allowed
+
+    def _out_of_scope_edits(self, worktree, allowed, checkpoint):
+        if checkpoint is None:
+            raise RuntimeError("missing checkpoint")
+        changed = changed_paths(checkpoint)
+        index = checkpoint.index_target
+        if index is not None:
+            if checkpoint.index_backup is None:
+                if index.exists():
+                    changed.add("<git-index>")
+            elif not index.is_file() or index.read_bytes() != checkpoint.index_backup.read_bytes():
+                changed.add("<git-index>")
+        # Creating the declared target may also create its parent directories.
+        for path in tuple(allowed):
+            allowed.update(
+                p.as_posix() for p in Path(path).parents
+                if p.as_posix() != "." and p.as_posix() not in checkpoint.entries
+            )
+        return changed - allowed or None
 
     def _write_telemetry(
         self, context: CascadeContext, telemetry: CascadeTelemetry
@@ -291,17 +496,22 @@ class LinterFixStage(CascadeStage):
         applicable_rules: Optional[Set[str]] = None,
         tier: int = 1,
         unsafe_fixes: bool = False,
+        rule_scoped: bool = False,
     ):
         """
         Args:
             name: Human-readable stage identifier.
             command: Shell command template; ``"{file}"`` is replaced with the
-                target file path.
+                target file path and, when ``rule_scoped``, ``"{rule}"`` with
+                the finding's ruff selector.
             languages: Languages this stage applies to (case-insensitive).
             applicable_rules: Optional rule patterns (fnmatch-globbed) this
                 stage handles. ``None`` means all rules.
             tier: Priority tier (lower = tried earlier).
             unsafe_fixes: Whether to keep ``--unsafe-fixes`` in the command.
+            rule_scoped: Substitute the finding's validated ruff rule into
+                ``"{rule}"``. Findings without a well-formed ruff selector are
+                declined — there is no unscoped fallback.
         """
         self.name = name
         self.tier = tier
@@ -311,10 +521,13 @@ class LinterFixStage(CascadeStage):
         self.languages = [l.lower() for l in languages]
         self.applicable_rules = applicable_rules
         self.unsafe_fixes = unsafe_fixes
+        self.rule_scoped = rule_scoped
 
     def can_handle(self, finding: Finding, context: CascadeContext) -> bool:
         """Check language match, rule applicability, and that the binary exists on PATH."""
         if context.language.lower() not in self.languages:
+            return False
+        if self.rule_scoped and (not finding.safe_to_autofix or ruff_rule_code(finding.rule) is None):
             return False
         if (
             self.applicable_rules is not None
@@ -342,9 +555,39 @@ class LinterFixStage(CascadeStage):
             )
 
         cmd = [str(file_path) if a == "{file}" else a for a in self.command]
+        if self.rule_scoped:
+            if not finding.safe_to_autofix:
+                return CascadeResult(False, self.name, error="finding is not autofixable")
+            rule_code = ruff_rule_code(finding.rule)
+            if rule_code is None:
+                # Malformed/unsupported rule selection: decline. Running the
+                # fixer without --select would clean unrelated diagnostics.
+                return CascadeResult(
+                    success=False,
+                    stage_name=self.name,
+                    latency_ms=int((time.monotonic() - t0) * 1000),
+                    error=f"unsupported rule selection: {finding.rule!r}",
+                )
+            cmd = [rule_code if a == "{rule}" else a for a in cmd]
         if not self.unsafe_fixes:
             cmd = [a for a in cmd if a != "--unsafe-fixes"]
-        rc, output = run_capture(cmd, cwd=worktree, timeout=60)
+        try:
+            rc, output = run_capture(cmd, cwd=worktree, timeout=60)
+        except subprocess.TimeoutExpired:
+            return CascadeResult(
+                success=False,
+                stage_name=self.name,
+                latency_ms=int((time.monotonic() - t0) * 1000),
+                error="timeout after 60s",
+            )
+
+        if rc != 0:
+            return CascadeResult(
+                success=False,
+                stage_name=self.name,
+                latency_ms=int((time.monotonic() - t0) * 1000),
+                error=f"command exited {rc}: {output[:200]}",
+            )
 
         from bluei.engine.verify import verify_fix_closed
 
@@ -376,10 +619,22 @@ def default_linter_stages() -> List[CascadeStage]:
     return [
         LinterFixStage(
             name="ruff-fix",
-            command=["ruff", "check", "--fix", "--unsafe-fixes", "{file}"],
+            command=[
+                "ruff",
+                "check",
+                "--fix",
+                "--isolated",
+                "--no-cache",
+                "--no-unsafe-fixes",
+                "--select",
+                "{rule}",
+                "--",
+                "{file}",
+            ],
             languages=["python"],
             applicable_rules={"ruff-*"},
-            unsafe_fixes=True,
+            unsafe_fixes=False,
+            rule_scoped=True,
         ),
         LinterFixStage(
             name="ruff-format",

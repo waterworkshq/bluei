@@ -172,7 +172,12 @@ class CommandHandler(RecipeHandler):
 
         rule_code = ""
         if finding and hasattr(finding, "rule") and finding.rule.startswith("ruff-"):
-            rule_code = finding.rule.replace("ruff-", "", 1)
+            rule_code = finding.rule.removeprefix("ruff-").upper()
+        if any("{rule_code}" in arg for arg in recipe.replacement.command):
+            if not re.fullmatch(r"[A-Z]{1,4}[0-9]{3,4}", rule_code):
+                return RecipeFixResult(success=False, error="invalid Ruff rule selector", recipe_id=recipe.id, method="command")
+            if not getattr(finding, "safe_to_autofix", False):
+                return RecipeFixResult(success=False, error="finding has no safe automatic fix", recipe_id=recipe.id, method="command")
 
         cmd = [
             arg.replace("{file}", str(file_path)).replace("{rule_code}", rule_code)
@@ -191,6 +196,9 @@ class CommandHandler(RecipeHandler):
             return RecipeFixResult(success=False, error=f"command not found: {cmd[0]}", recipe_id=recipe.id, method="command")
         except subprocess.TimeoutExpired:
             return RecipeFixResult(success=False, error=f"command timed out: {cmd[0]}", recipe_id=recipe.id, method="command")
+
+        if res.returncode != 0:
+            return RecipeFixResult(success=False, error=f"command failed (rc={res.returncode}): {res.stderr[:200]}", recipe_id=recipe.id, method="command")
 
         content_after = file_path.read_text(encoding="utf-8") if file_path.exists() else ""
         file_changed = content_before != content_after
