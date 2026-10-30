@@ -103,7 +103,15 @@ class Plugin(ToolWrapperPlugin):
             rule = self._RUFF_RULE_MAP.get(code, f"ruff-{code}")
             loc = item.get("location", {})
             line = loc.get("row", 1)
-            path = item.get("path", "")
+            raw_path = item.get("filename") or item.get("path")
+            if not isinstance(raw_path, str) or not raw_path:
+                continue
+            try:
+                path = str((repo_path / raw_path).resolve().relative_to(repo_path.resolve()))
+            except (ValueError, OSError, RuntimeError):
+                continue
+            if path == ".":
+                continue
             message = item.get("message", "")
             findings.append(
                 Finding(

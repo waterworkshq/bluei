@@ -369,7 +369,10 @@ def verify_fix_closed(
     docs_index_file: Path = DEFAULT_DOCS_INDEX,
     discover_fn: Any = None,
 ) -> bool:
-    """Re-scan the worktree and confirm the finding no longer fires.
+    """Re-scan the worktree and require the rule to be absent from the file.
+
+    Line numbers and finding IDs can change after unrelated edits, so closure
+    is conservative when another instance of the same rule remains in the file.
 
     Args:
         worktree_path: Path to the worktree to re-scan.
@@ -396,7 +399,6 @@ def verify_fix_closed(
             or (
                 f.rule == finding.rule
                 and f.path == finding.path
-                and int(f.line) == int(finding.line)
             )
         )
     ]

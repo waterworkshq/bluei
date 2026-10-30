@@ -8,6 +8,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Python plugin discovery reads Ruff's real `filename` field and retains repository-relative targets instead of producing empty-path findings. Invalid or outside-repository paths are rejected; legacy `path` payloads remain supported.
+- Fix verification no longer declares a finding resolved merely because unrelated edits shifted its line number. Closure conservatively requires the same rule to be absent from the target file.
+
 ### Added
 
 - `bluei fix-preview <repo> --rule F401 --output-dir <new-dir>` creates a validated patch and JSON report from one tracked Python file in an isolated local copy. It does not enter the ordinary run, batch, recipe, model, publishing, or learning paths. The source checkout remains unchanged; artifact failures return non-zero and preserve recoverable evidence. The first boundary is deliberately limited to Ruff's safe F401 fixes and syntax validation, not arbitrary repository commands or a sandbox for untrusted tools.
