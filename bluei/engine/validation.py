@@ -32,8 +32,12 @@ _logger = logging.getLogger(__name__)
 # ruff- is special-cased below by exact core-catalog code membership.
 _RULE_FAMILY_DETECTORS: Dict[str, tuple] = {
     "test-coverage-": ("test-coverage",),
-    "type-": ("typescript-types", "plugin:plugin-typescript"),
-    "ts-": ("ast-typescript", "plugin:plugin-typescript"),
+    # type-* are tsc strict-mode diagnostics: only the compiler detector can
+    # re-report them (the XO plugin's heuristics are not closure evidence for
+    # a compiler finding). ts-* come only from the TypeScript AST detector —
+    # plugin-typescript emits no ts- rules (xo-*/type-*/test-coverage-* only).
+    "type-": ("typescript-types",),
+    "ts-": ("ast-typescript",),
     "xo-": ("xo-linter", "plugin:plugin-typescript"),
     "go-": ("ast-go", "plugin:plugin-go"),
     "rust-": ("ast-rust", "plugin:plugin-rust"),

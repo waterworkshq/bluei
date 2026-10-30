@@ -193,3 +193,60 @@ def test_verify_only_resolves_bare_markdown_code_when_markdown_plugin_ran(tmp_pa
     assert rc == 0
     assert [c for c in mock_sis.call_args_list
             if c[0][1] == "resolved_verified"]
+
+
+def test_compiler_type_finding_not_closed_when_only_plugin_ran(tmp_path, monkeypatch):
+    """Root 6532833608: type- is a compiler family. The XO plugin running
+    while the TypeScript compiler detector skipped is not closure evidence
+    for a tsc diagnostic, so an absent type-explicit-any stays open."""
+    import bluei.engine.orchestrator as orchestrator
+    from bluei.engine.validation import responsible_detector_ran
+
+    def fake_discover(worktree_path, docs_index_file=None, outcomes=None):
+        outcomes["typescript-types"] = {"status": "skipped", "count": 0}
+        outcomes["plugin:plugin-typescript"] = {"status": "ran", "count": 0}
+        return []  # finding absent from the rescan
+
+    monkeypatch.setattr(orchestrator, "discover_findings", fake_discover)
+    finding = Finding("t1", str(tmp_path), "app.ts", 3, "type-explicit-any",
+                      "Unexpected any. Specify a different type.", 0.8, False, False)
+    assert not responsible_detector_ran("type-explicit-any", {
+        "typescript-types": {"status": "skipped"},
+        "plugin:plugin-typescript": {"status": "ran"},
+    })
+    log = tmp_path / "verify.log"
+    assert not verify_fix_closed(tmp_path, finding, log,
+                                 docs_index_file=tmp_path / "docs.json")
+    assert "incomplete discovery" in log.read_text()
+
+
+def test_compiler_type_finding_closes_when_compiler_ran(tmp_path, monkeypatch):
+    import bluei.engine.orchestrator as orchestrator
+
+    def fake_discover(worktree_path, docs_index_file=None, outcomes=None):
+        outcomes["typescript-types"] = {"status": "ran", "count": 0}
+        return []
+
+    monkeypatch.setattr(orchestrator, "discover_findings", fake_discover)
+    finding = Finding("t1", str(tmp_path), "app.ts", 3, "type-explicit-any",
+                      "Unexpected any. Specify a different type.", 0.8, False, False)
+    assert verify_fix_closed(tmp_path, finding, tmp_path / "verify.log",
+                             docs_index_file=tmp_path / "docs.json")
+
+
+def test_verify_only_ts_rule_untouched_when_only_plugin_ran(tmp_path):
+    """Audit: plugin-typescript emits no ts- rules (only xo-*/type-*/
+    test-coverage-*); ast-typescript is the producer. The plugin running
+    alone must leave ts- issues untouched."""
+    issues = [{"issue_id": "ts", "rule": "ts-unsafe-any-cast", "path": "app.ts",
+               "status": "open"}]
+    rc, mock_sis, out = _run_verify_only(
+        tmp_path, [], issues,
+        {"plugin:plugin-typescript": {"status": "ran", "count": 0},
+         "ast-typescript": {"status": "skipped", "count": 0}},
+    )
+    assert rc == 0
+    assert not [c for c in mock_sis.call_args_list
+                if c[0][1] == "resolved_verified"]
+    assert issues[0]["status"] == "open"
+    assert "fixes_untouched=1" in out

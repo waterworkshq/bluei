@@ -250,7 +250,17 @@ class DeterministicCascade:
                             worktree, context
                         )
                     except CheckpointError as exc:
-                        _append_text(context.log_file, f"cascade: checkpoint failed: {exc}")
+                        # Best-effort diagnostic only: a failing log write must
+                        # never mask the CheckpointError — a masked error looks
+                        # like an ordinary failure and lets dispatch fall back
+                        # to the model.
+                        try:
+                            _append_text(
+                                context.log_file,
+                                f"cascade: checkpoint failed: {exc}",
+                            )
+                        except BaseException:
+                            pass
                         raise
 
                 _append_text(
