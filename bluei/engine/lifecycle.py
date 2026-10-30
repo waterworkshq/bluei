@@ -6,6 +6,7 @@ Safety gates block destructive operations; failed validations auto-rollback.
 """
 
 import logging
+import os
 import re
 import shlex
 import subprocess
@@ -548,6 +549,100 @@ def _tier_validate(
     return True
 
 
+def _transactional_autofix(func):
+    """Protect the public deterministic recipe and legacy fix path.
+
+    Pattern learning is suppressed inside the guarded call
+    (``pattern_store_path=None``) and performed once here, only after tier
+    acceptance and the scope check, so a rejected fix can never be recorded
+    as a learned pattern.
+    """
+    from functools import wraps
+
+    @wraps(func)
+    def wrapped(worktree_path, finding, log_file, pattern_store_path=None, detected_frameworks=None):
+        from bluei.engine.cascade import default_checkpoint_dir
+        from bluei.engine.worktree_checkpoint import (
+            CheckpointError, capture_checkpoint, changed_paths, discard_checkpoint, restore_checkpoint,
+        )
+
+        root = Path(worktree_path).resolve()
+        target = (root / finding.path).resolve().relative_to(root)
+        checkpoint = capture_checkpoint(root, default_checkpoint_dir(), exclude_paths=[log_file])
+        restored = False
+
+        def _restore_and_release() -> None:
+            nonlocal restored
+            restore_checkpoint(checkpoint)
+            restored = True
+            discard_checkpoint(checkpoint)
+
+        try:
+            accepted = func(worktree_path, finding, log_file, None, detected_frameworks)
+            if accepted:
+                allowed = {target.as_posix()}
+                allowed.update(
+                    p.as_posix() for p in target.parents
+                    if p.as_posix() != "." and p.as_posix() not in checkpoint.entries
+                )
+                changes = changed_paths(checkpoint)
+                index = checkpoint.index_target
+                if index is not None:
+                    if checkpoint.index_backup is None:
+                        if index.exists():
+                            changes.add("<git-index>")
+                    elif not index.is_file() or index.read_bytes() != checkpoint.index_backup.read_bytes():
+                        changes.add("<git-index>")
+                if changes - allowed:
+                    _append_text(log_file, f"autofix: out-of-scope changes: {sorted(changes - allowed)}")
+                    accepted = False
+            if not accepted:
+                _restore_and_release()
+                return False
+            # Accepted: learn once BEFORE releasing the backup, so a raising
+            # extraction still restores the pre-fix state.
+            try:
+                source = "autofix"
+                try:
+                    before = checkpoint._backup_for(target.as_posix()).read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                    if _get_recipe_engine().match(finding.rule, "python", file_text=before) is not None:
+                        source = "recipe"
+                except Exception:
+                    pass
+                _extract_fix_pattern(
+                    worktree_path, finding, source, pattern_store_path, log_file,
+                    detected_frameworks=detected_frameworks,
+                )
+            except BaseException:
+                _restore_and_release()
+                raise
+        except BaseException:
+            # Includes KeyboardInterrupt/SystemExit: restore unless already
+            # restored or the failed restore retained its backup. Bare raise
+            # keeps the original exception.
+            if not restored and not checkpoint.retained:
+                _restore_and_release()
+            raise
+        # Acceptance and learning finished. Cleanup cannot undo accepted source
+        # using a checkpoint that may already have been deleted or closed.
+        try:
+            discard_checkpoint(checkpoint)
+        except OSError as exc:
+            raise CheckpointError(
+                f"autofix accepted, but checkpoint cleanup failed; stop before further fixes: {checkpoint.backup_dir}"
+            ) from exc
+        finally:
+            if checkpoint.git_dir_fd is not None:
+                os.close(checkpoint.git_dir_fd)
+                checkpoint.git_dir_fd = None
+        return True
+
+    return wrapped
+
+
+@_transactional_autofix
 def apply_autofix(
     worktree_path: Path,
     finding: Finding,
@@ -615,14 +710,8 @@ def apply_autofix(
                 log_file,
                 f"autofix: recipe={recipe.id} applied finding_id={finding.finding_id} rule={finding.rule}",
             )
-            _extract_fix_pattern(
-                worktree_path,
-                finding,
-                "recipe",
-                pattern_store_path,
-                log_file,
-                detected_frameworks=detected_frameworks,
-            )
+            # Pattern learning is deferred to the accepted boundary in the
+            # _transactional_autofix wrapper (pattern_store_path is None here).
             tier = resolve_tier(finding, recipe=recipe)
             if not _tier_validate(tier, worktree_path, finding, log_file):
                 return False
@@ -631,8 +720,11 @@ def apply_autofix(
             log_file,
             f"autofix: recipe={recipe.id} failed finding_id={finding.finding_id} rule={finding.rule} error={result.error}",
         )
+        # A failed recipe may have partially mutated any file. The outer
+        # checkpoint restores it before control returns to the caller.
+        return False
 
-    # --- Cascade fallback: recipe failed or absent → try legacy hardcoded fixes ---
+    # --- No recipe matched: try legacy hardcoded fixes ---
     # --- Phase 2: Legacy hardcoded fixes (deprecated, remove after migration) ---
     text = file_path.read_text(encoding="utf-8")
     updated = text
@@ -699,14 +791,8 @@ def apply_autofix(
         log_file,
         f"autofix: applied finding_id={finding.finding_id} rule={finding.rule}",
     )
-    _extract_fix_pattern(
-        worktree_path,
-        finding,
-        "autofix",
-        pattern_store_path,
-        log_file,
-        detected_frameworks=detected_frameworks,
-    )
+    # Pattern learning is deferred to the accepted boundary in the
+    # _transactional_autofix wrapper (pattern_store_path is None here).
     tier = resolve_tier(finding)
     if not _tier_validate(tier, worktree_path, finding, log_file):
         return False
@@ -758,11 +844,29 @@ def apply_cascade_fix(
     ``attempted_pattern_ids`` carries pattern ids the caller already tried
     for this finding (standalone replay); the cascade's pattern stage
     excludes them so outcomes record exactly once per pattern.
+
+    Transactional: a worktree checkpoint spans the cascade AND the tier
+    validation below. The acceptance checks (tier validation, scope
+    recheck) plus learning are guarded: any abort — interruption, logging
+    failure, or error — restores the exact pre-attempt state. Ordinary
+    scope-check errors are honest rejections (False) rather than cycle
+    aborts; interrupts and restore failures always propagate (a failed
+    restore halts — no LLM fallback). Once the checks and learning pass,
+    the fix is COMMITTED: cleanup and ledger emission run past the guard so
+    an interrupt there never rolls back accepted source (records must match
+    the tree), and rejection records an honest exhausted outcome instead.
     """
     from bluei.engine.cascade import (
         CascadeContext,
         DeterministicCascade,
         default_cascade_stages,
+        default_checkpoint_dir,
+    )
+    from bluei.engine.worktree_checkpoint import (
+        CheckpointError,
+        capture_checkpoint,
+        discard_checkpoint,
+        restore_checkpoint,
     )
 
     language = "python"
@@ -799,6 +903,23 @@ def apply_cascade_fix(
 
     replay_threshold_overrides: Dict[str, float] = {}
 
+    checkpoint = None
+    try:
+        checkpoint = capture_checkpoint(
+            worktree_path,
+            default_checkpoint_dir(),
+            exclude_paths=[
+                log_file,
+                *([ledger_path] if ledger_path is not None else []),
+            ],
+        )
+    except CheckpointError as exc:
+        try:
+            _append_text(log_file, f"cascade: checkpoint capture failed: {exc}")
+        except BaseException:
+            pass  # Preserve the checkpoint failure so dispatch cannot fall back.
+        raise
+
     context = CascadeContext(
         worktree=worktree_path,
         repo_path=worktree_path,
@@ -816,33 +937,20 @@ def apply_cascade_fix(
         cost_tracker=cost_tracker,
         governance_state=governance_state or {},
         attempted_pattern_ids=attempted_pattern_ids,
+        checkpoint=checkpoint,
     )
 
     cascade = DeterministicCascade(default_cascade_stages())
-    result = cascade.execute(finding, worktree_path, context)
+    try:
+        result = cascade.execute(finding, worktree_path, context)
+    except BaseException:
+        # Includes KeyboardInterrupt/SystemExit: restore unless the failed
+        # restore already retained its backup. Bare raise keeps the original.
+        if not checkpoint.retained:
+            restore_checkpoint(checkpoint)
+            discard_checkpoint(checkpoint)
+        raise
 
-    if result.success:
-        # Deterministic stage succeeded — extract patterns and validate
-        _extract_fix_pattern(
-            worktree_path,
-            finding,
-            result.stage_name,
-            pattern_store_path,
-            log_file,
-            detected_frameworks=detected_frameworks,
-        )
-        tier = resolve_tier(finding)
-        if not _tier_validate(tier, worktree_path, finding, log_file):
-            # NOTE: the cascade already emitted a resolved_deterministic ledger
-            # record (success path). Tier-validation is a stricter gate, so a
-            # rejection here means the finding was NOT actually resolved, yet the
-            # ledger record stands. This over-report is accepted per ADR-0001
-            # (option C — apply_cascade_fix keeps its bool return); the record
-            # measures "a deterministic stage produced a cascade-level-valid fix."
-            return False
-        return True
-
-    # Cascade fallback: all deterministic stages failed → hand off to LLM
     def _emit_fallback_record(outcome: str, final_stage: str) -> None:
         """Emit a fallback resolution record (LLM success or exhaustion)."""
         if ledger_path is None and ledger_records is None:
@@ -866,6 +974,142 @@ def apply_cascade_fix(
                 append_jsonl(ledger_path, record)
             except Exception:
                 pass
+
+    def _discard_checkpoint() -> None:
+        nonlocal checkpoint
+        if checkpoint is None:
+            return
+        releasing = checkpoint
+        checkpoint = None  # Cleanup must never make an accepted/restored source retry rollback.
+        try:
+            discard_checkpoint(releasing)
+        except OSError as exc:
+            raise CheckpointError(
+                f"checkpoint cleanup failed; stop before further fixes: {releasing.backup_dir}"
+            ) from exc
+        finally:
+            if releasing.git_dir_fd is not None:
+                os.close(releasing.git_dir_fd)
+                releasing.git_dir_fd = None
+
+    restored = False
+
+    def _log_best_effort(message: str) -> None:
+        """Append to the run log without aborting an already-rolled-back flow."""
+        try:
+            _append_text(log_file, message)
+        except Exception:
+            pass
+
+    def _restore_release() -> None:
+        """Restore the exact pre-attempt state, then release the backup.
+
+        The worktree is marked restored BEFORE cleanup so an interrupt
+        during cleanup can never trigger a second restore from an already
+        discarded backup. A failed restore raises CheckpointRestoreError
+        (fd closed, backup retained for recovery) — the caller halts; no
+        LLM fallback runs.
+        """
+        nonlocal restored
+        restore_checkpoint(checkpoint)
+        restored = True
+        _discard_checkpoint()
+
+    if result.success:
+        # Acceptance-phase guard: tier validation, scope recheck, and
+        # learning roll back on ANY abort — the winning fix is already
+        # applied, so even a read-only check being interrupted must
+        # restore. Ordinary scope-check errors become honest rejections
+        # (False), not cycle aborts; interrupts and restore failures
+        # always propagate.
+        committed = False
+        try:
+            tier = resolve_tier(finding)
+            accepted = _tier_validate(tier, worktree_path, finding, log_file)
+            reject_reason: Optional[str] = None
+            if not accepted:
+                reject_reason = f"tier validation rejected stage={result.stage_name}"
+            else:
+                # Post-tier scope recheck: tier validation runs AFTER
+                # execute() verified the declared stage scope, and its
+                # checks can themselves edit undeclared files or the Git
+                # index. Re-verify the cascade's declared scope (carried on
+                # the result — never the stage's claimed diff). A missing
+                # carrier fails closed.
+                allowed = result.authorized_scope
+                if allowed is None:
+                    reject_reason = (
+                        f"scope carrier missing stage={result.stage_name}"
+                    )
+                else:
+                    try:
+                        out_of_scope = cascade._out_of_scope_edits(
+                            worktree_path, allowed, checkpoint
+                        )
+                    except Exception as exc:
+                        # Ordinary check error (disk, permissions): honest
+                        # rejection. Interrupts are BaseException and fall
+                        # through to the guard below.
+                        reject_reason = (
+                            f"scope recheck failed stage={result.stage_name} "
+                            f"error={type(exc).__name__}: {exc}"
+                        )
+                    else:
+                        if out_of_scope is not None:
+                            reject_reason = (
+                                f"tier validation introduced out-of-scope "
+                                f"edits={sorted(out_of_scope)} "
+                                f"stage={result.stage_name}"
+                            )
+            if reject_reason is not None:
+                # Rejection: restore first (marking restored before cleanup),
+                # then log best-effort and record the honest outcome
+                # (consumers only distinguish resolved_deterministic /
+                # resolved_llm / exhausted).
+                if checkpoint is not None:
+                    _restore_release()
+                _log_best_effort(
+                    f"cascade: {reject_reason} — restored pre-attempt state"
+                )
+                _emit_fallback_record("exhausted", result.stage_name)
+                return False
+            _extract_fix_pattern(
+                worktree_path, finding, result.stage_name, pattern_store_path,
+                log_file, detected_frameworks=detected_frameworks,
+            )
+            # Acceptance checks and learning passed: COMMIT. The applied
+            # fix is final from here — cleanup and ledger emission run
+            # past the guard so an interrupt there never rolls back
+            # accepted source (a success record must match the tree).
+            committed = True
+        except BaseException:
+            # Includes KeyboardInterrupt/SystemExit. Restore unless this
+            # flow already committed, already restored, or a failed restore
+            # retained the backup; a failed restore's
+            # CheckpointRestoreError wins (halt — no ledger record, no LLM
+            # fallback).
+            if (
+                not committed
+                and not restored
+                and checkpoint is not None
+                and not checkpoint.retained
+            ):
+                restore_checkpoint(checkpoint)
+            _discard_checkpoint()
+            raise
+        _discard_checkpoint()
+        # Committed: NOW persist the deterministic success (deferred from
+        # the cascade so a tier rejection can never over-report).
+        if result.telemetry is not None:
+            cascade._emit_ledger_record(
+                context, result.telemetry, outcome="resolved_deterministic"
+            )
+        return True
+
+    # Cascade failed (exhausted or checkpoint_unsupported): every failed stage
+    # already restored the pre-attempt state inside execute(); release the
+    # backup before any LLM handoff.
+    _discard_checkpoint()
 
     if context.allow_llm:
         _append_text(

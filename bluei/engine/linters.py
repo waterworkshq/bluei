@@ -319,7 +319,7 @@ def discover_python_linter_findings(repo_path: Path, log_file: Path) -> List[Fin
         # B=bugbear, E/W=pycodestyle, F=pyflakes, S=bandit/security, C4=comprehensions
         # Use JSON output to get per-instance fix applicability (not just rule-level catalog)
         res = subprocess.run(
-            [ruff_path, 'check', str(repo_path), '--select=B,E,W,F,S,C4', '--output-format=json'],
+            [ruff_path, 'check', str(repo_path), '--no-cache', '--select=B,E,W,F,S,C4', '--output-format=json'],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

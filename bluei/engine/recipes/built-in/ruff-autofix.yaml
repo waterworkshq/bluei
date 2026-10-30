@@ -10,7 +10,7 @@ match:
 
 replacement:
   type: command
-  command: ["ruff", "check", "--fix", "--unsafe-fixes", "--preview", "--select={rule_code}", "{file}"]
+  command: ["ruff", "check", "--isolated", "--no-cache", "--fix", "--no-unsafe-fixes", "--select={rule_code}", "--", "{file}"]
 
 validation:
   run_baseline: true

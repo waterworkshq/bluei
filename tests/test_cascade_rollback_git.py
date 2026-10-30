@@ -305,3 +305,189 @@ def test_rollback_after_git_still_works_with_new_commits(git_repo, make_finding)
     stage.rollback(_cascade_finding(make_finding, path="src/app.py"), git_repo)
 
     assert target.read_text() == original
+
+
+@pytest.mark.parametrize("success", [False, True])
+def test_logging_exception_after_stage_restores_preexisting_state(git_repo, make_finding, monkeypatch, success):
+    from bluei.engine import cascade as cascade_mod
+
+    _commit_file(git_repo, "src/app.py", "committed\n")
+    target = git_repo / "src/app.py"
+    target.write_text("pre-existing unstaged\n")
+    log = git_repo / "log.txt"
+    log.write_text("")
+
+    class MutatingStage(CascadeStage):
+        name = "mutating"
+        def can_handle(self, finding, context):
+            return True
+        def attempt(self, finding, worktree, context):
+            target.write_text("stage edit\n")
+            return CascadeResult(success, self.name, [finding.path], success, error=None if success else "failure")
+
+    original_log = cascade_mod._append_text
+    def failing_log(path, text):
+        if "stage=mutating succeeded" in text or "stage=mutating failed error=" in text:
+            raise OSError("log unavailable")
+        return original_log(path, text)
+
+    monkeypatch.setattr(cascade_mod, "_append_text", failing_log)
+    with pytest.raises(OSError, match="log unavailable"):
+        DeterministicCascade([MutatingStage()]).execute(
+            _cascade_finding(make_finding, path="src/app.py"), git_repo, CascadeContext(log_file=log)
+        )
+    assert target.read_text() == "pre-existing unstaged\n"
+
+
+# --- Transactional cascade (checkpoint-based) tests -------------------------
+
+
+class _OutOfScopeEditStage(CascadeStage):
+    """Reports success but also edits a file it never declared."""
+
+    name = "out-of-scope"
+    tier = 1
+
+    def can_handle(self, finding, context):
+        return True
+
+    def attempt(self, finding, worktree, context):
+        (worktree / finding.path).write_text("FIXED\n", encoding="utf-8")
+        (worktree / "src" / "bystander.py").write_text("TOUCHED\n", encoding="utf-8")
+        return CascadeResult(
+            success=True,
+            stage_name=self.name,
+            changes_made=[finding.path],
+            validation_passed=True,
+            latency_ms=1,
+        )
+
+
+class _ExplodingStage(CascadeStage):
+    """Raises mid-attempt after mutating the target file."""
+
+    name = "exploding"
+    tier = 1
+
+    def can_handle(self, finding, context):
+        return True
+
+    def attempt(self, finding, worktree, context):
+        (worktree / finding.path).write_text("HALF-WRITTEN\n", encoding="utf-8")
+        raise RuntimeError("stage crashed mid-edit")
+
+
+class _TimeoutStage(CascadeStage):
+    """Times out like a hung linter subprocess would."""
+
+    name = "hanging"
+    tier = 1
+
+    def can_handle(self, finding, context):
+        return True
+
+    def attempt(self, finding, worktree, context):
+        import subprocess as sp
+
+        (worktree / finding.path).write_text("HUNG EDIT\n", encoding="utf-8")
+        raise sp.TimeoutExpired(cmd="ruff", timeout=60)
+
+
+def test_out_of_scope_edit_restores_and_falls_through(git_repo, make_finding):
+    original = "a = 1\n"
+    bystander = "b = 2\n"
+    _commit_file(git_repo, "src/app.py", original)
+    _commit_file(git_repo, "src/bystander.py", bystander)
+
+    log = git_repo / "log.txt"
+    log.write_text("")
+    cascade = DeterministicCascade([_OutOfScopeEditStage()])
+    result = cascade.execute(
+        _cascade_finding(make_finding, path="src/app.py"),
+        git_repo,
+        CascadeContext(log_file=log),
+    )
+
+    assert not result.success
+    assert (git_repo / "src" / "app.py").read_text() == original
+    assert (git_repo / "src" / "bystander.py").read_text() == bystander
+    assert "out_of_scope_edits" in log.read_text()
+
+
+def test_stage_exception_restores_exact_state(git_repo, make_finding):
+    original = "a = 1\n"
+    _commit_file(git_repo, "src/app.py", original)
+    (git_repo / "src" / "app.py").write_text("UNSTAGED PRE-ATTEMPT\n", encoding="utf-8")
+
+    log = git_repo / "log.txt"
+    log.write_text("")
+    cascade = DeterministicCascade([_ExplodingStage()])
+    result = cascade.execute(
+        _cascade_finding(make_finding, path="src/app.py"),
+        git_repo,
+        CascadeContext(log_file=log),
+    )
+
+    assert not result.success
+    assert "RuntimeError" in (result.error or "")
+    assert (git_repo / "src" / "app.py").read_text() == "UNSTAGED PRE-ATTEMPT\n"
+
+
+def test_stage_timeout_restores_and_reports(git_repo, make_finding):
+    original = "a = 1\n"
+    _commit_file(git_repo, "src/app.py", original)
+    log = git_repo / "log.txt"
+    log.write_text("")
+    cascade = DeterministicCascade([_TimeoutStage()])
+    result = cascade.execute(
+        _cascade_finding(make_finding, path="src/app.py"),
+        git_repo,
+        CascadeContext(log_file=log),
+    )
+    assert not result.success
+    assert "TimeoutExpired" in (result.error or "")
+    assert (git_repo / "src" / "app.py").read_text() == original
+
+
+def test_failed_stage_restores_index_bytes_exactly(git_repo, make_finding):
+    import subprocess as sp
+
+    _commit_file(git_repo, "src/app.py", "a = 1\n")
+    (git_repo / "src" / "app.py").write_text("STAGED PRE-ATTEMPT\n", encoding="utf-8")
+    sp.run(["git", "add", "src/app.py"], cwd=git_repo, capture_output=True, check=True)
+    index_before = (git_repo / ".git" / "index").read_bytes()
+
+    log = git_repo / "log.txt"
+    log.write_text("")
+    cascade = DeterministicCascade([_ExplodingStage()])
+    cascade.execute(
+        _cascade_finding(make_finding, path="src/app.py"),
+        git_repo,
+        CascadeContext(log_file=log),
+    )
+
+    assert (git_repo / "src" / "app.py").read_text() == "STAGED PRE-ATTEMPT\n"
+    assert (git_repo / ".git" / "index").read_bytes() == index_before
+
+
+def test_failed_restore_halts_with_retained_backup(git_repo, make_finding, monkeypatch):
+    _commit_file(git_repo, "src/app.py", "a = 1\n")
+    log = git_repo / "log.txt"
+    log.write_text("")
+
+    from bluei.engine import cascade as cascade_mod
+    from bluei.engine.worktree_checkpoint import CheckpointRestoreError
+
+    def _fail_restore(cp):
+        cp.retained = True
+        raise CheckpointRestoreError("simulated restore failure")
+
+    monkeypatch.setattr(cascade_mod, "restore_checkpoint", _fail_restore)
+    cascade = DeterministicCascade([_ExplodingStage()])
+    with pytest.raises(CheckpointRestoreError):
+        cascade.execute(
+            _cascade_finding(make_finding, path="src/app.py"),
+            git_repo,
+            CascadeContext(log_file=log),
+        )
+    assert "RESTORE FAILED" in log.read_text()

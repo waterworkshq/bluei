@@ -149,7 +149,7 @@ def process_batch(
     rule_short = batch.rule_pattern.replace("ruff-", "")[:8]
     branch = f"qa/batch-{rule_short}-{ts}-{uniq}"
     worktree_root = Path(getattr(args, "worktree_root", str(DEFAULT_WORKTREE_ROOT)))
-    worktree_path = worktree_root.resolve() / f"qa-batch-{batch.batch_id}"
+    worktree_path = worktree_root.resolve() / f"qa-batch-{batch.batch_id}-{uniq}"
 
     batch.branch = branch
     batch.worktree_path = worktree_path
@@ -206,11 +206,14 @@ def process_batch(
             )
             return False, f"duplicate-existing-pr-#{dup_pr['number']}"
 
+    from bluei.engine.worktree_checkpoint import CheckpointError, CheckpointRestoreError
+
     # Create shared worktree
     if not _create_worktree(repo_path, worktree_path, branch, log_file):
         batch.status = BatchStatus.FAILED.value
         return False, "worktree-creation-failed"
 
+    preserve_worktree = False
     try:
         # Hydrate dependencies (e.g. node_modules symlink)
         hydrate_worktree(repo_path, worktree_path, log_file=log_file)
@@ -410,13 +413,22 @@ def process_batch(
         )
         return True, f"pr-created-#{pr_number}"
 
+    except (CheckpointError, CheckpointRestoreError, KeyboardInterrupt, SystemExit) as exc:
+        preserve_worktree = True
+        batch.status = BatchStatus.FAILED.value
+        exc.add_note(f"batch worktree retained for recovery: {worktree_path}; branch={branch}")
+        try:
+            _append_text(log_file, f"batch-checkpoint-failure: retained worktree={worktree_path} branch={branch} error={exc}")
+        except BaseException:
+            pass
+        raise
     finally:
-        # Cleanup worktree
-        remove_worktree(
-            worktree_path=worktree_path,
-            repo_path=repo_path,
-            branch=branch,
-            delete_branch=not getattr(args, "live_github_actions", False),
-            log_file=log_file,
-        )
-        _append_text(log_file, f"batch-cleanup: branch={branch}")
+        if not preserve_worktree:
+            remove_worktree(
+                worktree_path=worktree_path,
+                repo_path=repo_path,
+                branch=branch,
+                delete_branch=not getattr(args, "live_github_actions", False),
+                log_file=log_file,
+            )
+            _append_text(log_file, f"batch-cleanup: branch={branch}")
