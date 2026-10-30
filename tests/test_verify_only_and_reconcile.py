@@ -79,7 +79,7 @@ class TestVerifyOnly:
                 written_findings=1,
                 suppressed_findings=[],
                 blocked_reasons=[],
-                detector_outcomes={"test-detector": {"status": "ran", "count": 0}},
+                detector_outcomes={"python-linter-ruff": {"status": "ran", "count": 1}},
             )
 
         assert rc == 0
@@ -95,7 +95,7 @@ class TestVerifyOnly:
             "issues": [
                 {
                     "issue_id": "i1",
-                    "rule": "other-rule",
+                    "rule": "ruff-e501",
                     "path": "other.py",
                     "status": "open",
                 }
@@ -127,7 +127,7 @@ class TestVerifyOnly:
                 written_findings=1,
                 suppressed_findings=[],
                 blocked_reasons=[],
-                detector_outcomes={"test-detector": {"status": "ran", "count": 0}},
+                detector_outcomes={"python-linter-ruff": {"status": "ran", "count": 0}},
             )
 
         assert rc == 0
@@ -143,7 +143,7 @@ class TestVerifyOnly:
             "issues": [
                 {
                     "issue_id": "i1",
-                    "rule": "other-rule",
+                    "rule": "ruff-e501",
                     "path": "other.py",
                     "status": "open",
                 }
@@ -175,7 +175,7 @@ class TestVerifyOnly:
                 written_findings=1,
                 suppressed_findings=[],
                 blocked_reasons=[],
-                detector_outcomes={"test-detector": {"status": "ran", "count": 0}},
+                detector_outcomes={"python-linter-ruff": {"status": "ran", "count": 0}},
             )
 
         assert rc == 0
@@ -188,8 +188,8 @@ class TestVerifyOnly:
     def test_empty_findings_resolves_all_issues(self, tmp_path):
         issues_data = {
             "issues": [
-                {"issue_id": "i1", "rule": "a", "path": "x.py", "status": "open"},
-                {"issue_id": "i2", "rule": "b", "path": "y.py", "status": "open"},
+                {"issue_id": "i1", "rule": "ruff-b007", "path": "x.py", "status": "open"},
+                {"issue_id": "i2", "rule": "ruff-e501", "path": "y.py", "status": "open"},
             ]
         }
         state = {}
@@ -218,7 +218,7 @@ class TestVerifyOnly:
                 written_findings=0,
                 suppressed_findings=[],
                 blocked_reasons=[],
-                detector_outcomes={"test-detector": {"status": "ran", "count": 0}},
+                detector_outcomes={"python-linter-ruff": {"status": "ran", "count": 0}},
             )
 
         assert rc == 0

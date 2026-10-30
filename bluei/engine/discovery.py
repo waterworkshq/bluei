@@ -208,6 +208,33 @@ def ast_scan_pipeline(
             )
             return []
 
+        # The core library importing does not mean every per-language grammar
+        # is installed; a missing grammar silently parses nothing. Check the
+        # parsers actually needed by the files present in this repository.
+        needed: Set[str] = set()
+        for ext in config.extensions:
+            if not walk_source_files(repo_path, ext, config.skip_dirs):
+                continue
+            needed.add(
+                (config.ext_to_language or {}).get(ext)
+                or config.language
+                or config.name
+            )
+        missing_grammars = sorted(
+            lang for lang in needed if not TreeSitterAdapter.language_available(lang)
+        )
+        if missing_grammars:
+            _record_outcome(
+                outcome,
+                f"ast-{config.name}",
+                "unavailable",
+                reason=(
+                    "tree-sitter grammar not installed: "
+                    + ", ".join(missing_grammars)
+                ),
+            )
+            return []
+
     matcher = config.get_matcher()
     findings: List[Finding] = []
     parse_failures: List[str] = []
@@ -216,9 +243,13 @@ def ast_scan_pipeline(
         # skip_dirs are pruned during the walk (not filtered after): an
         # rglob would traverse .git/objects and race git maintenance.
         for f in walk_source_files(repo_path, ext, config.skip_dirs):
+            rel_path = str(f.relative_to(repo_path))
             try:
                 source = f.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
+                # Unreadable files were never scanned; count them so the
+                # outcome says failed instead of fabricating a clean scan.
+                parse_failures.append(rel_path)
                 continue
 
             if not source.strip():
@@ -229,7 +260,6 @@ def ast_scan_pipeline(
             else:
                 language = config.language or config.name
 
-            rel_path = str(f.relative_to(repo_path))
             matches = matcher.find_matches(source, rel_path, language)
             parse_failures.extend(getattr(matcher, "last_parse_failures", []) or [])
 
@@ -265,23 +295,24 @@ def ast_scan_pipeline(
                     )
                 )
 
-    _record_outcome(
-        outcome,
-        f"ast-{config.name}",
-        "failed" if parse_failures else "ran",
-        len(findings),
-        reason=(
-            f"{len(parse_failures)} file(s) could not be parsed and were not scanned"
-            if parse_failures
-            else None
-        ),
-    )
     if parse_failures:
+        _record_outcome(
+            outcome,
+            f"ast-{config.name}",
+            "failed",
+            len(findings),
+            reason=(
+                f"{len(parse_failures)} file(s) could not be read or parsed "
+                + "and were not scanned: " + ", ".join(parse_failures[:5])
+            ),
+        )
         _append_text(
             log_file,
-            f"ast-{config.name}-discovery: {len(parse_failures)} file(s) failed to parse: "
+            f"ast-{config.name}-discovery: {len(parse_failures)} file(s) failed to read or parse: "
             + ", ".join(parse_failures[:20]),
         )
+    else:
+        _record_outcome(outcome, f"ast-{config.name}", "ran", len(findings))
     return findings
 
 
@@ -624,13 +655,42 @@ def discover_findings(
             safe_to_autofix=True,
         )
 
-    _record_outcome(
-        outcomes,
-        "sandbox-string-detectors",
-        "ran",
-        len(findings),
-        reason="qa-sandbox fixture string detectors (path-scoped)",
+    # Truthful applicability: the string-detector family only reads a fixed
+    # set of configured inputs (sandbox modules, docs pages, README, price.py,
+    # the fixture test files, and docs-index entries). When none of those
+    # exist the detectors never examined anything — record skipped, not ran
+    # with zero findings, which would fabricate coverage for an empty repo.
+    string_input_paths = (
+        set(todo_targets)
+        | set(py_files)
+        | {
+            "docs/ARCHITECTURE.md",
+            "docs/TROUBLESHOOTING.md",
+            "docs/OPERATIONS.md",
+            "README.md",
+            "tests/test_orders.py",
+            "tests/test_inventory.py",
+        }
     )
+    string_inputs_present = bool(docs_index_entries) or any(
+        (repo_path / rel).exists() for rel in string_input_paths
+    )
+    if string_inputs_present:
+        _record_outcome(
+            outcomes,
+            "sandbox-string-detectors",
+            "ran",
+            len(findings),
+            reason="qa-sandbox fixture string detectors (path-scoped)",
+        )
+    else:
+        _record_outcome(
+            outcomes,
+            "sandbox-string-detectors",
+            "skipped",
+            reason="no configured string-detector inputs present "
+            "(sandbox modules, docs pages, README, price.py, docs-index entries)",
+        )
 
     # AST-based detection (supplements string-based detection); dedup by (path, line, rule).
     existing_keys = {(f.path, f.line, f.rule) for f in findings}

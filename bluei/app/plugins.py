@@ -4,6 +4,7 @@
 import logging
 import json
 import importlib.util
+import os
 import shutil
 import subprocess
 from abc import ABC, abstractmethod
@@ -83,13 +84,19 @@ class ToolWrapperPlugin(DiscoveryPlugin):
         self, repo_path: Path, extra_args: Optional[List[str]] = None
     ) -> Optional[str]:
         tool = self.tool_name
+        tool_args = list(self.tool_args)
         if tool == "npx":
-            self.last_tool_outcome = "tool-missing"
-            return None  # Never allow npx to install packages during discovery.
-        if not tool or not shutil.which(tool):
+            name = tool_args.pop(0) if tool_args else ""
+            local = repo_path / "node_modules" / ".bin" / name
+            installed = str(local) if name and os.access(local, os.X_OK) else shutil.which(name)
+            if not name or not installed:
+                self.last_tool_outcome = "tool-missing"
+                return None  # Never allow package installation during discovery.
+            tool = installed
+        elif not tool or not shutil.which(tool):
             self.last_tool_outcome = "tool-missing" if tool else None
             return None
-        cmd = [tool] + self.tool_args + (extra_args or [])
+        cmd = [tool] + tool_args + (extra_args or [])
         if tool == "ruff" and "--no-cache" not in cmd:
             cmd.insert(2, "--no-cache")
         try:
@@ -106,7 +113,10 @@ class ToolWrapperPlugin(DiscoveryPlugin):
             try:
                 if tool in ("ruff", "shellcheck", "hadolint", "markdownlint"):
                     parsed = json.loads(result.stdout)
-                    if not isinstance(parsed, list):
+                    if tool == "markdownlint" and isinstance(parsed, dict):
+                        if not all(isinstance(items, list) for items in parsed.values()):
+                            raise ValueError("expected filename-keyed JSON lists")
+                    elif not isinstance(parsed, list):
                         raise ValueError("expected JSON array")
                 elif tool in ("staticcheck", "cargo"):
                     for line in result.stdout.splitlines():

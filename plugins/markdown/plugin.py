@@ -68,6 +68,9 @@ class Plugin(ToolWrapperPlugin):
             items = json.loads(output)
         except (json.JSONDecodeError, TypeError):
             return []
+        if isinstance(items, dict):
+            items = [dict(item, fileName=filename) for filename, records in items.items()
+                     if isinstance(records, list) for item in records if isinstance(item, dict)]
         findings = []
         for item in items:
             if not isinstance(item, dict):

@@ -64,14 +64,28 @@ class TreeSitterAdapter:
         except ImportError:
             return False
 
+    @classmethod
+    def language_available(cls, language: str) -> bool:
+        """True when the grammar for *language* is actually loadable.
+
+        ``is_available`` only proves the core library imports; a missing
+        per-language grammar makes ``parse`` silently yield nothing, so
+        callers must check this per language before recording a scan as ran.
+        """
+        return TreeSitterAdapter(language)._parser is not None
+
     def parse(self, source: str) -> Optional[TSNode]:
         if self._parser is None:
             return None
         try:
             tree = self._parser.parse(source.encode("utf-8"))
-            return TSNode(tree.root_node)
         except Exception:
             return None
+        if tree.root_node.has_error:
+            # tree-sitter is error-tolerant: ERROR nodes mean the file was not
+            # cleanly parsed, and callers must not count it as scanned.
+            return None
+        return TSNode(tree.root_node)
 
     def _get_parser(self, language: str):
         if language in self._parsers:
@@ -83,24 +97,21 @@ class TreeSitterAdapter:
             lang_map = {}
             try:
                 import tree_sitter_typescript as tstypescript
-                if language in ("typescript", "tsx"):
-                    ts_lang = Language(tstypescript.language_typescript())
-                    lang_map["typescript"] = ts_lang
-                    lang_map["tsx"] = ts_lang
-                elif language in ("javascript", "jsx"):
-                    js_lang = Language(tstypescript.language_typescript())
-                    lang_map["javascript"] = js_lang
-                    lang_map["jsx"] = js_lang
+                if language == "typescript":
+                    lang_map["typescript"] = Language(tstypescript.language_typescript())
+                elif language == "tsx":
+                    lang_map["tsx"] = Language(tstypescript.language_tsx())
             except ImportError:
                 _logger.debug("tree-sitter-typescript not available")
 
             try:
                 import tree_sitter_javascript as tsjs
                 js_lang = Language(tsjs.language())
-                if "javascript" not in lang_map:
-                    lang_map["javascript"] = js_lang
-                    lang_map["jsx"] = js_lang
+                lang_map["javascript"] = js_lang
+                lang_map["jsx"] = js_lang
             except ImportError:
+                # No TypeScript-grammar fallback for JavaScript: parsing JS
+                # with the TS grammar would silently misparse files.
                 _logger.debug("tree-sitter-javascript not available")
 
             try:

@@ -376,7 +376,22 @@ def main() -> int:
                 or any(item.get("status") in ("failed", "unavailable") for item in ctx.detector_outcomes.values())):
             for detector, outcome in sorted(ctx.detector_outcomes.items()):
                 print(f"[DETECTOR] {detector} status={outcome.get('status')} count={outcome.get('count', 0)} reason={outcome.get('reason', '')}")
-            print("[INCOMPLETE] Detector coverage incomplete; state and health not finalized")
+            from bluei.engine.state_io import atomic_json_write
+            import json
+            try:
+                status = json.loads(ctx.status_file.read_text())
+            except (OSError, ValueError):
+                status = {}
+            if not isinstance(status, dict):
+                status = {}
+            status["last_run_completed"] = False
+            status["latest_run_metrics"] = {
+                "run_id": ctx.run_id, "run_completed": False,
+                "findings_detected": len(ctx.findings),
+                "detector_outcomes": ctx.detector_outcomes,
+            }
+            atomic_json_write(ctx.status_file, status)
+            print("[INCOMPLETE] Detector coverage incomplete; previous health preserved")
             return 1
 
     # --- Contextual Fix Migration ---

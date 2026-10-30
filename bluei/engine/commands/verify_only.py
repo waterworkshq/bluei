@@ -50,6 +50,7 @@ def run_verify_only(*args, **kwargs) -> int:
 
     from bluei.engine.orchestrator import set_issue_status
     from bluei.engine.state_io import atomic_json_write
+    from bluei.engine.validation import responsible_detector_ran
 
     outcomes = getattr(ctx, "detector_outcomes", {}) if ctx else kwargs.get("detector_outcomes", {})
     statuses = [item.get("status") for item in outcomes.values()]
@@ -126,6 +127,7 @@ def run_verify_only(*args, **kwargs) -> int:
 
     fixes_verified = 0
     fixes_failed_verification = 0
+    fixes_untouched = 0
 
     active_keys = {(f.rule, f.path) for f in findings}
     for issue in issues_data.get("issues", []):
@@ -137,13 +139,23 @@ def run_verify_only(*args, **kwargs) -> int:
                 "detector still firing in verification-only cycle",
             )
             fixes_failed_verification += 1
-        else:
+        elif responsible_detector_ran(str(issue.get("rule", "")), outcomes):
             set_issue_status(
                 issue,
                 "resolved_verified",
-                "detector no longer firing in verification-only cycle",
+                "responsible detector ran and rule no longer firing in verification-only cycle",
             )
             fixes_verified += 1
+        else:
+            # No detector able to report this rule ran: absence from the
+            # findings list is not evidence — leave the issue untouched.
+            fixes_untouched += 1
+    if fixes_untouched:
+        _append_text(
+            log_file,
+            "verify-only: left untouched (no responsible detector ran): "
+            f"{fixes_untouched} issue(s)",
+        )
     save_issues(issues_file, issues_data)
 
     unresolved_open = len(
@@ -174,6 +186,7 @@ def run_verify_only(*args, **kwargs) -> int:
             "prs_created": 0,
             "fixes_verified": fixes_verified,
             "fixes_failed_verification": fixes_failed_verification,
+            "fixes_untouched": fixes_untouched,
             "unresolved_open": unresolved_open,
             "findings_suppressed_by_cooldown": len(suppressed_findings),
             "issues_escalated_max_retries": 0,
@@ -208,6 +221,7 @@ def run_verify_only(*args, **kwargs) -> int:
         print(_line)
     print(
         f"[DONE] VERIFY-ONLY findings={len(findings)} fixes_verified={fixes_verified} "
-        f"fixes_failed_verification={fixes_failed_verification}"
+        f"fixes_failed_verification={fixes_failed_verification} "
+        f"fixes_untouched={fixes_untouched}"
     )
     return 0

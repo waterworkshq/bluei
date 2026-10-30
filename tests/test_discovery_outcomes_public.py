@@ -134,3 +134,34 @@ def test_verify_only_does_not_resolve_issues_when_every_detector_skipped(tmp_pat
     assert result == 1
     assert json.loads(path.read_text()) == issues
     assert issues["issues"][0]["status"] == "open"
+
+
+def test_native_engine_partial_scan_clears_stale_success(tmp_path):
+    import os
+    import subprocess
+    import sys
+    root = Path(__file__).resolve().parents[1]
+    target = tmp_path / "empty-repo"
+    target.mkdir()
+    subprocess.run(["git", "init", "-q", str(target)], check=True)
+    status = tmp_path / "status.json"
+    status.write_text(json.dumps({"last_run_completed": True, "health_score": 73,
+        "latest_run_metrics": {"run_id": "stale", "run_completed": True}}))
+    env = dict(os.environ, PYTHONPATH=str(root), BLUEI_RUN_ID="native-partial",
+               QA_AGENT_WORKSPACE=str(tmp_path / "workspace"))
+    env["--skip-internal-discovery"] = "1"
+    args = [sys.executable, "-m", "bluei.engine.cli", "--repo-path", str(target),
+            "--run-phase", "verify-only", "--status-file", str(status),
+            "--simulate-open-issues", "0", "--simulate-open-prs", "0"]
+    for flag, name in [("--state-file", "state.json"), ("--log-file", "run.log"),
+                       ("--findings-file", "findings.jsonl"), ("--issues-file", "issues.json"),
+                       ("--docs-index-file", "docs.json"), ("--lessons-file", "lessons.md"),
+                       ("--worktree-root", "worktrees")]:
+        args.extend([flag, str(tmp_path / name)])
+    result = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True, timeout=20)
+    assert result.returncode == 1, result.stdout + result.stderr
+    stored = json.loads(status.read_text())
+    assert stored["health_score"] == 73
+    assert stored["last_run_completed"] is False
+    assert stored["latest_run_metrics"]["run_id"] == "native-partial"
+    assert stored["latest_run_metrics"]["run_completed"] is False

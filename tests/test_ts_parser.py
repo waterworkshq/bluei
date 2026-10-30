@@ -63,14 +63,9 @@ class TestTreeSitterTypeScript:
         assert node.type == "program"
 
     def test_parse_typescript_invalid_syntax(self):
-        """Partial/invalid source still produces a tree with ERROR nodes."""
+        """Invalid source is a failed parse: None, never an ERROR-node tree."""
         adapter = TreeSitterAdapter("typescript")
-        node = adapter.parse("function ( { }}}")
-        assert node is not None
-        assert node.type == "program"
-        # Tree-sitter produces error nodes instead of returning None
-        error_nodes = node.find_all("ERROR")
-        assert len(error_nodes) > 0
+        assert adapter.parse("function ( { }}}") is None
 
 
 # ---------------------------------------------------------------------------
@@ -382,15 +377,16 @@ class TestTreeSitterJavaScript:
 
 class TestTreeSitterImportFallbacks:
     def test_javascript_package_import_error(self, monkeypatch):
-        """Lines 100-101: tree_sitter_javascript ImportError fallback."""
+        """tree_sitter_javascript ImportError: no TS-grammar fallback, None."""
         import sys
 
         TreeSitterAdapter._parsers.pop("javascript", None)
         # Set to None (not pop) so reimport also fails
         monkeypatch.setitem(sys.modules, "tree_sitter_javascript", None)
         adapter = TreeSitterAdapter("javascript")
-        # TypeScript package already provides JS support
-        assert adapter._parser is not None
+        # Parsing JS with the TypeScript grammar would silently misparse.
+        assert adapter._parser is None
+        assert not TreeSitterAdapter.language_available("javascript")
 
     def test_typescript_import_error_returns_none(self, monkeypatch):
         """Lines 91-92: tree_sitter_typescript ImportError falls back."""

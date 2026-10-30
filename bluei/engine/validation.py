@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from bluei.engine.constants import DEFAULT_DOCS_INDEX
+from bluei.engine.constants import DEFAULT_DOCS_INDEX, DETECTOR_CATALOG
 from bluei.engine.models import Finding
 from bluei.engine.state import _append_text
 from bluei.engine.utils import run_capture
@@ -20,6 +20,84 @@ def _get_default_discover_fn():
 
 
 _logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Responsible-detector evidence
+# ---------------------------------------------------------------------------
+# A detector that cannot report a rule has run: that is not evidence the rule
+# stopped firing. Minimal rule-family -> producer mapping over the exact
+# detector outcome keys discovery records; NOT a registry framework.
+
+# Rule-family prefixes -> detector outcome keys able to produce that family.
+# ruff- is special-cased below by exact core-catalog code membership.
+_RULE_FAMILY_DETECTORS: Dict[str, tuple] = {
+    "test-coverage-": ("test-coverage",),
+    "type-": ("typescript-types", "plugin:plugin-typescript"),
+    "ts-": ("ast-typescript", "plugin:plugin-typescript"),
+    "xo-": ("xo-linter", "plugin:plugin-typescript"),
+    "go-": ("ast-go", "plugin:plugin-go"),
+    "rust-": ("ast-rust", "plugin:plugin-rust"),
+    "clippy-": ("plugin:plugin-rust",),
+    "shell-": ("plugin:plugin-shell",),
+    "docker-": ("plugin:plugin-dockerfile",),
+    "md-": ("plugin:plugin-markdown",),
+}
+# Core python-linter-ruff filters any code not in this exact catalog set;
+# those rules are produced only by plugin-python (which emits ruff-<code>
+# verbatim, e.g. ruff-F821).
+_CORE_RUFF_RULES = frozenset(
+    str(entry["rule"]).lower()
+    for entry in DETECTOR_CATALOG
+    if str(entry["rule"]).lower().startswith("ruff-")
+)
+# Exact built-in rule ids -> their single producer. Not a broad catalog
+# default: docs-index backed doc-gap-uncovered-module/doc-drift-stale-reference
+# have NO dedicated outcome key (sandbox-string-detectors "ran" says nothing
+# about the index scan), so they stay conservatively unknown/open.
+_AST_PYTHON_RULES = frozenset({
+    "broad-except", "catalog-query-not-normalized", "discount-math-sign",
+    "hardcoded-tmp-path", "hardcoded-tmp-path-string",
+    "notifications-email-no-trim", "notifications-type-guard-missing",
+    "perf-list-membership-loop", "perf-pop-front-loop",
+})
+_SANDBOX_STRING_RULES = frozenset({
+    "orders-tax-truncation", "inventory-invalid-quantity", "debt-todo-marker",
+    "trailing-whitespace", "docs-legacy-reference", "docs-missing-rollback",
+    "docs-quickstart-gap", "test-gap-missing-file", "test-gap-missing-case",
+})
+
+
+def responsible_detector_ran(rule: str, outcomes: Dict[str, Dict[str, Any]]) -> bool:
+    """True only if a detector that can actually report ``rule`` ran.
+
+    Unknown rules (no known producer) never qualify: findings absent from an
+    unrelated detector are not closure evidence for them — they stay open.
+    """
+    rule_lower = str(rule).lower()
+    detectors = None
+    if rule_lower.startswith("ruff-"):
+        detectors = (
+            ("python-linter-ruff", "plugin:plugin-python")
+            if rule_lower in _CORE_RUFF_RULES
+            else ("plugin:plugin-python",)
+        )
+    else:
+        for prefix, keys in _RULE_FAMILY_DETECTORS.items():
+            if rule_lower.startswith(prefix):
+                detectors = keys
+                break
+    # markdownlint emits bare codes ("MD009") alongside prefixed "md-MD009".
+    if detectors is None and (
+        rule_lower.startswith("md") and rule_lower[2:3].isdigit()
+    ):
+        detectors = _RULE_FAMILY_DETECTORS["md-"]
+    if detectors is None and rule_lower in _AST_PYTHON_RULES:
+        detectors = ("ast-python",)
+    if detectors is None and rule_lower in _SANDBOX_STRING_RULES:
+        detectors = ("sandbox-string-detectors",)
+    if detectors is None:
+        return False
+    return any(outcomes.get(d, {}).get("status") == "ran" for d in detectors)
 
 
 def _normalize_check_output(out: str, cwd: Path) -> str:
@@ -393,11 +471,14 @@ def verify_fix_closed(
         rescanned = _default_discover(
             worktree_path, docs_index_file=docs_index_file, outcomes=outcomes,
         )
-        if not any(record.get("status") == "ran" for record in outcomes.values()) or any(
-            record.get("status") in {"failed", "unavailable"}
-            for record in outcomes.values()
-        ):
-            _append_text(log_file, "verification: incomplete discovery; finding remains open")
+        if not responsible_detector_ran(finding.rule, outcomes):
+            # A detector that cannot report this rule ran (or none did):
+            # absence from the rescan is not closure evidence.
+            _append_text(
+                log_file,
+                "verification: incomplete discovery; no detector responsible "
+                f"for rule={finding.rule} ran; finding remains open",
+            )
             return False
     else:
         rescanned = discover_fn(worktree_path, docs_index_file=docs_index_file)
