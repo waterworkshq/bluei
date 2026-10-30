@@ -379,19 +379,22 @@ def test_created_git_metadata_fails_stop(tmp_path, bk):
 
 
 def test_unreadable_git_pointer_is_not_skipped(tmp_path, bk, monkeypatch):
-    from pathlib import Path
     wt = tmp_path / "wt"
     wt.mkdir()
     pointer = wt / ".git"
     pointer.write_text("gitdir: missing")
-    original = Path.read_bytes
-    def denied(path):
-        if path == pointer:
+    original = os.open
+    denied_reads = []
+    def denied(path, flags, *args, **kwargs):
+        if os.fspath(path) == ".git" and not flags & os.O_DIRECTORY:
+            denied_reads.append(path)
             raise PermissionError("denied")
-        return original(path)
-    monkeypatch.setattr(Path, "read_bytes", denied)
+        return original(path, flags, *args, **kwargs)
+    monkeypatch.setattr(os, "open", denied)
     with pytest.raises(CheckpointError, match="denied"):
         capture_checkpoint(wt, bk)
+    assert denied_reads == [".git"]
+    assert list(bk.iterdir()) == []
 
 
 def test_new_nested_git_in_excluded_directory_fails_stop(tmp_path, bk):

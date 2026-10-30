@@ -31,6 +31,7 @@ class _Entry:
     kind: str
     mode: int = 0
     target: str = ""
+    source_stat: Optional[os.stat_result] = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -85,24 +86,38 @@ def _walk(root: Path, exclude: set[str]):
             if stat.S_ISLNK(st.st_mode):
                 entry = _Entry("symlink", target=os.readlink(p))
             elif stat.S_ISREG(st.st_mode):
-                entry = _Entry("file", stat.S_IMODE(st.st_mode))
+                entry = _Entry("file", stat.S_IMODE(st.st_mode), source_stat=st)
             else:
                 raise CheckpointError(f"unsupported special file in worktree: {p}")
             yield str(p.relative_to(root)), p, entry
 
 
-def _git_metadata(root: Path):
+def _git_metadata(root: Path, *, rootfd: Optional[int] = None):
     """Record the root .git identity and resolve a verified index location."""
+    if rootfd is None:
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            return _git_metadata(root, rootfd=fd)
+        finally:
+            os.close(fd)
     link = root / ".git"
     try:
-        st = link.lstat()
+        st = os.stat(".git", dir_fd=rootfd, follow_symlinks=False)
     except FileNotFoundError:
         return None, None
     identity = (st.st_dev, st.st_ino, st.st_mode)
     if stat.S_ISDIR(st.st_mode):
         gitdir = link
     elif stat.S_ISREG(st.st_mode):
-        data = link.read_bytes()
+        fd = os.open(".git", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=rootfd)
+        with os.fdopen(fd, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if not stat.S_ISREG(opened.st_mode) or _file_signature(opened) != _file_signature(st):
+                raise CheckpointError(f"Git pointer changed during capture: {link}")
+            # ponytail: Git pointers over 4 KiB are unsupported; widen only with a bounded format.
+            data = stream.read(4097)
+            if len(data) > 4096 or _file_signature(os.fstat(stream.fileno())) != _file_signature(opened):
+                raise CheckpointError(f"invalid or changed .git pointer at {link}")
         try:
             text = data.decode("utf-8").strip()
         except UnicodeError as exc:
@@ -123,21 +138,33 @@ def _git_metadata(root: Path):
     return identity, gitdir / "index"
 
 
-def _index_bytes(path: Optional[Path], max_bytes: int = MAX_BYTES):
+def _file_signature(st: os.stat_result):
+    return (st.st_dev, st.st_ino, st.st_mode, st.st_nlink, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _index_bytes(path: Optional[Path], max_bytes: int = MAX_BYTES, *, dir_fd: Optional[int]):
     if path is None:
         return None
+    if dir_fd is None:
+        raise CheckpointError("Git directory descriptor missing")
     try:
-        st = path.lstat()
+        st = os.stat(path.name, dir_fd=dir_fd, follow_symlinks=False)
     except FileNotFoundError:
         return None
     if not stat.S_ISREG(st.st_mode):
         raise CheckpointError(f"unsupported Git index: {path}")
     if st.st_size > max_bytes:
         raise CheckpointError(f"checkpoint over byte ceiling ({max_bytes})")
-    with path.open("rb") as stream:
+    fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    with os.fdopen(fd, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or _file_signature(opened) != _file_signature(st):
+            raise CheckpointError(f"Git index changed during capture: {path}")
         data = stream.read(max_bytes + 1)
-    if len(data) > max_bytes:
-        raise CheckpointError(f"checkpoint over byte ceiling ({max_bytes})")
+        if len(data) > max_bytes:
+            raise CheckpointError(f"checkpoint over byte ceiling ({max_bytes})")
+        if _file_signature(os.fstat(stream.fileno())) != _file_signature(opened):
+            raise CheckpointError(f"Git index changed during capture: {path}")
     return data
 
 
@@ -151,11 +178,16 @@ def _root_mode(root: Path):
 def capture_checkpoint(root: Path, backup_root: Path, *, exclude_paths: Iterable[Path] = (),
                        max_files: int = MAX_FILES, max_bytes: int = MAX_BYTES) -> WorktreeCheckpoint:
     backup_dir = None
+    rootfd = gitfd = None
     try:
         root = Path(os.path.abspath(root))
         root_mode = _root_mode(root)
         root_st = root.lstat()
         root_identity = (root_st.st_dev, root_st.st_ino)
+        rootfd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        opened_root = os.fstat(rootfd)
+        if (opened_root.st_dev, opened_root.st_ino) != root_identity:
+            raise CheckpointError("worktree root identity changed during capture")
         exclude = {os.path.abspath(p) for p in exclude_paths}
         for item in exclude:
             path = Path(item)
@@ -168,8 +200,21 @@ def capture_checkpoint(root: Path, backup_root: Path, *, exclude_paths: Iterable
         backup_root = Path(backup_root).resolve()
         if backup_root == root or root in backup_root.parents or backup_root == root.resolve() or root.resolve() in backup_root.parents:
             raise CheckpointError(f"backup root {backup_root} must live outside the worktree {root}")
-        identity, index = _git_metadata(root)
-        index_data = _index_bytes(index, max_bytes)
+        identity, index = _git_metadata(root, rootfd=rootfd)
+        if index is not None:
+            if index.parent == root / ".git":
+                gitfd = os.open(".git", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=rootfd)
+                opened_git = os.fstat(gitfd)
+                if (opened_git.st_dev, opened_git.st_ino, opened_git.st_mode) != identity:
+                    raise CheckpointError("Git directory identity changed during capture")
+            else:
+                anchor = os.open(index.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    with _open_parent(anchor, str(index.relative_to(index.anchor))) as (parentfd, _):
+                        gitfd = os.dup(parentfd)
+                finally:
+                    os.close(anchor)
+        index_data = _index_bytes(index, max_bytes, dir_fd=gitfd)
         entries = {}
         total = len(index_data) if index_data is not None else 0
         for rel, path, entry in _walk(root, exclude):
@@ -177,7 +222,7 @@ def capture_checkpoint(root: Path, backup_root: Path, *, exclude_paths: Iterable
             if len(entries) > max_files:
                 raise CheckpointError(f"checkpoint over file ceiling ({max_files})")
             if entry.kind == "file":
-                st = path.lstat()
+                st = entry.source_stat
                 # ponytail: hardlinks are unsupported; preserve inode groups in a future snapshot format.
                 if st.st_nlink > 1:
                     raise CheckpointError(f"unsupported hardlinked file: {path}")
@@ -189,24 +234,50 @@ def capture_checkpoint(root: Path, backup_root: Path, *, exclude_paths: Iterable
         cp = WorktreeCheckpoint(root, backup_dir, entries, exclude, root_mode=root_mode,
                                 root_identity=root_identity,
                                 git_identity=identity, index_target=index, index_existed=index_data is not None)
+        total = len(index_data) if index_data is not None else 0
         for rel, entry in entries.items():
             if entry.kind == "file":
                 dest = cp._backup_for(rel)
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(root / rel, dest)
+                with _open_parent(rootfd, rel) as (parentfd, name):
+                    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parentfd)
+                with os.fdopen(fd, "rb") as source, dest.open("xb") as target:
+                    opened = os.fstat(source.fileno())
+                    if not stat.S_ISREG(opened.st_mode) or _file_signature(opened) != _file_signature(entry.source_stat):
+                        raise CheckpointError(f"source file changed during capture: {rel}")
+                    while True:
+                        block = source.read(min(1024 * 1024, max_bytes - total + 1))
+                        if not block:
+                            break
+                        total += len(block)
+                        if total > max_bytes:
+                            raise CheckpointError(f"checkpoint over byte ceiling ({max_bytes})")
+                        target.write(block)
+                    if _file_signature(os.fstat(source.fileno())) != _file_signature(opened):
+                        raise CheckpointError(f"source file changed during capture: {rel}")
         if index_data is not None:
             cp.index_backup = backup_dir / "git_index.bin"
             cp.index_backup.write_bytes(index_data)
-        if index is not None:
-            cp.git_dir_fd = os.open(index.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        if _git_metadata(root, rootfd=rootfd) != (identity, index):
+            raise CheckpointError("root Git metadata changed during capture")
+        current_root = root.lstat()
+        if (current_root.st_dev, current_root.st_ino) != root_identity:
+            raise CheckpointError("worktree root identity changed during capture")
+        cp.git_dir_fd, gitfd = gitfd, None
         return cp
-    except (OSError, CheckpointError) as exc:
+    except BaseException as exc:
         if backup_dir is not None:
             try:
                 shutil.rmtree(backup_dir)
             except OSError as cleanup:
                 raise CheckpointError(f"checkpoint capture failed: {exc}; partial backup retained at {backup_dir}: {cleanup}") from exc
-        raise CheckpointError(f"checkpoint capture failed: {exc}") from exc
+        if isinstance(exc, (OSError, CheckpointError)):
+            raise CheckpointError(f"checkpoint capture failed: {exc}") from exc
+        raise
+    finally:
+        for fd in (rootfd, gitfd):
+            if fd is not None:
+                os.close(fd)
 
 
 def _matches_snapshot(cp: WorktreeCheckpoint, rel: str, entry: _Entry, path: Path) -> bool:
@@ -406,7 +477,7 @@ def changed_paths(cp: WorktreeCheckpoint) -> set[str]:
     identity, index = _git_metadata(cp.root)
     if identity != cp.git_identity or index != cp.index_target:
         changed.add(".git")
-    elif index is not None and _index_bytes(index) != (cp.index_backup.read_bytes() if cp.index_existed else None):
+    elif index is not None and _index_bytes(index, dir_fd=cp.git_dir_fd) != (cp.index_backup.read_bytes() if cp.index_existed else None):
         changed.add(".git/index")
     current = {rel: (p, entry) for rel, p, entry in _walk(cp.root, cp.exclude_paths)}
     for rel in cp.entries.keys() | current.keys():

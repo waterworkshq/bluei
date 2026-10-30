@@ -10,6 +10,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Checkpoint capture anchors source/index reads to directory descriptors, rejects post-scan symlink or inode swaps, and enforces the shared byte ceiling while reading. Raced or interrupted captures remove partial snapshots before mutation; Git pointer reads are bounded and no-follow.
 - Deterministic cascade and recipe attempts restore pre-attempt source and index state after failed validation, exceptions, timeouts, or undeclared edits. Snapshot failures stop before mutation; restoration failures retain recovery evidence and stop fallback. Bounded checkpoints reject hardlinks, special files, nested Git repositories, and ambiguous log aliases rather than risking data loss.
 - Ruff fix commands select only the validated finding rule and target with unsafe fixes disabled. Non-fixable findings, malformed selectors, and failing commands no longer trigger unrelated cleanup or count as successful fixes. Deterministic success evidence is written only after outer tier validation accepts the candidate.
 - Python plugin discovery reads Ruff's real `filename` field and retains repository-relative targets instead of producing empty-path findings. Invalid or outside-repository paths are rejected; legacy `path` payloads remain supported.
