@@ -46,6 +46,7 @@ class WorktreeCheckpoint:
     root_mode: int = 0
     root_identity: object = None
     git_identity: object = None
+    git_dir_fd: Optional[int] = None
 
     def _backup_for(self, rel: str) -> Path:
         return self.backup_dir / "data" / rel
@@ -196,6 +197,8 @@ def capture_checkpoint(root: Path, backup_root: Path, *, exclude_paths: Iterable
         if index_data is not None:
             cp.index_backup = backup_dir / "git_index.bin"
             cp.index_backup.write_bytes(index_data)
+        if index is not None:
+            cp.git_dir_fd = os.open(index.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         return cp
     except (OSError, CheckpointError) as exc:
         if backup_dir is not None:
@@ -253,6 +256,7 @@ def _fd_copy(src: Path, dst_fd: int, mode: Optional[int] = None) -> None:
     with os.fdopen(dst_fd, "wb") as target, open(src, "rb") as source:
         shutil.copyfileobj(source, target)
         if mode is not None:
+            target.flush()
             os.fchmod(target.fileno(), mode)
 
 
@@ -324,8 +328,17 @@ def restore_checkpoint(cp: WorktreeCheckpoint) -> None:
                             os.close(dirfd)
             os.fchmod(rootfd, cp.root_mode)
             if index is not None:
-                gitfd = os.open(index.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                if cp.git_dir_fd is None:
+                    raise CheckpointError("Git directory descriptor missing")
+                captured = os.fstat(cp.git_dir_fd)
+                if index.parent == cp.root / ".git":
+                    gitfd = os.open(".git", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=rootfd)
+                else:
+                    gitfd = os.dup(cp.git_dir_fd)
                 try:
+                    current_git = os.fstat(gitfd)
+                    if (current_git.st_dev, current_git.st_ino) != (captured.st_dev, captured.st_ino):
+                        raise CheckpointError("Git directory identity changed")
                     if cp.index_existed:
                         # No O_TRUNC: a hardlinked or special target must be rejected
                         # by fstat before any byte of it is modified.
@@ -354,6 +367,9 @@ def restore_checkpoint(cp: WorktreeCheckpoint) -> None:
 
 
 def discard_checkpoint(cp: WorktreeCheckpoint) -> None:
+    if cp.git_dir_fd is not None:
+        os.close(cp.git_dir_fd)
+        cp.git_dir_fd = None
     if not cp.retained:
         shutil.rmtree(cp.backup_dir)
 

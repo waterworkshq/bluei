@@ -235,3 +235,50 @@ def test_restore_rebuilds_tree_with_anchored_operations(tmp_path):
     assert stat.S_IMODE((root / "top.txt").stat().st_mode) == 0o644
     assert (root / "sub" / "deep" / "d.txt").read_text() == "deep"
     assert cp.retained is False
+
+
+def test_index_restore_stays_anchored_when_root_path_is_replaced(tmp_path, monkeypatch):
+    root = tmp_path / "wt"
+    (root / ".git").mkdir(parents=True)
+    (root / ".git/index").write_bytes(b"original-index")
+    (root / "source").write_text("original")
+    cp = capture_checkpoint(root, tmp_path / "backups")
+    (root / "source").write_text("changed")
+    outside = tmp_path / "outside"
+    (outside / ".git").mkdir(parents=True)
+    sentinel = outside / ".git/index"
+    sentinel.write_bytes(b"outside-index")
+    old = tmp_path / "original-root"
+    real_copy = wt._fd_copy
+    swapped = []
+    def replace_root_then_copy(src, fd, mode=None):
+        if not swapped:
+            swapped.append(True)
+            root.rename(old)
+            root.symlink_to(outside, target_is_directory=True)
+        return real_copy(src, fd, mode)
+    monkeypatch.setattr(wt, "_fd_copy", replace_root_then_copy)
+    try:
+        restore_checkpoint(cp)
+    except CheckpointRestoreError:
+        assert cp.retained
+    assert swapped
+    assert sentinel.read_bytes() == b"outside-index"
+    assert (old / ".git/index").read_bytes() == b"original-index"
+    wt.discard_checkpoint(cp)
+
+
+def test_small_file_special_mode_is_applied_after_buffer_flush(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("mode-clearing behavior requires a non-root writer")
+    root = tmp_path / "wt"
+    root.mkdir()
+    target = root / "program"
+    target.write_bytes(b"small original content")
+    target.chmod(0o4755)
+    cp = capture_checkpoint(root, tmp_path / "backups")
+    target.write_bytes(b"changed")
+    restore_checkpoint(cp)
+    assert target.read_bytes() == b"small original content"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o4755
+    wt.discard_checkpoint(cp)
