@@ -51,24 +51,8 @@ class Plugin(ToolWrapperPlugin):
     def _run_tool(
         self, repo_path: Path, extra_args: Optional[List[str]] = None
     ) -> Optional[str]:
-        """Override base to accept returncode 1 (markdownlint reports findings via exit code)."""
-        tool = self.tool_name
-        if not tool or not shutil.which(tool):
-            return None
-        cmd = [tool] + self.tool_args + (extra_args or [])
-        try:
-            result = subprocess.run(
-                cmd,
-                cwd=str(repo_path),
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            if result.returncode <= 1 and result.stdout:
-                return result.stdout
-            return None
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return None
+        """Use the shared adapter so tool completion is reported consistently."""
+        return super()._run_tool(repo_path, extra_args)
 
     def parse_output(self, output: str, repo_path: Path) -> List[Finding]:
         """Parse markdownlint JSON output into Findings.

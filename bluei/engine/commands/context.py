@@ -69,6 +69,12 @@ class RunContext:
     merged_pr_urls: List[str] = field(default_factory=list)
     blocked_reasons: List[str] = field(default_factory=list)
 
+    # Per-detector discovery outcomes for the current run: detector name ->
+    # {"status": ran|unavailable|failed|skipped, "count": int, "reason"?: str}.
+    # Filled by run_discover_phase from the actual detection adapters and
+    # persisted into the status artifact by finalize/verify-only.
+    detector_outcomes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
     # Cost tracking
     cost_tracker: Optional[CostTracker] = None
     cost_log_path: Optional[Path] = None

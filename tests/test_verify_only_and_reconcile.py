@@ -79,6 +79,7 @@ class TestVerifyOnly:
                 written_findings=1,
                 suppressed_findings=[],
                 blocked_reasons=[],
+                detector_outcomes={"test-detector": {"status": "ran", "count": 0}},
             )
 
         assert rc == 0
@@ -126,6 +127,7 @@ class TestVerifyOnly:
                 written_findings=1,
                 suppressed_findings=[],
                 blocked_reasons=[],
+                detector_outcomes={"test-detector": {"status": "ran", "count": 0}},
             )
 
         assert rc == 0
@@ -173,6 +175,7 @@ class TestVerifyOnly:
                 written_findings=1,
                 suppressed_findings=[],
                 blocked_reasons=[],
+                detector_outcomes={"test-detector": {"status": "ran", "count": 0}},
             )
 
         assert rc == 0
@@ -215,6 +218,7 @@ class TestVerifyOnly:
                 written_findings=0,
                 suppressed_findings=[],
                 blocked_reasons=[],
+                detector_outcomes={"test-detector": {"status": "ran", "count": 0}},
             )
 
         assert rc == 0

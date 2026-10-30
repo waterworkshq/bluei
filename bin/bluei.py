@@ -293,7 +293,7 @@ def _cmd_run(name: str, passthrough: list[str]):
     from bluei.app.runner import RunEngine, RunOptions
     from bluei.app.state import StateManager
 
-    config_mgr = ConfigManager(Path(BLUEI_DIR))
+    config_mgr = ConfigManager()
     registry = RepoRegistry(config_mgr)
     repo = registry.find_by_name(name)
     if not repo:
@@ -315,7 +315,29 @@ def _cmd_run(name: str, passthrough: list[str]):
         print(result.output, end="" if result.output.endswith("\n") else "\n")
     if result.error:
         print(result.error, file=sys.stderr)
-    print(f"Findings: {result.run.findings_detected}")
+    run = result.run
+    if getattr(run, "scan_complete", False):
+        print(f"Findings: {run.findings_detected}")
+    elif result.success and phase in {"pr-cycle", "merge-cycle", "review-cycle", "refactor-cycle"}:
+        print(f"Completed {phase}; no discovery scan was performed.")
+    else:
+        # Interrupted/partial scan — never present it as a clean count.
+        print(
+            f"bluei: scan INCOMPLETE ({run.status})"
+            + (f": {run.error}" if run.error else ""),
+            file=sys.stderr,
+        )
+        if run.findings_recovered is not None:
+            print(
+                f"Findings: {run.findings_recovered} "
+                "(recovered from this run; may be a lower bound; "
+                "health/state not updated)"
+            )
+        else:
+            print(
+                "Findings: unknown — scan did not complete; no count is claimed.",
+                file=sys.stderr,
+            )
     return 0 if result.success else 1
 
 

@@ -8,6 +8,8 @@ in orchestrator.py to merge plugin findings with detector findings.
 from __future__ import annotations
 
 import logging
+import json
+import shutil
 import importlib.util
 import sys
 from pathlib import Path
@@ -155,31 +157,53 @@ def load_plugin(plugin_id: str, plugins_dir: Path) -> Optional[Any]:
 
 
 def load_applicable_plugins(
-    repo_path: Path, plugins_dir: Optional[Path] = None
+    repo_path: Path,
+    plugins_dir: Optional[Path] = None,
+    outcomes: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[Any]:
     """Load all plugins that are applicable to the given repository.
 
     Detects repo languages, scans plugins, and returns instantiated plugin
-    objects for the matching plugins.
+    objects for the matching plugins. When ``outcomes`` is given, records why
+    each discovered plugin did or did not reach the loaded state.
     """
     if plugins_dir is None:
         found_dir = _find_plugins_dir(repo_path)
         if found_dir is None:
+            if outcomes is not None:
+                outcomes["plugins"] = {
+                    "status": "skipped",
+                    "count": 0,
+                    "reason": "no plugins/ directory found",
+                }
             return []
         plugins_dir = found_dir
 
     manifests = discover_plugins(plugins_dir)
     if not manifests:
+        if outcomes is not None:
+            outcomes["plugins"] = {
+                "status": "skipped",
+                "count": 0,
+                "reason": "no plugin manifests found",
+            }
         return []
 
     languages = detect_repo_languages(repo_path)
 
     loaded: List[Any] = []
     for plugin_id, manifest in manifests.items():
+        key = f"plugin:{plugin_id}"
         plugin_languages = [l.lower() for l in (manifest.get("languages") or [])]
         # Match if the plugin supports any detectable language
         matches = any(lang.lower() in plugin_languages for lang in languages)
         if not matches:
+            if outcomes is not None:
+                outcomes[key] = {
+                    "status": "skipped",
+                    "count": 0,
+                    "reason": f"plugin languages {plugin_languages} not detected in repo",
+                }
             continue
 
         # Direct ID-based loading
@@ -189,12 +213,36 @@ def load_applicable_plugins(
             plugin_dir = Path(manifest["_path"])
             plugin_instance = _load_plugin_module(plugin_id, plugin_dir)
 
-        if plugin_instance is not None and hasattr(plugin_instance, "detect"):
-            if not plugin_instance.detect(repo_path):
+        if plugin_instance is None:
+            if outcomes is not None:
+                outcomes[key] = {
+                    "status": "failed",
+                    "count": 0,
+                    "reason": "plugin module failed to load (no Plugin class or import error)",
+                }
+            continue
+
+        if hasattr(plugin_instance, "detect"):
+            try:
+                applies = plugin_instance.detect(repo_path)
+            except Exception as exc:
+                if outcomes is not None:
+                    outcomes[key] = {
+                        "status": "failed",
+                        "count": 0,
+                        "reason": f"plugin detect() raised: {exc}",
+                    }
+                continue
+            if not applies:
+                if outcomes is not None:
+                    outcomes[key] = {
+                        "status": "skipped",
+                        "count": 0,
+                        "reason": "plugin detect() reported repository not applicable",
+                    }
                 continue
 
-        if plugin_instance is not None:
-            loaded.append(plugin_instance)
+        loaded.append(plugin_instance)
 
     return loaded
 
@@ -203,28 +251,60 @@ def run_plugin_discovery(
     repo_path: Path,
     plugins_dir: Optional[Path] = None,
     config: Optional[Dict[str, Any]] = None,
+    outcomes: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[Finding]:
     """Run discovery against all applicable plugins and return findings.
 
     This is the main integration point called from discover_findings().
     It loads plugins matching the repo's languages and calls each
-    plugin's discover() method.
+    plugin's discover() method. When ``outcomes`` is given, one record per
+    plugin records whether it ran, why it was skipped/failed, and — via the
+    ToolWrapperPlugin outcome hook — whether its external tool actually ran.
     """
     if config is None:
         config = {}
 
-    plugins = load_applicable_plugins(repo_path, plugins_dir)
+    plugin_outcomes: Dict[str, Dict[str, Any]] = {}
+    plugins = load_applicable_plugins(repo_path, plugins_dir, plugin_outcomes)
+    if outcomes is not None:
+        outcomes.update(plugin_outcomes)
     if not plugins:
         return []
 
     all_findings: List[Finding] = []
     for plugin in plugins:
+        key = f"plugin:{getattr(plugin, 'id', 'unknown')}"
         try:
             plugin_config = config.get(plugin.id, {})
             findings = plugin.discover(repo_path, plugin_config)
             if findings:
                 all_findings.extend(findings)
-        except Exception:
+            record: Dict[str, Any] = {"status": "ran", "count": len(findings)}
+            tool_outcome = getattr(plugin, "last_tool_outcome", None)
+            tool_name = getattr(plugin, "tool_name", "") or None
+            if tool_name:
+                record["tool"] = tool_name
+                record["tool_outcome"] = tool_outcome or "unknown"
+                if tool_outcome != "tool-ran":
+                    missing = tool_outcome == "tool-missing" or (
+                        tool_outcome is None and not shutil.which(tool_name)
+                    )
+                    record["status"] = "unavailable" if missing else "failed"
+                    record["fallback_findings"] = len(findings)
+                    record["reason"] = (
+                        f"external tool '{tool_name}' did not complete "
+                        f"({tool_outcome or 'outcome not reported'}); "
+                        "count includes any local fallback findings"
+                    )
+            if outcomes is not None:
+                outcomes[key] = record
+        except Exception as exc:
+            if outcomes is not None:
+                outcomes[key] = {
+                    "status": "failed",
+                    "count": 0,
+                    "reason": f"plugin discover() raised: {exc}",
+                }
             continue
 
     return all_findings

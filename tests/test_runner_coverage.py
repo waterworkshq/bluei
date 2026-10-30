@@ -310,10 +310,19 @@ def _make_subprocess_ok(stdout: str = _REALISTIC_OUTPUT, stderr: str = ""):
     return proc
 
 
+@pytest.fixture
+def completed_metrics(runner_env, monkeypatch):
+    # Mocked child processes must supply the same completion evidence as the engine.
+    monkeypatch.setattr(runner_env["runner"], "_read_completed_run_metrics", lambda *args: {
+        "run_completed": True, "findings_detected": 4, "issues_created": 2,
+        "prs_created": 1, "detector_outcomes": {"test-detector": {"status": "ran", "count": 4}},
+    })
+
+
 class TestRunExecution:
     """Test RunEngine.run() end-to-end with mocked subprocess."""
 
-    def test_successful_run_returns_success(self, runner_env, test_repo):
+    def test_successful_run_returns_success(self, runner_env, test_repo, completed_metrics):
         with patch("bluei.app.runner.subprocess.run") as mock_sub:
             mock_sub.return_value = _make_subprocess_ok()
             result = runner_env["runner"].run(
@@ -336,7 +345,7 @@ class TestRunExecution:
         assert len(log_files) == 1
         assert "findings=4" in log_files[0].read_text()
 
-    def test_successful_run_records_health_trend(self, runner_env, test_repo):
+    def test_successful_run_records_health_trend(self, runner_env, test_repo, completed_metrics):
         with patch("bluei.app.runner.subprocess.run") as mock_sub:
             mock_sub.return_value = _make_subprocess_ok()
             result = runner_env["runner"].run(
@@ -409,7 +418,7 @@ class TestRunExecution:
         assert result.run.status == "skipped"
         assert "already active" in result.run.error
 
-    def test_run_persists_run_record(self, runner_env, test_repo):
+    def test_run_persists_run_record(self, runner_env, test_repo, completed_metrics):
         with patch("bluei.app.runner.subprocess.run") as mock_sub:
             mock_sub.return_value = _make_subprocess_ok()
             result = runner_env["runner"].run(
@@ -479,7 +488,7 @@ class TestRunExecution:
             assert result.success is True
             assert "active_prs=2" in result.output
 
-    def test_run_with_deterministic_backend(self, runner_env, test_repo):
+    def test_run_with_deterministic_backend(self, runner_env, test_repo, completed_metrics):
         with patch("bluei.app.runner.subprocess.run") as mock_sub:
             mock_sub.return_value = _make_subprocess_ok()
             result = runner_env["runner"].run(
@@ -531,7 +540,7 @@ class TestRunExecution:
 
     def test_persistence_failure_in_finally_does_not_break_successful_run(
         self, runner_env, test_repo
-    ):
+    , completed_metrics):
         """A successful run must still return success even if save_run fails
         in the finally block."""
         with (

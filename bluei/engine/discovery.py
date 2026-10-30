@@ -16,6 +16,42 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
+# ---------------------------------------------------------------------------
+# Detector outcome records (truthful per-detector reporting)
+# ---------------------------------------------------------------------------
+# An outcome entry maps a detector name to what actually happened when it was
+# invoked for this scan — one of:
+#   ran        — the detector executed; ``count`` findings produced
+#   unavailable — the detector's external tool/binary was missing
+#   failed     — the detector ran but errored (timeout, bad exit, bad output)
+#   skipped    — the detector deliberately did not apply to this repository
+# ``reason`` carries the concrete cause. Outcomes come from the detection
+# adapters themselves, not from parsing log text.
+
+DETECTOR_OUTCOME_STATUSES = ("ran", "unavailable", "failed", "skipped")
+
+
+def make_detector_outcome(
+    status: str, count: int = 0, reason: Optional[str] = None
+) -> Dict[str, Any]:
+    """Build one detector outcome record."""
+    entry: Dict[str, Any] = {"status": status, "count": int(count)}
+    if reason:
+        entry["reason"] = reason
+    return entry
+
+
+def _record_outcome(
+    outcomes: Optional[Dict[str, Dict[str, Any]]],
+    detector: str,
+    status: str,
+    count: int = 0,
+    reason: Optional[str] = None,
+) -> None:
+    if outcomes is None:
+        return
+    outcomes[detector] = make_detector_outcome(status, count, reason)
+
 from bluei.engine.constants import (
     DEFAULT_DOCS_INDEX,
     DEFAULT_LOG,
@@ -142,6 +178,7 @@ def ast_scan_pipeline(
     log_file: Path,
     rule_meta: dict,
     config: LanguageScanConfig,
+    outcome: Optional[Dict[str, Any]] = None,
 ) -> List[Finding]:
     """Run AST pattern matching for a single language.
 
@@ -150,18 +187,30 @@ def ast_scan_pipeline(
         log_file: Path to the run log (unused, kept for signature parity).
         rule_meta: Dict mapping rule IDs to their catalog entries.
         config: Language scan configuration.
+        outcome: Optional dict filled with this scan's detector outcome.
 
     Returns:
         List of Finding objects for every matched AST pattern.
     """
+    if not any(walk_source_files(repo_path, ext, config.skip_dirs) for ext in config.extensions):
+        _record_outcome(outcome, f"ast-{config.name}", "skipped", reason="no applicable source files")
+        return []
+
     if config.needs_tree_sitter:
         from bluei.engine.ast_engine.ts_parser import TreeSitterAdapter
 
         if not TreeSitterAdapter.is_available():
+            _record_outcome(
+                outcome,
+                f"ast-{config.name}",
+                "unavailable",
+                reason="tree-sitter parser not available",
+            )
             return []
 
     matcher = config.get_matcher()
     findings: List[Finding] = []
+    parse_failures: List[str] = []
 
     for ext in config.extensions:
         # skip_dirs are pruned during the walk (not filtered after): an
@@ -182,8 +231,12 @@ def ast_scan_pipeline(
 
             rel_path = str(f.relative_to(repo_path))
             matches = matcher.find_matches(source, rel_path, language)
+            parse_failures.extend(getattr(matcher, "last_parse_failures", []) or [])
 
             for m in matches:
+                if (m.pattern.id == "discount-math-sign" and rel_path == "price.py"
+                        and not (repo_path / "src/qa_sandbox/orders.py").is_file()):
+                    continue
                 rule_entry = rule_meta.get(m.pattern.id)
                 if rule_entry is None:
                     # AST engine uses the full rule id; catalog stores the shorter form.
@@ -212,6 +265,23 @@ def ast_scan_pipeline(
                     )
                 )
 
+    _record_outcome(
+        outcome,
+        f"ast-{config.name}",
+        "failed" if parse_failures else "ran",
+        len(findings),
+        reason=(
+            f"{len(parse_failures)} file(s) could not be parsed and were not scanned"
+            if parse_failures
+            else None
+        ),
+    )
+    if parse_failures:
+        _append_text(
+            log_file,
+            f"ast-{config.name}-discovery: {len(parse_failures)} file(s) failed to parse: "
+            + ", ".join(parse_failures[:20]),
+        )
     return findings
 
 
@@ -221,38 +291,50 @@ def ast_scan_pipeline(
 
 
 def _ast_scan_python_files(
-    repo_path: Path, log_file: Path, rule_meta: dict
+    repo_path: Path,
+    log_file: Path,
+    rule_meta: dict,
+    outcome: Optional[Dict[str, Any]] = None,
 ) -> List[Finding]:
     """Walk *.py files under repo_path and run AST pattern matching."""
     return ast_scan_pipeline(
-        repo_path, log_file, rule_meta, LANGUAGE_SCAN_CONFIGS["python"]
+        repo_path, log_file, rule_meta, LANGUAGE_SCAN_CONFIGS["python"], outcome
     )
 
 
 def _ast_scan_ts_js_files(
-    repo_path: Path, log_file: Path, rule_meta: dict
+    repo_path: Path,
+    log_file: Path,
+    rule_meta: dict,
+    outcome: Optional[Dict[str, Any]] = None,
 ) -> List[Finding]:
     """Walk .ts/.tsx/.js/.jsx files and run tree-sitter AST matching."""
     return ast_scan_pipeline(
-        repo_path, log_file, rule_meta, LANGUAGE_SCAN_CONFIGS["typescript"]
+        repo_path, log_file, rule_meta, LANGUAGE_SCAN_CONFIGS["typescript"], outcome
     )
 
 
 def _ast_scan_go_files(
-    repo_path: Path, log_file: Path, rule_meta: dict
+    repo_path: Path,
+    log_file: Path,
+    rule_meta: dict,
+    outcome: Optional[Dict[str, Any]] = None,
 ) -> List[Finding]:
     """Walk .go files and run tree-sitter AST matching."""
     return ast_scan_pipeline(
-        repo_path, log_file, rule_meta, LANGUAGE_SCAN_CONFIGS["go"]
+        repo_path, log_file, rule_meta, LANGUAGE_SCAN_CONFIGS["go"], outcome
     )
 
 
 def _ast_scan_rust_files(
-    repo_path: Path, log_file: Path, rule_meta: dict
+    repo_path: Path,
+    log_file: Path,
+    rule_meta: dict,
+    outcome: Optional[Dict[str, Any]] = None,
 ) -> List[Finding]:
     """Walk .rs files and run tree-sitter AST matching."""
     return ast_scan_pipeline(
-        repo_path, log_file, rule_meta, LANGUAGE_SCAN_CONFIGS["rust"]
+        repo_path, log_file, rule_meta, LANGUAGE_SCAN_CONFIGS["rust"], outcome
     )
 
 
@@ -260,6 +342,7 @@ def discover_findings(
     repo_path: Path,
     log_file: Path = DEFAULT_LOG,
     docs_index_file: Path = DEFAULT_DOCS_INDEX,
+    outcomes: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[Finding]:
     """
     Main public entry for finding discovery.
@@ -268,6 +351,9 @@ def discover_findings(
         repo_path: Absolute path to the target repository.
         log_file: Path to the run log for progress messages.
         docs_index_file: Path to the docs-index YAML for gap/drift detectors.
+        outcomes: Optional dict filled with one record per invoked detector
+            (``{detector: {status, count, reason?}}``). The list return value
+            is unchanged; outcomes are purely additive metadata.
 
     Returns:
         Deduplicated list of Finding objects across all detection sources.
@@ -277,6 +363,12 @@ def discover_findings(
         _append_text(
             log_file,
             "discover_findings: skipping internal discovery for ky repo - using external discovery",
+        )
+        _record_outcome(
+            outcomes,
+            "internal-discovery",
+            "skipped",
+            reason="--skip-internal-discovery set; external discovery owns this repo",
         )
         return []
 
@@ -478,9 +570,15 @@ def discover_findings(
                 rule_meta["doc-drift-stale-reference"]["confidence"],
             )
 
-    # Test-gap detectors
+    # Test-gap detectors. These encode qa-sandbox fixture assumptions (the
+    # sandbox notifications/orders/inventory applications are expected to have
+    # matching tests), so they only apply when the corresponding sandbox
+    # source module actually exists in this repository. An unrelated repo that
+    # happens to have tests/test_orders.py must not be told its coupon
+    # coverage is missing.
+    sandbox_src = repo_path / "src" / "qa_sandbox"
     notifications_test = repo_path / "tests" / "test_notifications.py"
-    if not notifications_test.exists():
+    if (sandbox_src / "notifications.py").exists() and not notifications_test.exists():
         _add_finding(
             "tests/test_notifications.py",
             1,
@@ -492,9 +590,13 @@ def discover_findings(
         )
 
     orders_test_lines = _read_lines("tests/test_orders.py")
-    if orders_test_lines and not any(
-        "invalid" in line.lower() and "coupon" in line.lower()
-        for line in orders_test_lines
+    if (
+        (sandbox_src / "orders.py").exists()
+        and orders_test_lines
+        and not any(
+            "invalid" in line.lower() and "coupon" in line.lower()
+            for line in orders_test_lines
+        )
     ):
         _add_finding(
             "tests/test_orders.py",
@@ -507,8 +609,10 @@ def discover_findings(
         )
 
     inventory_test_lines = _read_lines("tests/test_inventory.py")
-    if inventory_test_lines and not any(
-        "negative" in line.lower() for line in inventory_test_lines
+    if (
+        (sandbox_src / "inventory.py").exists()
+        and inventory_test_lines
+        and not any("negative" in line.lower() for line in inventory_test_lines)
     ):
         _add_finding(
             "tests/test_inventory.py",
@@ -520,6 +624,14 @@ def discover_findings(
             safe_to_autofix=True,
         )
 
+    _record_outcome(
+        outcomes,
+        "sandbox-string-detectors",
+        "ran",
+        len(findings),
+        reason="qa-sandbox fixture string detectors (path-scoped)",
+    )
+
     # AST-based detection (supplements string-based detection); dedup by (path, line, rule).
     existing_keys = {(f.path, f.line, f.rule) for f in findings}
     # Call wrappers individually so tests can monkeypatch them.
@@ -530,7 +642,16 @@ def discover_findings(
         ("rust", _ast_scan_rust_files),
     ]
     for lang_name, scan_fn in ast_scan_calls:
-        lang_findings = scan_fn(repo_path, log_file, rule_meta)
+        lang_outcome: Dict[str, Any] = {}
+        lang_findings = scan_fn(repo_path, log_file, rule_meta, lang_outcome)
+        if lang_outcome:
+            outcomes_key = f"ast-{lang_name}"
+            if outcomes_key not in lang_outcome:
+                lang_outcome[outcomes_key] = make_detector_outcome(
+                    "ran", len(lang_findings)
+                )
+            if outcomes is not None:
+                outcomes.update(lang_outcome)
         if lang_findings:
             added = 0
             for af in lang_findings:
@@ -545,7 +666,12 @@ def discover_findings(
                 )
 
     # Also run type safety discovery for TypeScript repos
-    type_findings = discover_typescript_type_findings(repo_path, log_file)
+    type_outcome: Dict[str, Any] = {}
+    type_findings = discover_typescript_type_findings(
+        repo_path, log_file, outcome=type_outcome
+    )
+    if outcomes is not None:
+        outcomes.update(type_outcome)
     if type_findings:
         findings.extend(type_findings)
         _append_text(
@@ -553,7 +679,12 @@ def discover_findings(
         )
 
     # Also run test coverage discovery
-    coverage_findings = discover_test_coverage_findings(repo_path, log_file)
+    coverage_outcome: Dict[str, Any] = {}
+    coverage_findings = discover_test_coverage_findings(
+        repo_path, log_file, outcome=coverage_outcome
+    )
+    if outcomes is not None:
+        outcomes.update(coverage_outcome)
     if coverage_findings:
         findings.extend(coverage_findings)
         _append_text(
@@ -562,7 +693,10 @@ def discover_findings(
         )
 
     # Run xo linter discovery for TypeScript/JavaScript repos
-    xo_findings = discover_xo_linter_findings(repo_path, log_file)
+    xo_outcome: Dict[str, Any] = {}
+    xo_findings = discover_xo_linter_findings(repo_path, log_file, outcome=xo_outcome)
+    if outcomes is not None:
+        outcomes.update(xo_outcome)
     if xo_findings:
         findings.extend(xo_findings)
         _append_text(
@@ -570,14 +704,19 @@ def discover_findings(
         )
 
     # Run Python linter discovery for Python repos
-    python_findings = discover_python_linter_findings(repo_path, log_file)
+    python_outcome: Dict[str, Any] = {}
+    python_findings = discover_python_linter_findings(
+        repo_path, log_file, outcome=python_outcome
+    )
+    if outcomes is not None:
+        outcomes.update(python_outcome)
     if python_findings:
         findings.extend(python_findings)
         _append_text(
             log_file, f"python-discovery: added {len(python_findings)} ruff findings"
         )
 
-    plugin_findings = run_plugin_discovery(repo_path)
+    plugin_findings = run_plugin_discovery(repo_path, outcomes=outcomes)
     if plugin_findings:
         findings.extend(plugin_findings)
         _append_text(

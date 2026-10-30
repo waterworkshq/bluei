@@ -307,7 +307,9 @@ bluei duster <project-name>
 bluei duster my-app
 ```
 
-**Exit codes:** `0` (success), `1` (error or missing project name)
+Each detector reports `ran`, `skipped`, `unavailable`, or `failed` with its count and reason. Missing tools, interrupted execution, and scans where no detector ran are incomplete, not clean zero-finding results. Partial findings remain visible, but incomplete scans do not improve health or verify existing issues as resolved. Discovery does not install missing tools or generate coverage by executing project tests.
+
+**Exit codes:** `0` (completed scan), `1` (incomplete scan, error, or missing project name)
 
 ---
 

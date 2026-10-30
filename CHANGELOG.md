@@ -10,6 +10,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Public scans report explicit per-detector completion, missing tools, failures, and deliberate skips. Interrupted and skipped-only scans retain current-run counts without claiming clean zero findings or improving health; non-scanning repair/merge phases no longer masquerade as new scans. Incomplete verification cannot close issues or trigger fixing.
+- Sandbox-specific query, arithmetic, notification, and test-gap assumptions no longer fire on unrelated application files. Discovery does not install tools or run tests to generate missing coverage reports.
+- Local verified fixes no longer count simulated PRs as real created/open PRs. Validation filenames are passed as arguments rather than interpolated into executable Python source; Ruff verification does not write caches into the candidate tree.
 - Python plugin discovery reads Ruff's real `filename` field and retains repository-relative targets instead of producing empty-path findings. Invalid or outside-repository paths are rejected; legacy `path` payloads remain supported.
 - Fix verification no longer declares a finding resolved merely because unrelated edits shifted its line number. Closure conservatively requires the same rule to be absent from the target file.
 

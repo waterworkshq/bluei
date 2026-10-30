@@ -53,6 +53,9 @@ def _ruff_se(items, rc=1):
 
 def _xo_repo(tmp: Path) -> Path:
     (tmp / "package.json").write_text(json.dumps({"devDependencies": {"xo": "^0.50"}}))
+    binary = tmp / "node_modules" / ".bin" / "xo"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.touch()
     return _log(tmp)
 
 
@@ -668,12 +671,12 @@ class TestDiscoverTestCoverageFindingsGeneration:
     """Coverage-report generation via nyc and edge cases in statement parsing."""
 
     @patch("bluei.engine.linters.run_capture")
-    def test_generates_coverage_via_nyc_when_package_json_present(self, mr, tmp_path):
-        """No coverage file + package.json present -> attempts nyc generation."""
+    def test_does_not_generate_coverage_during_discovery(self, mr, tmp_path):
         (tmp_path / "package.json").write_text("{}")
-        mr.return_value = (0, "")
-        assert discover_test_coverage_findings(tmp_path, _log(tmp_path)) == []
-        assert mr.called
+        outcome = {}
+        assert discover_test_coverage_findings(tmp_path, _log(tmp_path), outcome) == []
+        mr.assert_not_called()
+        assert outcome["test-coverage"]["status"] == "skipped"
 
     @patch("bluei.engine.linters.run_capture")
     def test_nyc_generation_exception_is_handled(self, mr, tmp_path):

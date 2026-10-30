@@ -97,9 +97,10 @@ def build_target_checks(finding: Finding) -> Dict[str, List[str]]:
                 "python3",
                 "-c",
                 (
-                    f'from pathlib import Path; text = Path("{finding.path}").read_text(encoding="utf-8"); '
+                    'import sys; from pathlib import Path; text = Path(sys.argv[1]).read_text(encoding="utf-8"); '
                     'raise SystemExit(0 if "legacy_pricer.py" not in text else 1)'
                 ),
+                finding.path,
             ]
         }
 
@@ -388,9 +389,18 @@ def verify_fix_closed(
     if discover_fn is None:
         from bluei.engine.orchestrator import discover_findings as _default_discover
 
-        discover_fn = _default_discover
-
-    rescanned = discover_fn(worktree_path, docs_index_file=docs_index_file)
+        outcomes: Dict[str, Dict[str, Any]] = {}
+        rescanned = _default_discover(
+            worktree_path, docs_index_file=docs_index_file, outcomes=outcomes,
+        )
+        if not any(record.get("status") == "ran" for record in outcomes.values()) or any(
+            record.get("status") in {"failed", "unavailable"}
+            for record in outcomes.values()
+        ):
+            _append_text(log_file, "verification: incomplete discovery; finding remains open")
+            return False
+    else:
+        rescanned = discover_fn(worktree_path, docs_index_file=docs_index_file)
     still_firing = [
         f
         for f in rescanned

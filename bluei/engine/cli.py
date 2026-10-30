@@ -7,6 +7,7 @@ Exit codes: 0 success, 1 smoke-test fail, 2 abort, 4 needs-human.
 """
 
 import logging
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -293,7 +294,7 @@ def main() -> int:
 
     cost_log_path = Path(state_file).parent / "cost_log.jsonl"
     governor_ledger_path = Path(state_file).parent / "governor_recommendations.jsonl"
-    run_id = str(uuid.uuid4())
+    run_id = os.environ.get("BLUEI_RUN_ID") or str(uuid.uuid4())
     cost_tracker = CostTracker(
         log_path=cost_log_path,
         soft_warn=2.0,
@@ -371,6 +372,12 @@ def main() -> int:
             cap_ok,
         ) = run_discover_phase(ctx)
         ctx.blocked_reasons.extend(_disc_blocked)
+        if (not any(item.get("status") == "ran" for item in ctx.detector_outcomes.values())
+                or any(item.get("status") in ("failed", "unavailable") for item in ctx.detector_outcomes.values())):
+            for detector, outcome in sorted(ctx.detector_outcomes.items()):
+                print(f"[DETECTOR] {detector} status={outcome.get('status')} count={outcome.get('count', 0)} reason={outcome.get('reason', '')}")
+            print("[INCOMPLETE] Detector coverage incomplete; state and health not finalized")
+            return 1
 
     # --- Contextual Fix Migration ---
     if args.migrate_context:

@@ -2,6 +2,7 @@
 """Plugin discovery and loading."""
 
 import logging
+import json
 import importlib.util
 import shutil
 import subprocess
@@ -62,6 +63,13 @@ class ToolWrapperPlugin(DiscoveryPlugin):
 
     def __init__(self, manifest: Optional[Dict] = None):
         self._manifest = manifest or {}
+        # Outcome hook: what happened to this plugin's external tool on the
+        # last _run_tool() call. One of None (not yet run or no tool
+        # declared), "tool-missing", "tool-ran", "tool-timeout",
+        # "tool-error". Read by the engine plugin loader so a silent empty
+        # result can be distinguished from "the external tool never ran and
+        # only local fallback checks executed".
+        self.last_tool_outcome: Optional[str] = None
 
     @property
     def tool_name(self) -> str:
@@ -75,9 +83,15 @@ class ToolWrapperPlugin(DiscoveryPlugin):
         self, repo_path: Path, extra_args: Optional[List[str]] = None
     ) -> Optional[str]:
         tool = self.tool_name
+        if tool == "npx":
+            self.last_tool_outcome = "tool-missing"
+            return None  # Never allow npx to install packages during discovery.
         if not tool or not shutil.which(tool):
+            self.last_tool_outcome = "tool-missing" if tool else None
             return None
         cmd = [tool] + self.tool_args + (extra_args or [])
+        if tool == "ruff" and "--no-cache" not in cmd:
+            cmd.insert(2, "--no-cache")
         try:
             result = subprocess.run(
                 cmd,
@@ -86,12 +100,28 @@ class ToolWrapperPlugin(DiscoveryPlugin):
                 text=True,
                 timeout=120,
             )
-            if result.stdout:
-                return result.stdout
-            if result.returncode == 0:
-                return result.stdout
+            if result.returncode not in (0, 1):
+                self.last_tool_outcome = "tool-error"
+                return None
+            try:
+                if tool in ("ruff", "shellcheck", "hadolint", "markdownlint"):
+                    parsed = json.loads(result.stdout)
+                    if not isinstance(parsed, list):
+                        raise ValueError("expected JSON array")
+                elif tool in ("staticcheck", "cargo"):
+                    for line in result.stdout.splitlines():
+                        if line.strip() and not isinstance(json.loads(line), dict):
+                            raise ValueError("expected JSON object")
+            except (ValueError, TypeError):
+                self.last_tool_outcome = "tool-error"
+                return None
+            self.last_tool_outcome = "tool-ran"
+            return result.stdout
+        except FileNotFoundError:
+            self.last_tool_outcome = "tool-missing"
             return None
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired:
+            self.last_tool_outcome = "tool-timeout"
             return None
 
     def parse_output(self, output: str, repo_path: Path) -> List[Finding]:

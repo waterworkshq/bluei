@@ -30,6 +30,7 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
         (findings, written_findings, eligible_findings, suppressed_findings,
          refactor_routed_items, blocked_reasons, cap_ok)
     """
+    ctx = None
     if args:
         ctx = args[0]
         repo_path = ctx.repo_path
@@ -62,6 +63,7 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
     refactor_routed_items: List[Dict[str, Any]] = []
     blocked_reasons: List[str] = []
     cap_ok = True
+    detector_outcomes: Dict[str, Dict[str, Any]] = {}
 
     if run_issue_cycle:
         pre_discovery_actionable = count_actionable_issues(issues_data)
@@ -74,14 +76,45 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
 
     if args.run_phase in ("verify-only",) or (run_issue_cycle and cap_ok):
         findings = discover_findings(
-            repo_path, log_file=log_file, docs_index_file=docs_index_file
+            repo_path,
+            log_file=log_file,
+            docs_index_file=docs_index_file,
+            outcomes=detector_outcomes,
+        )
+    elif not cap_ok:
+        detector_outcomes["discovery"] = {
+            "status": "skipped",
+            "count": 0,
+            "reason": f"open-issue cap reached; discovery not run ({blocked_reasons[-1] if blocked_reasons else 'cap'})",
+        }
+
+    if ctx is not None:
+        ctx.detector_outcomes = detector_outcomes
+    for detector, record in detector_outcomes.items():
+        _append_text(
+            log_file,
+            f"detector-outcome: {detector} status={record.get('status')} "
+            f"count={record.get('count', 0)}"
+            + (f" reason={record['reason']}" if record.get("reason") else ""),
         )
 
     written_findings = append_findings(findings_file, findings)
+    if ctx is not None and ctx.run_id:
+        from bluei.engine.state_io import atomic_json_write
+        atomic_json_write(ctx.status_file.parent / "discovery-current.json", {
+            "run_id": ctx.run_id, "findings_detected": len(findings),
+            "findings_written": written_findings, "detector_outcomes": detector_outcomes,
+        })
     _append_text(
         log_file,
         f"discovery: findings_detected={len(findings)} findings_written={written_findings}",
     )
+    if any(record.get("status") in ("failed", "unavailable") for record in detector_outcomes.values()):
+        # Findings are persisted for the record but not routed anywhere; the
+        # real cap result still passes through untouched.
+        blocked_reasons.append("discovery incomplete; findings retained but not routed")
+        return (findings, written_findings, [], [], [], blocked_reasons, cap_ok)
+
     eligible_findings, suppressed_findings = filter_findings_by_cooldown(
         findings=findings,
         state=state,
