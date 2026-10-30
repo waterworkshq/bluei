@@ -362,6 +362,24 @@ def main() -> int:
 
     cap_ok = True
     if args.run_phase in ("verify-only",) or ctx.run_issue_cycle:
+        # Claim the status artifact for THIS run before discovery starts: a
+        # crash or kill mid-scan must not leave the prior run's success
+        # advertised as current. Health and other persisted fields stand.
+        from bluei.engine.state_io import atomic_json_write
+        import json
+
+        try:
+            _started_status = json.loads(ctx.status_file.read_text())
+        except (OSError, ValueError):
+            _started_status = {}
+        if not isinstance(_started_status, dict):
+            _started_status = {}
+        _started_status["last_run_completed"] = False
+        _started_status["latest_run_metrics"] = {
+            "run_id": ctx.run_id,
+            "run_completed": False,
+        }
+        atomic_json_write(ctx.status_file, _started_status)
         (
             ctx.findings,
             ctx.written_findings,

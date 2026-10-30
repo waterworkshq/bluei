@@ -187,6 +187,69 @@ def test_public_review_cycle_claims_no_scan_and_preserves_prior_health(
     assert run["status"] == "completed"
 
 
+def test_killed_direct_child_claims_status_before_discovery(tmp_path):
+    """Root 6532221696 regression: a direct engine child killed mid-discovery
+    must have already claimed status.json for its own run — no stale success
+    from the prior run, prior health preserved."""
+    import os
+    import subprocess
+    import sys
+    import time
+
+    root = Path(__file__).resolve().parents[1]
+    target = tmp_path / "repo"
+    target.mkdir()
+    subprocess.run(["git", "init", "-q", str(target)], check=True)
+    status = tmp_path / "status.json"
+    # Prior run's stale success.
+    status.write_text(json.dumps({
+        "last_run_completed": True,
+        "health_score": 73,
+        "latest_run_metrics": {"run_id": "stale-run", "run_completed": True,
+                               "findings_detected": 4},
+    }))
+    # Actual cli.main() with a blocking discover callable injected at the
+    # existing module boundary.
+    child = tmp_path / "blocked_child.py"
+    child.write_text(
+        "import bluei.engine.cli as cli\n"
+        "def _blocked(ctx):\n"
+        "    print('DISCOVERY-STARTED', flush=True)\n"
+        "    import time\n"
+        "    time.sleep(300)\n"
+        "cli.run_discover_phase = _blocked\n"
+        "raise SystemExit(cli.main())\n"
+    )
+    env = dict(os.environ, PYTHONPATH=str(root), BLUEI_RUN_ID="killed-child")
+    args = [sys.executable, str(child), "--repo-path", str(target),
+            "--run-phase", "verify-only", "--status-file", str(status),
+            "--simulate-open-issues", "0", "--simulate-open-prs", "0"]
+    for flag, name in [("--state-file", "state.json"), ("--log-file", "run.log"),
+                       ("--findings-file", "findings.jsonl"), ("--issues-file", "issues.json"),
+                       ("--docs-index-file", "docs.json"), ("--lessons-file", "lessons.md"),
+                       ("--worktree-root", "worktrees")]:
+        args.extend([flag, str(tmp_path / name)])
+    proc = subprocess.Popen(args, env=env, cwd=root, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    try:
+        deadline = time.monotonic() + 30
+        seen = ""
+        while "DISCOVERY-STARTED" not in seen and time.monotonic() < deadline:
+            chunk = proc.stdout.readline()
+            if not chunk:
+                break
+            seen += chunk
+        assert "DISCOVERY-STARTED" in seen, seen
+        proc.kill()
+    finally:
+        proc.wait(timeout=10)
+    stored = json.loads(status.read_text())
+    assert stored["last_run_completed"] is False, stored
+    assert stored["latest_run_metrics"]["run_id"] == "killed-child", stored
+    assert stored["latest_run_metrics"]["run_completed"] is False, stored
+    assert stored["health_score"] == 73, stored
+
+
 def test_native_engine_partial_scan_clears_stale_success(tmp_path):
     import os
     import subprocess

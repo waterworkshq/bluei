@@ -85,20 +85,22 @@ class ToolWrapperPlugin(DiscoveryPlugin):
     ) -> Optional[str]:
         tool = self.tool_name
         tool_args = list(self.tool_args)
+        trusted = os.environ.get("BLUEI_TRUST_REPOSITORY_TOOLS") == "1"
         if tool == "npx":
-            name = tool_args.pop(0) if tool_args else ""
-            local = repo_path / "node_modules" / ".bin" / name
-            trusted_local = os.environ.get("BLUEI_TRUST_REPOSITORY_TOOLS") == "1"
-            installed = str(local) if trusted_local and name and os.access(local, os.X_OK) else shutil.which(name)
-            if (not name or not installed
-                    or (Path(installed).resolve().is_relative_to(repo_path.resolve()) and not trusted_local)):
-                self.last_tool_outcome = "tool-missing"
-                return None  # Never install packages or trust repository executables implicitly.
-            tool = installed
-        elif not tool or not shutil.which(tool):
+            tool = tool_args.pop(0) if tool_args else ""
+            local = repo_path / "node_modules" / ".bin" / tool
+            installed = str(local) if trusted and tool and os.access(local, os.X_OK) else shutil.which(tool)
+        else:
+            installed = shutil.which(tool) if tool else None
+        if not tool or not installed:
             self.last_tool_outcome = "tool-missing" if tool else None
             return None
-        cmd = [tool] + tool_args + (extra_args or [])
+        executable = Path(installed).resolve()
+        # XO loads repository JavaScript configuration even from an external binary.
+        if not trusted and (tool == "xo" or executable.is_relative_to(repo_path.resolve())):
+            self.last_tool_outcome = "tool-missing"
+            return None
+        cmd = [str(executable)] + tool_args + (extra_args or [])
         if tool == "ruff" and "--no-cache" not in cmd:
             cmd.insert(2, "--no-cache")
         try:

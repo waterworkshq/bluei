@@ -11,6 +11,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed
 
 - Public scans report explicit per-detector completion, missing tools, failures, and deliberate skips. Interrupted and skipped-only scans retain current-run counts without claiming clean zero findings or improving health; non-scanning repair/merge phases no longer masquerade as new scans. Incomplete verification cannot close issues or trigger fixing.
+- Discovery pins validated executable paths, applies repository-tool trust checks to native and plugin adapters, and requires explicit trust for XO's configuration-loading execution. Direct engine scans publish incomplete run identity before discovery begins so interruption cannot advertise a previous success.
 - Sandbox-specific query, arithmetic, notification, and test-gap assumptions no longer fire on unrelated application files. Discovery does not install tools or run tests to generate missing coverage reports.
 - Local verified fixes no longer count simulated PRs as real created/open PRs. Validation filenames are passed as arguments rather than interpolated into executable Python source; Ruff verification does not write caches into the candidate tree.
 - Checkpoint capture anchors source/index reads to directory descriptors, rejects post-scan symlink or inode swaps, and enforces the shared byte ceiling while reading. Raced or interrupted captures remove partial snapshots before mutation; Git pointer reads are bounded and no-follow.

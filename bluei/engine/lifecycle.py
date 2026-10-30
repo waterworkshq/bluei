@@ -834,8 +834,11 @@ def apply_cascade_fix(
     excludes them so outcomes record exactly once per pattern.
 
     Transactional: a worktree checkpoint spans the cascade AND the tier
-    validation below. Tier rejection restores the exact pre-attempt state
-    (a failed restore raises and halts — no LLM fallback), and the
+    validation below. The entire acceptance phase (tier validation, scope
+    recheck, learning, success emission) is guarded: any abort — error,
+    logging failure, or interruption — restores the exact pre-attempt state
+    (a failed restore raises and halts — no LLM fallback), the backup is
+    released only after the last throwing step completes, and the
     resolved_deterministic ledger record is only persisted after the tier
     accepts; rejection records an honest exhausted outcome instead.
     """
@@ -965,45 +968,43 @@ def apply_cascade_fix(
             logging.warning("checkpoint cleanup failed for %s: %s", checkpoint.backup_dir, exc)
         checkpoint = None
 
+    def _restore_release() -> None:
+        """Restore the exact pre-attempt state, then release the backup.
+
+        A failed restore raises CheckpointRestoreError (fd closed, backup
+        retained for recovery) — the caller halts; no LLM fallback runs.
+        """
+        restore_checkpoint(checkpoint)
+        _discard_checkpoint()
+
     if result.success:
-        # Deterministic stage succeeded — extract patterns and validate
+        # The whole acceptance phase — tier validation, scope recheck,
+        # logging, learning, and success emission — runs inside one guard
+        # and BEFORE the backup is released. The winning fix is already
+        # applied at this point, so any abort (error, logging failure, or
+        # interruption during even a read-only check) must roll back.
         try:
             tier = resolve_tier(finding)
             accepted = _tier_validate(tier, worktree_path, finding, log_file)
-        except BaseException:
-            restore_checkpoint(checkpoint)
-            _discard_checkpoint()
-            raise
-        if not accepted:
-            # Tier rejection: restore the exact pre-attempt state. A failed
-            # restore raises (CheckpointRestoreError) and halts — no ledger
-            # record, no LLM fallback, backup retained for recovery.
-            if checkpoint is not None:
-                try:
-                    restore_checkpoint(checkpoint)
-                except Exception:
-                    _append_text(
-                        log_file,
-                        f"cascade: tier-reject restore failed stage={result.stage_name} — halting, backup retained",
-                    )
-                    raise
-                _discard_checkpoint()
-            _append_text(
-                log_file,
-                f"cascade: tier validation rejected stage={result.stage_name} — restored pre-attempt state",
-            )
-            # Honest ledger outcome with the current schema: the finding was
-            # NOT resolved (consumers only distinguish resolved_deterministic /
-            # resolved_llm / exhausted).
-            _emit_fallback_record("exhausted", result.stage_name)
-            return False
-        # Post-tier scope recheck: tier validation runs AFTER execute()
-        # verified the declared stage scope, and its checks can themselves
-        # edit undeclared files or the Git index. Re-verify the cascade's
-        # declared scope (carried on the result — never the stage's claimed
-        # diff) before learning, recording success, or releasing the backup.
-        # A missing/unusable scope carrier fails closed.
-        try:
+            if not accepted:
+                # Tier rejection: restore first, then record the honest
+                # outcome (consumers only distinguish resolved_deterministic /
+                # resolved_llm / exhausted).
+                if checkpoint is not None:
+                    _restore_release()
+                _append_text(
+                    log_file,
+                    f"cascade: tier validation rejected stage={result.stage_name} — restored pre-attempt state",
+                )
+                _emit_fallback_record("exhausted", result.stage_name)
+                return False
+            # Post-tier scope recheck: tier validation runs AFTER execute()
+            # verified the declared stage scope, and its checks can
+            # themselves edit undeclared files or the Git index. Re-verify
+            # the cascade's declared scope (carried on the result — never
+            # the stage's claimed diff) before learning, recording success,
+            # or releasing the backup. A missing carrier fails closed; any
+            # error or interrupt here aborts through the guard below.
             allowed = result.authorized_scope
             if allowed is None:
                 out_of_scope = {"<scope-carrier-missing>"}
@@ -1011,49 +1012,39 @@ def apply_cascade_fix(
                 out_of_scope = cascade._out_of_scope_edits(
                     worktree_path, allowed, checkpoint
                 )
-        except Exception as exc:
-            _append_text(
-                log_file,
-                f"cascade: post-tier scope recheck failed stage={result.stage_name} "
-                f"error={type(exc).__name__}: {exc}",
-            )
-            out_of_scope = {"<scope-recheck-failed>"}
-        if out_of_scope is not None:
-            if checkpoint is not None:
-                try:
-                    restore_checkpoint(checkpoint)
-                except Exception:
-                    _append_text(
-                        log_file,
-                        f"cascade: post-tier scope-reject restore failed "
-                        f"stage={result.stage_name} — halting, backup retained",
-                    )
-                    raise
-                _discard_checkpoint()
-            _append_text(
-                log_file,
-                f"cascade: tier validation introduced out-of-scope edits="
-                f"{sorted(out_of_scope)} stage={result.stage_name} "
-                f"— restored pre-attempt state",
-            )
-            _emit_fallback_record("exhausted", result.stage_name)
-            return False
-        try:
+            if out_of_scope is not None:
+                if checkpoint is not None:
+                    _restore_release()
+                _append_text(
+                    log_file,
+                    f"cascade: tier validation introduced out-of-scope edits="
+                    f"{sorted(out_of_scope)} stage={result.stage_name} "
+                    f"— restored pre-attempt state",
+                )
+                _emit_fallback_record("exhausted", result.stage_name)
+                return False
             _extract_fix_pattern(
                 worktree_path, finding, result.stage_name, pattern_store_path,
                 log_file, detected_frameworks=detected_frameworks,
             )
+            # Accepted: NOW persist the deterministic success (deferred from
+            # the cascade so a tier rejection can never over-report). Still
+            # inside the guard — the backup is released only after the last
+            # throwing acceptance step completes.
+            if result.telemetry is not None:
+                cascade._emit_ledger_record(
+                    context, result.telemetry, outcome="resolved_deterministic"
+                )
         except BaseException:
-            restore_checkpoint(checkpoint)
+            # Includes KeyboardInterrupt/SystemExit. Restore unless a
+            # rejection already released the backup or a failed restore
+            # retained it; a failed restore's CheckpointRestoreError wins
+            # (halt — no ledger record, no LLM fallback).
+            if checkpoint is not None and not checkpoint.retained:
+                restore_checkpoint(checkpoint)
             _discard_checkpoint()
             raise
         _discard_checkpoint()
-        # Accepted: NOW persist the deterministic success (deferred from the
-        # cascade so a tier rejection can never over-report).
-        if result.telemetry is not None:
-            cascade._emit_ledger_record(
-                context, result.telemetry, outcome="resolved_deterministic"
-            )
         return True
 
     # Cascade failed (exhausted or checkpoint_unsupported): every failed stage

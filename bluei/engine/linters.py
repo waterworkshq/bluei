@@ -40,7 +40,7 @@ def _resolve_repository_tool(repo_path: Path, name: str) -> Optional[str]:
         return None
     if not trusted and Path(installed).resolve().is_relative_to(repo_path.resolve()):
         return None
-    return installed
+    return str(Path(installed).resolve())
 
 
 # DEAD CODE - verify before using
@@ -210,15 +210,27 @@ def discover_xo_linter_findings(
         _append_text(log_file, f'xo-discovery: running xo linter in container {container_name}')
         rc, xo_results = run_xo_linter_in_container(container_name)
     else:
-        # Run xo from an external PATH executable, or the repository's local
-        # xo only with BLUEI_TRUST_REPOSITORY_TOOLS=1 (plugin wrapper contract).
+        # xo loads and executes repository-controlled JS config from its
+        # working directory (package.json "xo", .xo-config, eslint configs),
+        # so ANY host xo run against the repo — external PATH executable
+        # included — requires explicit trust. No isolated mode is invented;
+        # the default outcome is unavailable.
+        if os.environ.get("BLUEI_TRUST_REPOSITORY_TOOLS") != "1":
+            _record(
+                'unavailable',
+                reason=(
+                    'xo not run without BLUEI_TRUST_REPOSITORY_TOOLS=1: '
+                    'xo loads repository-controlled config files '
+                    '(network installation disabled)'
+                ),
+            )
+            return findings
         xo_bin = _resolve_repository_tool(repo_path, 'xo')
         if not xo_bin:
             _record(
                 'unavailable',
                 reason=(
-                    'xo unavailable outside repository control; set '
-                    'BLUEI_TRUST_REPOSITORY_TOOLS=1 to use repository node_modules xo '
+                    'xo executable not found with BLUEI_TRUST_REPOSITORY_TOOLS=1 '
                     '(network installation disabled)'
                 ),
             )
@@ -352,22 +364,16 @@ def discover_python_linter_findings(
         _record('skipped', reason='no Python files in repository')
         return findings
 
-    # Check if ruff is available
-    ruff_path = None
-    for candidate in ['ruff', '~/.local/bin/ruff']:
-        expanded = Path(candidate).expanduser()
-        if expanded.exists():
-            ruff_path = str(expanded)
-            break
-
+    # Resolve ruff like the other native tools: absolute resolved external
+    # PATH executable by default; anything resolving inside the scanned
+    # repository needs BLUEI_TRUST_REPOSITORY_TOOLS=1.
+    ruff_path = _resolve_repository_tool(repo_path, 'ruff')
     if not ruff_path:
-        # Try to find ruff in PATH
-        try:
-            res = subprocess.run(['which', 'ruff'], capture_output=True, text=True, timeout=5)
-            if res.returncode == 0 and res.stdout.strip():
-                ruff_path = res.stdout.strip()
-        except Exception:
-            _logger.debug("Failed to locate ruff binary")
+        fallback = Path('~/.local/bin/ruff').expanduser()
+        if fallback.is_file() and not fallback.resolve().is_relative_to(
+            repo_path.resolve()
+        ):
+            ruff_path = str(fallback)
 
     if not ruff_path:
         _record('unavailable', reason='ruff not found on PATH')

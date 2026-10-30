@@ -196,3 +196,75 @@ def test_composite_declared_scope_still_accepted(tmp_path, make_finding):
     assert (wt / 'pkg' / 'helper.py').read_text() == 'VALUE = 2\n'
     assert learn.call_count == 1
     assert [row['outcome'] for row in records] == ['resolved_deterministic']
+
+
+# ── Acceptance-phase aborts must always roll back: the winning fix is
+# already applied, so even a read-only scope check being interrupted (or
+# failing, or its logging failing) requires a restore before propagating. ──
+
+
+def test_interrupt_during_scope_recheck_still_rolls_back(tmp_path, make_finding):
+    wt = _real_repo(tmp_path)
+    records = []
+    # First _out_of_scope_edits call is execute()'s own stage check (must
+    # pass); the interrupt targets the SECOND call — the lifecycle
+    # post-tier recheck.
+    with patch('bluei.engine.cascade.default_cascade_stages', return_value=[Fixed()]), \
+            patch('bluei.engine.lifecycle._tier_validate', return_value=True), \
+            patch.object(DeterministicCascade, '_out_of_scope_edits',
+                         side_effect=[None, KeyboardInterrupt]), \
+            patch('bluei.engine.lifecycle._extract_fix_pattern') as learn:
+        with pytest.raises(KeyboardInterrupt):
+            apply_cascade_fix(wt, make_finding(path='target.py'), tmp_path / 'log',
+                              deterministic_only=True, ledger_records=records)
+    assert (wt / 'target.py').read_text() == 'original\n'
+    assert learn.call_count == 0
+    assert records == []
+
+
+def test_scope_recheck_error_with_failing_log_still_rolls_back(tmp_path, make_finding):
+    wt = _real_repo(tmp_path)
+    records = []
+    # Same sequencing: the OSError hits the lifecycle post-tier recheck,
+    # and the log write inside the failure path also fails (Mira finding).
+    with patch('bluei.engine.cascade.default_cascade_stages', return_value=[Fixed()]), \
+            patch('bluei.engine.lifecycle._tier_validate', return_value=True), \
+            patch.object(DeterministicCascade, '_out_of_scope_edits',
+                         side_effect=[None, OSError('walk failed')]), \
+            patch('bluei.engine.lifecycle._append_text', side_effect=OSError('disk full')), \
+            patch('bluei.engine.lifecycle._extract_fix_pattern') as learn:
+        with pytest.raises(OSError):
+            apply_cascade_fix(wt, make_finding(path='target.py'), tmp_path / 'log',
+                              deterministic_only=True, ledger_records=records)
+    assert (wt / 'target.py').read_text() == 'original\n'
+    assert learn.call_count == 0
+    assert records == []
+
+
+def test_restore_failure_halts_with_error_and_no_success(tmp_path, make_finding):
+    from bluei.engine.worktree_checkpoint import CheckpointRestoreError
+
+    wt = _real_repo(tmp_path)
+    records = []
+
+    def broken_restore(cp):
+        cp.retained = True  # mirror real restore failure semantics
+        raise CheckpointRestoreError('restore boom')
+
+    def rogue_tier(tier, worktree_path, finding, log_file, state=None):
+        (worktree_path / 'other.py').write_text('hijacked\n')
+        return True
+
+    with patch('bluei.engine.cascade.default_cascade_stages', return_value=[Fixed()]), \
+            patch('bluei.engine.lifecycle._tier_validate', side_effect=rogue_tier), \
+            patch('bluei.engine.worktree_checkpoint.restore_checkpoint',
+                  side_effect=broken_restore), \
+            patch('bluei.engine.lifecycle._extract_fix_pattern') as learn:
+        with pytest.raises(CheckpointRestoreError):
+            apply_cascade_fix(wt, make_finding(path='target.py'), tmp_path / 'log',
+                              deterministic_only=True, ledger_records=records)
+    # Halted loudly: no silent success, no learning, no ledger record, and
+    # the applied fix was NOT kept.
+    assert (wt / 'target.py').read_text() == 'fixed\n'
+    assert learn.call_count == 0
+    assert records == []
