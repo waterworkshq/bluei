@@ -5,10 +5,12 @@ from __future__ import annotations
 import logging
 import ast
 import json
+import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 _logger = logging.getLogger(__name__)
 
@@ -20,6 +22,25 @@ from bluei.engine.utils import run_capture
 
 # Cache for ruff rule descriptions
 _Ruff_Rule_Descriptions = {}  # Cache for ruff rule descriptions
+
+
+def _resolve_repository_tool(repo_path: Path, name: str) -> Optional[str]:
+    """Resolve an external tool without executing repository-controlled code.
+
+    Mirrors the plugin wrapper contract (bluei.app.plugins
+    ToolWrapperPlugin._run_tool): a node_modules/.bin entry inside the scanned
+    repository only runs with BLUEI_TRUST_REPOSITORY_TOOLS=1; otherwise an
+    external PATH executable is used, unless it resolves back into the
+    repository. Never installs packages or touches the network.
+    """
+    trusted = os.environ.get("BLUEI_TRUST_REPOSITORY_TOOLS") == "1"
+    local = repo_path / "node_modules" / ".bin" / name
+    installed = str(local) if trusted and os.access(local, os.X_OK) else shutil.which(name)
+    if not installed:
+        return None
+    if not trusted and Path(installed).resolve().is_relative_to(repo_path.resolve()):
+        return None
+    return str(Path(installed).resolve())
 
 
 # DEAD CODE - verify before using
@@ -146,7 +167,9 @@ def run_xo_linter_in_container(container_name: str = 'ky-phase2-dev') -> Tuple[i
         return 1, []
 
 
-def discover_xo_linter_findings(repo_path: Path, log_file: Path) -> List[Finding]:
+def discover_xo_linter_findings(
+    repo_path: Path, log_file: Path, outcome: Optional[Dict[str, Any]] = None
+) -> List[Finding]:
     """Discover findings from xo linter for TypeScript/JavaScript repos.
 
     This runs xo linter in a Docker container (for ky repo) or directly on the host
@@ -154,9 +177,18 @@ def discover_xo_linter_findings(repo_path: Path, log_file: Path) -> List[Finding
     """
     findings: List[Finding] = []
 
+    def _record(status: str, count: int = 0, reason: Optional[str] = None) -> None:
+        if outcome is not None:
+            outcome["xo-linter"] = {
+                "status": status,
+                "count": count,
+                **({"reason": reason} if reason else {}),
+            }
+
     # Only run xo for repos that have xo configured (check for xo in package.json or .xorc)
     package_json = repo_path / 'package.json'
     if not package_json.exists():
+        _record("skipped", reason="no package.json in repository root")
         return findings
 
     # Check if xo is configured in this repo
@@ -164,8 +196,10 @@ def discover_xo_linter_findings(repo_path: Path, log_file: Path) -> List[Finding
         pkg = json.loads(package_json.read_text(encoding='utf-8'))
         has_xo = 'xo' in pkg.get('devDependencies', {}) or 'xo' in pkg.get('dependencies', {})
         if not has_xo:
+            _record("skipped", reason="xo not configured in package.json")
             return findings
-    except Exception:
+    except Exception as e:
+        _record("failed", reason=f"package.json unreadable: {e}")
         return findings
 
     # Determine how to run xo based on repo
@@ -176,11 +210,35 @@ def discover_xo_linter_findings(repo_path: Path, log_file: Path) -> List[Finding
         _append_text(log_file, f'xo-discovery: running xo linter in container {container_name}')
         rc, xo_results = run_xo_linter_in_container(container_name)
     else:
-        # Try to run xo directly on the host via npx
-        _append_text(log_file, 'xo-discovery: running xo linter via npx')
+        # xo loads and executes repository-controlled JS config from its
+        # working directory (package.json "xo", .xo-config, eslint configs),
+        # so ANY host xo run against the repo — external PATH executable
+        # included — requires explicit trust. No isolated mode is invented;
+        # the default outcome is unavailable.
+        if os.environ.get("BLUEI_TRUST_REPOSITORY_TOOLS") != "1":
+            _record(
+                'unavailable',
+                reason=(
+                    'xo not run without BLUEI_TRUST_REPOSITORY_TOOLS=1: '
+                    'xo loads repository-controlled config files '
+                    '(network installation disabled)'
+                ),
+            )
+            return findings
+        xo_bin = _resolve_repository_tool(repo_path, 'xo')
+        if not xo_bin:
+            _record(
+                'unavailable',
+                reason=(
+                    'xo executable not found with BLUEI_TRUST_REPOSITORY_TOOLS=1 '
+                    '(network installation disabled)'
+                ),
+            )
+            return findings
+        _append_text(log_file, 'xo-discovery: running resolved xo executable')
         try:
             res = subprocess.run(
-                ['npx', 'xo', '--format=json'],
+                [xo_bin, '--format=json'],
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -196,11 +254,17 @@ def discover_xo_linter_findings(repo_path: Path, log_file: Path) -> List[Finding
                     rc, xo_results = 1, []
             else:
                 rc, xo_results = res.returncode, []
+        except subprocess.TimeoutExpired:
+            _record('failed', reason='npx xo timed out after 120s')
+            _append_text(log_file, 'xo-discovery: npx xo timed out')
+            return findings
         except Exception as e:
+            _record('failed', reason=f'npx xo failed: {e}')
             _append_text(log_file, f'xo-discovery: npx xo failed: {e}')
             return findings
 
     if rc != 0 and not xo_results:
+        _record('failed', reason=f'xo linter exited with rc={rc}')
         _append_text(log_file, f'xo-discovery: xo linter failed with rc={rc}')
         return findings
 
@@ -271,11 +335,14 @@ def discover_xo_linter_findings(repo_path: Path, log_file: Path) -> List[Finding
             total_warnings += 1
 
     _append_text(log_file, f'xo-discovery: found {total_warnings} xo warnings, converted to {len(findings)} findings')
+    _record('ran', len(findings))
 
     return findings
 
 
-def discover_python_linter_findings(repo_path: Path, log_file: Path) -> List[Finding]:
+def discover_python_linter_findings(
+    repo_path: Path, log_file: Path, outcome: Optional[Dict[str, Any]] = None
+) -> List[Finding]:
     """Discover issues from Python linter (ruff) for Python repos.
 
     This runs ruff linter and converts warnings to findings.
@@ -283,35 +350,38 @@ def discover_python_linter_findings(repo_path: Path, log_file: Path) -> List[Fin
     """
     findings: List[Finding] = []
 
-    # Check if ruff is available
-    ruff_path = None
-    for candidate in ['ruff', '~/.local/bin/ruff']:
-        expanded = Path(candidate).expanduser()
-        if expanded.exists():
-            ruff_path = str(expanded)
-            break
+    def _record(status: str, count: int = 0, reason: Optional[str] = None) -> None:
+        if outcome is not None:
+            outcome["python-linter-ruff"] = {
+                "status": status,
+                "count": count,
+                **({"reason": reason} if reason else {}),
+            }
+
+    from bluei.engine.utils import walk_source_files
+    py_files = walk_source_files(repo_path, ".py")
+    if not py_files:
+        _record('skipped', reason='no Python files in repository')
+        return findings
+
+    # Resolve ruff like the other native tools: absolute resolved external
+    # PATH executable by default; anything resolving inside the scanned
+    # repository needs BLUEI_TRUST_REPOSITORY_TOOLS=1.
+    ruff_path = _resolve_repository_tool(repo_path, 'ruff')
+    if not ruff_path:
+        fallback = Path('~/.local/bin/ruff').expanduser()
+        if fallback.is_file() and not fallback.resolve().is_relative_to(
+            repo_path.resolve()
+        ):
+            ruff_path = str(fallback)
 
     if not ruff_path:
-        # Try to find ruff in PATH
-        try:
-            res = subprocess.run(['which', 'ruff'], capture_output=True, text=True, timeout=5)
-            if res.returncode == 0 and res.stdout.strip():
-                ruff_path = res.stdout.strip()
-        except Exception:
-            _logger.debug("Failed to locate ruff binary")
-
-    if not ruff_path:
+        _record('unavailable', reason='ruff not found on PATH')
         _append_text(log_file, 'python-discovery: ruff not found, skipping')
         return findings
 
     # Check if this is a Python repo (has .py files). Pruned walk — an rglob
     # would traverse .git/objects and race git maintenance.
-    from bluei.engine.utils import walk_source_files
-
-    py_files = walk_source_files(repo_path, ".py")
-    if not py_files:
-        return findings
-
     _append_text(log_file, f'python-discovery: running ruff linter on {len(py_files)} Python files')
 
     try:
@@ -328,14 +398,26 @@ def discover_python_linter_findings(repo_path: Path, log_file: Path) -> List[Fin
         )
         raw = (res.stdout or '').strip()
     except subprocess.TimeoutExpired:
+        _record('failed', reason='ruff timed out after 300s')
         _append_text(log_file, 'python-discovery: ruff timed out')
         return findings
     except Exception as e:
+        _record('failed', reason=f'ruff failed to run: {e}')
         _append_text(log_file, f'python-discovery: ruff failed: {e}')
         return findings
 
-    if not raw or raw == 'null' or raw == '[]':
+    # ruff exits 1 when it reports findings; anything above that is a tool error.
+    if res.returncode not in (0, 1):
+        _record('failed', reason=f'ruff exited with rc={res.returncode}: {raw[:200]}')
+        _append_text(log_file, f'python-discovery: ruff rc={res.returncode} with no output')
+        return findings
+
+    if raw == '[]':
+        _record('ran', 0)
         _append_text(log_file, 'python-discovery: no ruff findings')
+        return findings
+    if not raw or raw == 'null':
+        _record('failed', reason='ruff returned empty or null output instead of a JSON array')
         return findings
 
     rule_meta = {entry['rule']: entry for entry in DETECTOR_CATALOG}
@@ -344,7 +426,12 @@ def discover_python_linter_findings(repo_path: Path, log_file: Path) -> List[Fin
     try:
         ruff_results = json.loads(raw)
     except json.JSONDecodeError:
+        _record('failed', reason='ruff output was not valid JSON')
         _append_text(log_file, 'python-discovery: ruff JSON parse failed, falling back to concise')
+        return findings
+
+    if not isinstance(ruff_results, list):
+        _record('failed', reason='ruff output was not a JSON array')
         return findings
 
     for result in ruff_results:
@@ -412,10 +499,13 @@ def discover_python_linter_findings(repo_path: Path, log_file: Path) -> List[Fin
             continue
 
     _append_text(log_file, f'python-discovery: found {len(findings)} ruff findings')
+    _record('ran', len(findings))
     return findings
 
 
-def discover_typescript_type_findings(repo_path: Path, log_file: Path) -> List[Finding]:
+def discover_typescript_type_findings(
+    repo_path: Path, log_file: Path, outcome: Optional[Dict[str, Any]] = None
+) -> List[Finding]:
     """Discover type safety issues in TypeScript files.
 
     Uses TypeScript compiler in strict mode to detect:
@@ -427,19 +517,35 @@ def discover_typescript_type_findings(repo_path: Path, log_file: Path) -> List[F
     findings: List[Finding] = []
     rule_meta = {entry['rule']: entry for entry in DETECTOR_CATALOG}
 
+    def _record(status: str, count: int = 0, reason: Optional[str] = None) -> None:
+        if outcome is not None:
+            outcome["typescript-types"] = {
+                "status": status,
+                "count": count,
+                **({"reason": reason} if reason else {}),
+            }
+
     # Check if this is a TypeScript repo
     ts_config = repo_path / 'tsconfig.json'
     if not ts_config.exists():
+        _record('skipped', reason='no tsconfig.json at repository root')
         _append_text(log_file, 'type-discovery: no tsconfig.json found, skipping')
         return findings
 
-    # Run TypeScript compiler to check for type issues
-    # We look for common type safety patterns in the output
+    tsc = _resolve_repository_tool(repo_path, 'tsc')
+    if not tsc:
+        _record(
+            'unavailable',
+            reason=(
+                'tsc unavailable outside repository control; set '
+                'BLUEI_TRUST_REPOSITORY_TOOLS=1 to use repository node_modules tsc '
+                '(network installation disabled)'
+            ),
+        )
+        return findings
     try:
-        # First, try to run tsc with --noEmit to check for type errors
         rc, output = run_capture(
-            ['npx', 'tsc', '--noEmit', '--strict', '--pretty', 'false'],
-            cwd=repo_path
+            [tsc, '--noEmit', '--strict', '--pretty', 'false'], cwd=repo_path
         )
 
         # Parse TypeScript compiler output for type issues
@@ -449,6 +555,9 @@ def discover_typescript_type_findings(repo_path: Path, log_file: Path) -> List[F
             re.MULTILINE
         )
 
+        if rc != 0 and not type_error_pattern.search(output):
+            _record('failed', reason=f'tsc exited with rc={rc}: {output[:200]}')
+            return findings
         for match in type_error_pattern.finditer(output):
             file_path, line, col, error_code, message = match.groups()
 
@@ -487,41 +596,60 @@ def discover_typescript_type_findings(repo_path: Path, log_file: Path) -> List[F
                 findings.append(finding)
 
         _append_text(log_file, f'type-discovery: found {len(findings)} type safety findings')
+        _record('ran', len(findings))
 
+    except FileNotFoundError:
+        _record('unavailable', reason='npx/tsc not found on PATH')
+        _append_text(log_file, 'type-discovery: npx/tsc not found, type check unavailable')
     except Exception as e:
+        _record('failed', reason=f'error running tsc: {e}')
         _append_text(log_file, f'type-discovery: error running tsc: {e}')
 
     return findings
 
 
-def discover_test_coverage_findings(repo_path: Path, log_file: Path) -> List[Finding]:
+def discover_test_coverage_findings(
+    repo_path: Path, log_file: Path, outcome: Optional[Dict[str, Any]] = None
+) -> List[Finding]:
     """Discover test coverage gaps using coverage reports.
 
     Uses coverage tools to detect:
     - Uncovered branches
     - Uncovered functions
     - Uncovered lines (for smaller gaps only)
+
+    Only pre-existing coverage reports are read. Generating a report would
+    require running the repository's test suite (and, via npx, potentially
+    installing packages over the network), which a discovery scan must not do
+    to the target repository.
     """
     findings: List[Finding] = []
     rule_meta = {entry['rule']: entry for entry in DETECTOR_CATALOG}
+
+    def _record(status: str, count: int = 0, reason: Optional[str] = None) -> None:
+        if outcome is not None:
+            outcome["test-coverage"] = {
+                "status": status,
+                "count": count,
+                **({"reason": reason} if reason else {}),
+            }
 
     # Check for coverage report or run coverage
     coverage_file = repo_path / 'coverage' / 'coverage-final.json'
     lcov_file = repo_path / 'coverage' / 'lcov.info'
 
-    # If no coverage file exists, try to generate one
+    # If no coverage file exists, report it honestly instead of generating
+    # one: generation mutates the repo (test run) and may install packages.
     if not coverage_file.exists() and not lcov_file.exists():
-        _append_text(log_file, 'coverage-discovery: no coverage file found, attempting to generate')
-        try:
-            # Try nyc/c8 for Node.js projects
-            if (repo_path / 'package.json').exists():
-                rc, _ = run_capture(
-                    ['npx', 'nyc', '--reporter=json', 'npm', 'test'],
-                    cwd=repo_path,
-                    timeout=120
-                )
-        except Exception as e:
-            _append_text(log_file, f'coverage-discovery: failed to generate coverage: {e}')
+        _record(
+            'skipped',
+            reason='no coverage report present; generation disabled (would run tests/install packages)',
+        )
+        _append_text(
+            log_file,
+            'coverage-discovery: no coverage file found (generation not attempted during discovery)',
+        )
+        return findings
 
     # Parse coverage report
     if coverage_file.exists():
@@ -610,10 +738,13 @@ def discover_test_coverage_findings(repo_path: Path, log_file: Path) -> List[Fin
                         break  # One line-coverage finding per file
 
             _append_text(log_file, f'coverage-discovery: found {len(findings)} coverage findings')
+            _record('ran', len(findings))
 
         except Exception as e:
+            _record('failed', reason=f'error parsing coverage report: {e}')
             _append_text(log_file, f'coverage-discovery: error parsing coverage: {e}')
     else:
+        _record('skipped', reason='only lcov.info present; JSON coverage report reader expects coverage-final.json')
         _append_text(log_file, 'coverage-discovery: no coverage data available')
 
     return findings

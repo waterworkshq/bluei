@@ -26,19 +26,42 @@ from .models import ASTMatch, ASTPattern
 class ASTPatternMatcher:
     def __init__(self, patterns: Optional[List[ASTPattern]] = None):
         self.patterns: List[ASTPattern] = patterns or []
+        # Per-find_matches parse accounting: files whose source could not be
+        # parsed (syntax errors, null bytes, RecursionError on deep files).
+        # Consumers read this so an unparseable file is never silently
+        # reported as a cleanly scanned file.
+        self.last_parse_failures: List[str] = []
+
+    @staticmethod
+    def _in_scope(pattern: ASTPattern, file_path: str) -> bool:
+        prefixes = pattern.path_prefixes
+        if not prefixes:
+            return True
+        fp = str(file_path).replace("\\", "/")
+        for prefix in prefixes:
+            prefix = str(prefix).replace("\\", "/")
+            if fp == prefix or fp.startswith(prefix.rstrip("/") + "/"):
+                return True
+        return False
 
     def find_matches(
         self, source: str, file_path: str, language: str = "python"
     ) -> List[ASTMatch]:
+        self.last_parse_failures = []
         try:
             tree = ast.parse(source)
-        except SyntaxError:
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
+            self.last_parse_failures.append(str(file_path))
             return []
 
         parent_map = build_parent_map(tree)
         matches: List[ASTMatch] = []
 
-        applicable = [p for p in self.patterns if p.language == language]
+        applicable = [
+            p
+            for p in self.patterns
+            if p.language == language and self._in_scope(p, file_path)
+        ]
         for pattern in applicable:
             for node in ast.walk(tree):
                 if self._matches_pattern(node, pattern, tree, parent_map, source):

@@ -563,7 +563,10 @@ class TestMainOrchestratedFullPipeline:
         tmp_path,
     ):
         mock_workload.return_value = (0, 0, {})
-        mock_disc.return_value = ([], 0, [], [], [], [], True)
+        def completed_discovery(ctx):
+            ctx.detector_outcomes = {"test-detector": {"status": "ran", "count": 0}}
+            return ([], 0, [], [], [], [], True)
+        mock_disc.side_effect = completed_discovery
         mock_issue.return_value = ([], 0, [])
         mock_pr.return_value = dict(
             created_prs=0,

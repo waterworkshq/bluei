@@ -127,6 +127,15 @@ class Run:
     health_delta: float = 0.0
     status: str = "running"
     error: Optional[str] = None
+    # Truthful completion: True only when the engine's full phase lifecycle
+    # finished (its status artifact carries a fresh run_completed marker for
+    # THIS run). An interrupted/partial scan keeps False even when some
+    # findings were already persisted, and its counts are recovered from
+    # persisted state rather than reported as zero.
+    scan_complete: bool = False
+    # Populated only when scan_complete is False: how many of this run's
+    # findings were recovered from the persisted findings file.
+    findings_recovered: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

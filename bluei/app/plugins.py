@@ -2,7 +2,9 @@
 """Plugin discovery and loading."""
 
 import logging
+import json
 import importlib.util
+import os
 import shutil
 import subprocess
 from abc import ABC, abstractmethod
@@ -62,6 +64,13 @@ class ToolWrapperPlugin(DiscoveryPlugin):
 
     def __init__(self, manifest: Optional[Dict] = None):
         self._manifest = manifest or {}
+        # Outcome hook: what happened to this plugin's external tool on the
+        # last _run_tool() call. One of None (not yet run or no tool
+        # declared), "tool-missing", "tool-ran", "tool-timeout",
+        # "tool-error". Read by the engine plugin loader so a silent empty
+        # result can be distinguished from "the external tool never ran and
+        # only local fallback checks executed".
+        self.last_tool_outcome: Optional[str] = None
 
     @property
     def tool_name(self) -> str:
@@ -75,9 +84,23 @@ class ToolWrapperPlugin(DiscoveryPlugin):
         self, repo_path: Path, extra_args: Optional[List[str]] = None
     ) -> Optional[str]:
         tool = self.tool_name
-        if not tool or not shutil.which(tool):
+        tool_args = list(self.tool_args)
+        trusted = os.environ.get("BLUEI_TRUST_REPOSITORY_TOOLS") == "1"
+        if tool == "npx":
+            tool = tool_args.pop(0) if tool_args else ""
+            local = repo_path / "node_modules" / ".bin" / tool
+            installed = str(local) if trusted and tool and os.access(local, os.X_OK) else shutil.which(tool)
+        else:
+            installed = shutil.which(tool) if tool else None
+        if not tool or not installed:
+            self.last_tool_outcome = "tool-missing" if tool else None
             return None
-        cmd = [tool] + self.tool_args + (extra_args or [])
+        executable = Path(installed).resolve()
+        # XO loads repository JavaScript configuration even from an external binary.
+        if not trusted and (tool == "xo" or executable.is_relative_to(repo_path.resolve())):
+            self.last_tool_outcome = "tool-missing"
+            return None
+        cmd = [str(executable)] + tool_args + (extra_args or [])
         if tool == "ruff" and "--no-cache" not in cmd:
             cmd.insert(2, "--no-cache")
         try:
@@ -88,12 +111,31 @@ class ToolWrapperPlugin(DiscoveryPlugin):
                 text=True,
                 timeout=120,
             )
-            if result.stdout:
-                return result.stdout
-            if result.returncode == 0:
-                return result.stdout
+            if result.returncode not in (0, 1):
+                self.last_tool_outcome = "tool-error"
+                return None
+            try:
+                if tool in ("ruff", "shellcheck", "hadolint", "markdownlint"):
+                    parsed = json.loads(result.stdout)
+                    if tool == "markdownlint" and isinstance(parsed, dict):
+                        if not all(isinstance(items, list) for items in parsed.values()):
+                            raise ValueError("expected filename-keyed JSON lists")
+                    elif not isinstance(parsed, list):
+                        raise ValueError("expected JSON array")
+                elif tool in ("staticcheck", "cargo"):
+                    for line in result.stdout.splitlines():
+                        if line.strip() and not isinstance(json.loads(line), dict):
+                            raise ValueError("expected JSON object")
+            except (ValueError, TypeError):
+                self.last_tool_outcome = "tool-error"
+                return None
+            self.last_tool_outcome = "tool-ran"
+            return result.stdout
+        except FileNotFoundError:
+            self.last_tool_outcome = "tool-missing"
             return None
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired:
+            self.last_tool_outcome = "tool-timeout"
             return None
 
     def parse_output(self, output: str, repo_path: Path) -> List[Finding]:

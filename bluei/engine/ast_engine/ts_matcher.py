@@ -14,17 +14,24 @@ from .ts_parser import TSNode, TreeSitterAdapter
 class TSPatternMatcher:
     def __init__(self, patterns: Optional[List[ASTPattern]] = None):
         self.patterns: List[ASTPattern] = patterns or []
+        # Same contract as ASTPatternMatcher.last_parse_failures: files whose
+        # source could not be parsed. Without this, a failed/absent grammar
+        # parse is indistinguishable from a clean scan that found nothing.
+        self.last_parse_failures: List[str] = []
 
     def find_matches(
         self, source: str, file_path: str, language: str = "typescript"
     ) -> List[ASTMatch]:
+        self.last_parse_failures = []
         adapter = TreeSitterAdapter(language)
         root = adapter.parse(source)
         if root is None:
+            self.last_parse_failures.append(str(file_path))
             return []
 
         matches: List[ASTMatch] = []
-        applicable = [p for p in self.patterns if p.language == language]
+        pattern_language = {"tsx": "typescript", "jsx": "javascript"}.get(language, language)
+        applicable = [p for p in self.patterns if p.language == pattern_language]
 
         for pattern in applicable:
             found_nodes = root.find_all(pattern.node_type)

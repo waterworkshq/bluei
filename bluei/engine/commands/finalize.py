@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from bluei.engine.constants import AGENT_ROOT
 from bluei.engine.models import is_needs_human_status, now_iso
 from bluei.engine.state import _append_text, save_issues, save_state
+from bluei.engine.state_io import atomic_json_write
 from bluei.engine.utils import append_lesson
 from bluei.engine.commands.helpers import update_status_artifact
 
@@ -244,6 +245,15 @@ def run_finalize_phase(*args, **kwargs) -> int:
             "cost_warned": cost_tracker.warned(),
             "cost_limit_reached": cost_tracker.exceeded_limit(),
             "learning_mode": learning_mode,
+            # Truthful completion marker: only written when the full phase
+            # lifecycle reached this point. A run that dies mid-scan never
+            # writes it, so consumers can distinguish an interrupted scan
+            # from a complete zero-finding scan.
+            "run_completed": True,
+            "run_id": getattr(ctx, "run_id", "") if ctx else "",
+            "detector_outcomes": (
+                getattr(ctx, "detector_outcomes", {}) if ctx else {}
+            ),
         },
     )
 
@@ -256,6 +266,12 @@ def run_finalize_phase(*args, **kwargs) -> int:
 
         if status_file.exists():
             status_data = json.loads(status_file.read_text())
+            # Current-run completion identity: dashboards must not keep
+            # reading a prior run's success after any later run reaches
+            # finalize; and an interrupted later run never reaches here, so
+            # the app runner rewrites this flag when it observes an
+            # incomplete run.
+            status_data["last_run_completed"] = True
             enrich_health_with_cost(
                 status_data,
                 cost_log_path=cost_log_path,
@@ -288,9 +304,7 @@ def run_finalize_phase(*args, **kwargs) -> int:
                 )
             else:
                 status_data["flywheel_ledger"] = flywheel_ledger
-            status_file.write_text(
-                json.dumps(status_data, indent=2, sort_keys=True) + "\n"
-            )
+            atomic_json_write(status_file, status_data)
     except (ImportError, OSError, json.JSONDecodeError):
         logger.debug("Failed to save pipeline status")
 
@@ -315,6 +329,20 @@ def run_finalize_phase(*args, **kwargs) -> int:
         dry_replay_suffix = (
             f" dry-replay: {_dr_performed} performed{', cap-hit' if _dr_capped else ''}"
         )
+    # Per-detector outcome summary — explicit ran/unavailable/failed/skipped
+    # for every detector actually invoked this run, so a missing tool or a
+    # skipped detector is never mistaken for a clean zero-finding scan.
+    _outcomes = getattr(ctx, "detector_outcomes", {}) if ctx else {}
+    for _det, _rec in sorted(_outcomes.items()):
+        _line = (
+            f"[DETECTOR] {_det} status={_rec.get('status')} "
+            f"count={_rec.get('count', 0)}"
+        )
+        if _rec.get("reason"):
+            _line += f" reason={_rec['reason']}"
+        print(_line)
+        _append_text(log_file, f"detector-summary: {_line}")
+
     print(
         f"[DONE] {run_mode} learning={learning_mode} findings={len(findings)} issues_created={len(created_issues)} "
         f"fix_attempts={fix_attempts} fixes_verified={fixes_verified} "

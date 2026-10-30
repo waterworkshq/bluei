@@ -447,11 +447,12 @@ def _finalize_pr_for_issue(
                 cwd=worktree_path,
             )
 
-    if pr_number is not None or not args.live_github_actions:
+    published = bool(args.live_github_actions and not args.dry_run and pr_number is not None)
+    if published:
         set_issue_status(issue, "pr_opened", "autofix PR created from issue queue")
 
     entry = {
-        "type": "pr",
+        "type": "pr" if published else "local_fix",
         "repo": str(repo_path),
         "branch": worktree_branch,
         "dry_run": args.dry_run,
@@ -464,31 +465,27 @@ def _finalize_pr_for_issue(
         "github_pr_url": pr_url,
         "github_pr_number": pr_number,
         "note": "live GitHub PR workflow complete after fix+verify"
-        if args.live_github_actions
-        else "simulated local PR creation after e2e fix+verification gate",
+        if published
+        else "local fix verified; no GitHub PR was created",
     }
     state.setdefault("created", []).append(entry)
     mark_finding_activity(
         state=state,
         finding_ids=[finding.finding_id],
-        action="pr-opened",
+        action="pr-opened" if published else "resolved-local",
         failure_count=0,
         last_error=None,
     )
 
-    run_status = (
-        "pr-live-created"
-        if args.live_github_actions
-        else "pr-simulated-resolved-verified"
-    )
+    run_status = "pr-live-created" if published else "local-resolved-verified"
     return FinalizeResult(
         success=True,
         pr_number=pr_number,
         pr_url=pr_url,
         run_status=run_status,
         fixes_verified_delta=1,
-        created_prs_delta=1,
-        open_prs_delta=1,
+        created_prs_delta=int(published),
+        open_prs_delta=int(published),
     )
 
 

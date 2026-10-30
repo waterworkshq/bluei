@@ -33,18 +33,24 @@ from bluei.engine.ast_engine.transforms.python_transforms import (
 )
 
 
-def _match(source, rule_id=None):
+SANDBOX_NOTIFICATIONS = "src/qa_sandbox/notifications.py"
+SANDBOX_CATALOG = "src/qa_sandbox/catalog.py"
+SANDBOX_ORDERS = "src/qa_sandbox/orders.py"
+DISCOUNT_PRICE = "price.py"
+
+
+def _match(source, rule_id=None, path="test.py"):
     matcher = ASTPatternMatcher(PYTHON_PATTERNS)
-    matches = matcher.find_matches(source, "test.py", "python")
+    matches = matcher.find_matches(source, path, "python")
     if rule_id:
         return [m for m in matches if m.pattern.id == rule_id]
     return matches
 
 
-def _transform(source, rule_id):
+def _transform(source, rule_id, path="test.py"):
     matcher = ASTPatternMatcher(PYTHON_PATTERNS)
     transformer = ASTTransformer(PYTHON_TRANSFORMS)
-    matches = matcher.find_matches(source, "test.py", "python")
+    matches = matcher.find_matches(source, path, "python")
     results = []
     for m in matches:
         if m.pattern.id == rule_id:
@@ -274,39 +280,39 @@ class TestPerfListMembershipLoop:
 class TestNotificationsEmailNoTrim:
     def test_match_lower_without_strip(self):
         source = "def normalize_email(value):\n    return value.lower()\n"
-        matches = _match(source, "notifications-email-no-trim")
+        matches = _match(source, "notifications-email-no-trim", path=SANDBOX_NOTIFICATIONS)
         assert len(matches) == 1
 
     def test_no_match_lower_with_strip(self):
         source = "def normalize_email(value):\n    return value.strip().lower()\n"
-        matches = _match(source, "notifications-email-no-trim")
+        matches = _match(source, "notifications-email-no-trim", path=SANDBOX_NOTIFICATIONS)
         assert len(matches) == 0
 
     def test_no_match_lower_not_in_return(self):
         source = "def process(value):\n    x = value.lower()\n    return x\n"
-        matches = _match(source, "notifications-email-no-trim")
+        matches = _match(source, "notifications-email-no-trim", path=SANDBOX_NOTIFICATIONS)
         assert len(matches) == 0
 
     def test_generic_function_name(self):
         source = "def clean(text):\n    return text.lower()\n"
-        matches = _match(source, "notifications-email-no-trim")
+        matches = _match(source, "notifications-email-no-trim", path=SANDBOX_NOTIFICATIONS)
         assert len(matches) == 1
 
 
 class TestNotificationsTypeGuardMissing:
     def test_match_function_with_str_methods_no_guard(self):
         source = "def process(data):\n    return data.lower()\n"
-        matches = _match(source, "notifications-type-guard-missing")
+        matches = _match(source, "notifications-type-guard-missing", path=SANDBOX_NOTIFICATIONS)
         assert len(matches) == 1
 
     def test_no_match_function_with_guard(self):
         source = "def process(data):\n    if isinstance(data, str):\n        return data.lower()\n"
-        matches = _match(source, "notifications-type-guard-missing")
+        matches = _match(source, "notifications-type-guard-missing", path=SANDBOX_NOTIFICATIONS)
         assert len(matches) == 0
 
     def test_no_match_function_without_str_methods(self):
         source = "def process(data):\n    return data + 1\n"
-        matches = _match(source, "notifications-type-guard-missing")
+        matches = _match(source, "notifications-type-guard-missing", path=SANDBOX_NOTIFICATIONS)
         assert len(matches) == 0
 
 
@@ -339,24 +345,24 @@ class TestCatalogQueryNotNormalized:
         source = (
             "def find_item(items, query):\n    if item == query:\n        return item\n"
         )
-        matches = _match(source, "catalog-query-not-normalized")
+        matches = _match(source, "catalog-query-not-normalized", path=SANDBOX_CATALOG)
         assert len(matches) == 1
 
     def test_no_match_eq_with_strip(self):
         source = "def find_item(items, query):\n    if item.strip() == query.strip():\n        return item\n"
-        matches = _match(source, "catalog-query-not-normalized")
+        matches = _match(source, "catalog-query-not-normalized", path=SANDBOX_CATALOG)
         assert len(matches) == 0
 
     def test_no_match_eq_with_lower(self):
         source = "def find_item(items, query):\n    if item.lower() == query.lower():\n        return item\n"
-        matches = _match(source, "catalog-query-not-normalized")
+        matches = _match(source, "catalog-query-not-normalized", path=SANDBOX_CATALOG)
         assert len(matches) == 0
 
     def test_generic_variable_names(self):
         source = (
             "def search(records, key):\n    if record == key:\n        return record\n"
         )
-        matches = _match(source, "catalog-query-not-normalized")
+        matches = _match(source, "catalog-query-not-normalized", path=SANDBOX_CATALOG)
         assert len(matches) == 1
 
 
@@ -365,35 +371,91 @@ class TestDiscountMathSign:
         source = (
             "def calculate_discount(amount, discount):\n    return amount + discount\n"
         )
-        matches = _match(source, "discount-math-sign")
+        matches = _match(source, "discount-math-sign", path=DISCOUNT_PRICE)
         assert len(matches) == 1
 
     def test_no_match_sub_in_discount_context(self):
         source = (
             "def calculate_discount(amount, discount):\n    return amount - discount\n"
         )
-        matches = _match(source, "discount-math-sign")
+        matches = _match(source, "discount-math-sign", path=DISCOUNT_PRICE)
         assert len(matches) == 0
 
     def test_no_match_add_outside_discount(self):
         source = "def combine(a, b):\n    return a + b\n"
-        matches = _match(source, "discount-math-sign")
+        matches = _match(source, "discount-math-sign", path=DISCOUNT_PRICE)
         assert len(matches) == 0
 
     def test_no_match_add_not_in_return(self):
         source = "def calculate_discount(amount, discount):\n    total = amount + discount\n    return total\n"
-        matches = _match(source, "discount-math-sign")
+        matches = _match(source, "discount-math-sign", path=DISCOUNT_PRICE)
         assert len(matches) == 0
 
     def test_match_price_function(self):
         source = "def compute_price(base, rebate):\n    return base + rebate\n"
-        matches = _match(source, "discount-math-sign")
+        matches = _match(source, "discount-math-sign", path=DISCOUNT_PRICE)
         assert len(matches) == 1
 
     def test_match_coupon_function(self):
         source = "def apply_coupon(cost, coupon):\n    return cost + coupon\n"
-        matches = _match(source, "discount-math-sign")
+        matches = _match(source, "discount-math-sign", path=DISCOUNT_PRICE)
         assert len(matches) == 1
+
+
+class TestFixtureRuleScopeGuard:
+    """Fixture-derived domain rules are path-scoped to their qa-sandbox
+    fixture files. Identical code in unrelated repositories (the exact
+    false-positive class measured on rag-db) must not match."""
+
+    EMAIL_SRC = "def normalize_email(value):\n    return value.lower()\n"
+    QUERY_SRC = (
+        "def find_item(items, query):\n"
+        "    for item in items:\n"
+        "        if item == query:\n"
+        "            return item\n"
+    )
+    DISCOUNT_SRC = (
+        "def calculate_discount(amount, discount):\n"
+        "    return amount + discount\n"
+    )
+
+    def test_notifications_rules_do_not_fire_outside_sandbox(self):
+        assert _match(self.EMAIL_SRC, "notifications-email-no-trim") == []
+        assert _match(self.EMAIL_SRC, "notifications-type-guard-missing") == []
+
+    def test_catalog_rule_does_not_fire_outside_sandbox(self):
+        assert _match(self.QUERY_SRC, "catalog-query-not-normalized") == []
+
+    def test_discount_rule_does_not_fire_outside_sandbox(self):
+        assert _match(self.DISCOUNT_SRC, "discount-math-sign") == []
+
+    def test_scope_boundary_is_not_a_string_prefix(self):
+        # "src/qa_sandbox_evil/..." must not satisfy "src/qa_sandbox/..."
+        assert (
+            _match(
+                self.QUERY_SRC,
+                "catalog-query-not-normalized",
+                path="src/qa_sandbox_evil/catalog.py",
+            )
+            == []
+        )
+        assert (
+            _match(
+                self.EMAIL_SRC,
+                "notifications-email-no-trim",
+                path="src/qa_sandbox_evil/notifications.py",
+            )
+            == []
+        )
+
+    def test_main_guard_equality_not_flagged_in_unrelated_repo(self):
+        # The measured rag-db false positive: a module execution guard is not
+        # a query-normalization bug. Path scoping keeps it out of unrelated
+        # repos entirely; inside the scoped fixture file the generic equality
+        # heuristic can still fire (documented limitation, no ad hoc
+        # __main__ special-casing).
+        source = "if __name__ == \"__main__\":\n    main()\n"
+        assert _match(source, "catalog-query-not-normalized") == []
 
 
 class TestBroadExcept:
@@ -421,12 +483,12 @@ class TestBroadExcept:
 class TestNoFalsePositivesFromComments:
     def test_comment_not_matched(self):
         source = "# return amount + discount\nresult = a - b\n"
-        matches = _match(source, "discount-math-sign")
+        matches = _match(source, "discount-math-sign", path=DISCOUNT_PRICE)
         assert len(matches) == 0
 
     def test_string_literal_not_matched(self):
         source = "msg = 'return amount + discount'\nresult = a - b\n"
-        matches = _match(source, "discount-math-sign")
+        matches = _match(source, "discount-math-sign", path=DISCOUNT_PRICE)
         assert len(matches) == 0
 
     def test_comment_todo_not_matched_as_broad_except(self):
@@ -451,7 +513,7 @@ class TestTransformReplaceOp:
         source = (
             "def calculate_discount(amount, discount):\n    return amount + discount\n"
         )
-        results = _transform(source, "discount-math-sign")
+        results = _transform(source, "discount-math-sign", path=DISCOUNT_PRICE)
         assert len(results) == 1
         assert results[0].success
         assert "-" in results[0].source
@@ -461,7 +523,7 @@ class TestTransformReplaceOp:
         source = (
             "def calculate_discount(amount, discount):\n    return amount + discount\n"
         )
-        results = _transform(source, "discount-math-sign")
+        results = _transform(source, "discount-math-sign", path=DISCOUNT_PRICE)
         assert results[0].success
         compile(results[0].source, "<test>", "exec")
 
@@ -469,14 +531,14 @@ class TestTransformReplaceOp:
 class TestTransformPrependMethod:
     def test_prepend_strip(self):
         source = "def normalize_email(value):\n    return value.lower()\n"
-        results = _transform(source, "notifications-email-no-trim")
+        results = _transform(source, "notifications-email-no-trim", path=SANDBOX_NOTIFICATIONS)
         assert len(results) == 1
         assert results[0].success
         assert "value.strip().lower()" in results[0].source
 
     def test_output_is_valid_python(self):
         source = "def normalize_email(value):\n    return value.lower()\n"
-        results = _transform(source, "notifications-email-no-trim")
+        results = _transform(source, "notifications-email-no-trim", path=SANDBOX_NOTIFICATIONS)
         compile(results[0].source, "<test>", "exec")
 
 
@@ -485,7 +547,7 @@ class TestTransformWrapNormalize:
         source = (
             "def find_item(items, query):\n    if item == query:\n        return item\n"
         )
-        results = _transform(source, "catalog-query-not-normalized")
+        results = _transform(source, "catalog-query-not-normalized", path=SANDBOX_CATALOG)
         assert len(results) == 1
         assert results[0].success
         assert "strip()" in results[0].source
@@ -495,7 +557,7 @@ class TestTransformWrapNormalize:
         source = (
             "def find_item(items, query):\n    if item == query:\n        return item\n"
         )
-        results = _transform(source, "catalog-query-not-normalized")
+        results = _transform(source, "catalog-query-not-normalized", path=SANDBOX_CATALOG)
         compile(results[0].source, "<test>", "exec")
 
 
@@ -516,14 +578,14 @@ class TestTransformWrapSet:
 class TestTransformInsertGuard:
     def test_insert_isinstance_guard(self):
         source = "def process(data):\n    return data.lower()\n"
-        results = _transform(source, "notifications-type-guard-missing")
+        results = _transform(source, "notifications-type-guard-missing", path=SANDBOX_NOTIFICATIONS)
         assert len(results) == 1
         assert results[0].success
         assert "isinstance" in results[0].source
 
     def test_output_is_valid_python(self):
         source = "def process(data):\n    return data.lower()\n"
-        results = _transform(source, "notifications-type-guard-missing")
+        results = _transform(source, "notifications-type-guard-missing", path=SANDBOX_NOTIFICATIONS)
         compile(results[0].source, "<test>", "exec")
 
 
@@ -575,9 +637,10 @@ class TestOrchestratorIntegration:
 
         rule_meta = {e["rule"]: e for e in DETECTOR_CATALOG}
 
-        src = tmp_path / "src"
-        src.mkdir()
-        (src / "calc.py").write_text(
+        sandbox = tmp_path / "src" / "qa_sandbox"
+        sandbox.mkdir(parents=True)
+        (sandbox / "orders.py").touch()
+        (tmp_path / "price.py").write_text(
             "def calculate_discount(amount, discount):\n    return amount + discount\n"
         )
         log_file = tmp_path / "test.log"
@@ -624,7 +687,10 @@ class TestOrchestratorIntegration:
 
         rule_meta = {e["rule"]: e for e in DETECTOR_CATALOG}
 
-        (tmp_path / "calc.py").write_text(
+        sandbox = tmp_path / "src" / "qa_sandbox"
+        sandbox.mkdir(parents=True)
+        (sandbox / "orders.py").touch()
+        (tmp_path / "price.py").write_text(
             "def calculate_discount(amount, discount):\n    return amount + discount\n"
         )
         log_file = tmp_path / "test.log"

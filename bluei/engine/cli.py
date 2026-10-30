@@ -7,6 +7,7 @@ Exit codes: 0 success, 1 smoke-test fail, 2 abort, 4 needs-human.
 """
 
 import logging
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -293,7 +294,7 @@ def main() -> int:
 
     cost_log_path = Path(state_file).parent / "cost_log.jsonl"
     governor_ledger_path = Path(state_file).parent / "governor_recommendations.jsonl"
-    run_id = str(uuid.uuid4())
+    run_id = os.environ.get("BLUEI_RUN_ID") or str(uuid.uuid4())
     cost_tracker = CostTracker(
         log_path=cost_log_path,
         soft_warn=2.0,
@@ -361,6 +362,24 @@ def main() -> int:
 
     cap_ok = True
     if args.run_phase in ("verify-only",) or ctx.run_issue_cycle:
+        # Claim the status artifact for THIS run before discovery starts: a
+        # crash or kill mid-scan must not leave the prior run's success
+        # advertised as current. Health and other persisted fields stand.
+        from bluei.engine.state_io import atomic_json_write
+        import json
+
+        try:
+            _started_status = json.loads(ctx.status_file.read_text())
+        except (OSError, ValueError):
+            _started_status = {}
+        if not isinstance(_started_status, dict):
+            _started_status = {}
+        _started_status["last_run_completed"] = False
+        _started_status["latest_run_metrics"] = {
+            "run_id": ctx.run_id,
+            "run_completed": False,
+        }
+        atomic_json_write(ctx.status_file, _started_status)
         (
             ctx.findings,
             ctx.written_findings,
@@ -371,6 +390,27 @@ def main() -> int:
             cap_ok,
         ) = run_discover_phase(ctx)
         ctx.blocked_reasons.extend(_disc_blocked)
+        if (not any(item.get("status") == "ran" for item in ctx.detector_outcomes.values())
+                or any(item.get("status") in ("failed", "unavailable") for item in ctx.detector_outcomes.values())):
+            for detector, outcome in sorted(ctx.detector_outcomes.items()):
+                print(f"[DETECTOR] {detector} status={outcome.get('status')} count={outcome.get('count', 0)} reason={outcome.get('reason', '')}")
+            from bluei.engine.state_io import atomic_json_write
+            import json
+            try:
+                status = json.loads(ctx.status_file.read_text())
+            except (OSError, ValueError):
+                status = {}
+            if not isinstance(status, dict):
+                status = {}
+            status["last_run_completed"] = False
+            status["latest_run_metrics"] = {
+                "run_id": ctx.run_id, "run_completed": False,
+                "findings_detected": len(ctx.findings),
+                "detector_outcomes": ctx.detector_outcomes,
+            }
+            atomic_json_write(ctx.status_file, status)
+            print("[INCOMPLETE] Detector coverage incomplete; previous health preserved")
+            return 1
 
     # --- Contextual Fix Migration ---
     if args.migrate_context:

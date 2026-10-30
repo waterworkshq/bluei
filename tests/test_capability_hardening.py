@@ -275,4 +275,7 @@ def test_verify_fix_closed_treats_legacy_complexity_issue_as_closed_when_only_xo
         ],
     )
 
-    assert verify_fix_closed(tmp_path, finding, tmp_path / "run.log") is True
+    from bluei.engine.orchestrator import discover_findings
+    assert verify_fix_closed(
+        tmp_path, finding, tmp_path / "run.log", discover_fn=discover_findings,
+    ) is True

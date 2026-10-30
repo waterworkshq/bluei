@@ -254,10 +254,14 @@ class TestFinalizeNonLive:
         assert result.success is True
         assert result.pr_number is None
         assert result.pr_url == ""
-        assert result.run_status == "pr-simulated-resolved-verified"
+        assert result.run_status == "local-resolved-verified"
         assert result.fixes_verified_delta == 1
-        assert result.created_prs_delta == 1
-        assert result.open_prs_delta == 1
+        assert result.created_prs_delta == 0
+        assert result.open_prs_delta == 0
         assert result.should_break is False
-        # Should have created a state entry
-        assert len(finalize_args.state.get("created", [])) == 1
+        mock_status.assert_called_once_with(
+            finalize_args.issue, "resolved_verified",
+            "detector no longer firing after fix + validation",
+        )
+        assert finalize_args.state["created"][0]["type"] == "local_fix"
+        assert finalize_args.state["created"][0]["github_pr_number"] is None

@@ -1,5 +1,6 @@
 """Verify-only early exit phase handler."""
 
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -10,6 +11,7 @@ from bluei.engine.commands.helpers import update_status_artifact
 
 def run_verify_only(*args, **kwargs) -> int:
     """Handle --run-phase=verify-only exit."""
+    ctx = None
     if args:
         ctx = args[0]
         findings = ctx.findings
@@ -47,9 +49,85 @@ def run_verify_only(*args, **kwargs) -> int:
         blocked_reasons = kwargs["blocked_reasons"]
 
     from bluei.engine.orchestrator import set_issue_status
+    from bluei.engine.state_io import atomic_json_write
+    from bluei.engine.validation import responsible_detector_ran
+
+    outcomes = getattr(ctx, "detector_outcomes", {}) if ctx else kwargs.get("detector_outcomes", {})
+    statuses = [item.get("status") for item in outcomes.values()]
+    incomplete = (
+        not statuses
+        or "failed" in statuses
+        or "unavailable" in statuses
+        or "ran" not in statuses
+    )
+    if incomplete:
+        # Fail closed: absent findings are not evidence a detector stopped
+        # firing when no applicable detector actually ran.
+        for det, rec in sorted(outcomes.items()):
+            print(
+                f"[DETECTOR] {det} status={rec.get('status')} "
+                f"count={rec.get('count', 0)}"
+                + (f" reason={rec.get('reason')}" if rec.get("reason") else "")
+            )
+        print("[INCOMPLETE] verification skipped: no detector ran or coverage incomplete")
+        _append_text(
+            log_file,
+            "verify-only: no verification applied; detector coverage incomplete "
+            f"({len(outcomes)} outcome(s), ran={statuses.count('ran')})",
+        )
+        state["open_issues"] = open_issues
+        state["open_prs"] = open_prs
+        state["last_run_at"] = now_iso()
+        save_state(state_file, state)
+        update_status_artifact(
+            status_file=status_file,
+            state=state,
+            issues_file=issues_file,
+            findings_file=findings_file,
+            args=args,
+            run_mode="VERIFY-ONLY",
+            reconcile_event=reconcile_event,
+            previous_last_run_at=previous_last_run_at,
+            run_metrics={
+                "findings_detected": len(findings),
+                "findings_written": written_findings,
+                "issues_created": 0,
+                "fix_attempts": 0,
+                "prs_created": 0,
+                "fixes_verified": 0,
+                "fixes_failed_verification": 0,
+                "unresolved_open": len(
+                    [
+                        x
+                        for x in issues_data.get("issues", [])
+                        if x.get("status") not in ("resolved_verified", "resolved_merged")
+                    ]
+                ),
+                "findings_suppressed_by_cooldown": len(suppressed_findings),
+                "issues_escalated_max_retries": 0,
+                "merge_attempts": 0,
+                "merges_succeeded": 0,
+                "merges_failed": 0,
+                "merged_pr_urls": [],
+                "blocked_events": len(blocked_reasons) + 1,
+                "blocked_reasons": blocked_reasons + ["verify-only skipped: detector coverage incomplete"],
+                "run_completed": False,
+                "run_id": getattr(ctx, "run_id", "") if ctx else "",
+                "detector_outcomes": outcomes,
+            },
+        )
+        if status_file.exists():
+            try:
+                status_data = json.loads(status_file.read_text())
+                status_data["last_run_completed"] = False
+                atomic_json_write(status_file, status_data)
+            except (OSError, json.JSONDecodeError):
+                pass
+        return 1
 
     fixes_verified = 0
     fixes_failed_verification = 0
+    fixes_untouched = 0
 
     active_keys = {(f.rule, f.path) for f in findings}
     for issue in issues_data.get("issues", []):
@@ -61,13 +139,23 @@ def run_verify_only(*args, **kwargs) -> int:
                 "detector still firing in verification-only cycle",
             )
             fixes_failed_verification += 1
-        else:
+        elif responsible_detector_ran(str(issue.get("rule", "")), outcomes):
             set_issue_status(
                 issue,
                 "resolved_verified",
-                "detector no longer firing in verification-only cycle",
+                "responsible detector ran and rule no longer firing in verification-only cycle",
             )
             fixes_verified += 1
+        else:
+            # No detector able to report this rule ran: absence from the
+            # findings list is not evidence — leave the issue untouched.
+            fixes_untouched += 1
+    if fixes_untouched:
+        _append_text(
+            log_file,
+            "verify-only: left untouched (no responsible detector ran): "
+            f"{fixes_untouched} issue(s)",
+        )
     save_issues(issues_file, issues_data)
 
     unresolved_open = len(
@@ -98,6 +186,7 @@ def run_verify_only(*args, **kwargs) -> int:
             "prs_created": 0,
             "fixes_verified": fixes_verified,
             "fixes_failed_verification": fixes_failed_verification,
+            "fixes_untouched": fixes_untouched,
             "unresolved_open": unresolved_open,
             "findings_suppressed_by_cooldown": len(suppressed_findings),
             "issues_escalated_max_retries": 0,
@@ -107,10 +196,32 @@ def run_verify_only(*args, **kwargs) -> int:
             "merged_pr_urls": [],
             "blocked_events": len(blocked_reasons),
             "blocked_reasons": blocked_reasons,
+            "run_completed": True,
+            "run_id": getattr(ctx, "run_id", "") if ctx else "",
+            "detector_outcomes": (
+                getattr(ctx, "detector_outcomes", {}) if ctx else {}
+            ),
         },
     )
+    if status_file.exists():
+        try:
+            status_data = json.loads(status_file.read_text())
+            status_data["last_run_completed"] = True
+            atomic_json_write(status_file, status_data)
+        except (OSError, json.JSONDecodeError):
+            pass
+    _outcomes = getattr(ctx, "detector_outcomes", {}) if ctx else {}
+    for _det, _rec in sorted(_outcomes.items()):
+        _line = (
+            f"[DETECTOR] {_det} status={_rec.get('status')} "
+            f"count={_rec.get('count', 0)}"
+        )
+        if _rec.get("reason"):
+            _line += f" reason={_rec['reason']}"
+        print(_line)
     print(
         f"[DONE] VERIFY-ONLY findings={len(findings)} fixes_verified={fixes_verified} "
-        f"fixes_failed_verification={fixes_failed_verification}"
+        f"fixes_failed_verification={fixes_failed_verification} "
+        f"fixes_untouched={fixes_untouched}"
     )
     return 0

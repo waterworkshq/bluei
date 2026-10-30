@@ -332,10 +332,10 @@ repo worktrees / GitHub / validation / vitality snapshots
 Key design principles:
 
 - **Standalone-first**: no dependency on OpenClaw, Docker, or any platform
-- **Backend fallback**: `auto → claude → opencode → deterministic` — the deterministic cascade tries 8 stages before LLM, saving ~65% of LLM calls
+- **Backend fallback**: `auto → claude → opencode → deterministic` — the deterministic cascade tries supported fixes before LLM; detection support does not guarantee an automatic fix.
 - **Per-phase locking**: prevents overlapping issue/pr/merge runs
 - **Per-repo state**: each onboarded repo keeps config, runs, baselines, specks, and health history
-- **Detector ecosystem**: 8 language categories covered by 7 tools (ruff, ESLint, staticcheck, shellcheck, hadolint, markdownlint, gitleaks) plus TypeScript compiler and xo — all optional, all gracefully skipped if not installed
+- **Detector ecosystem**: language plugins and native tools report whether they ran, were deliberately skipped, failed, or were unavailable. Missing applicable tools and parser failures make a scan incomplete; partial results do not establish clean health or verified closure.
 - **Plugin system**: external plugins can extend discovery to additional languages via `PluginLoader`
 - **Secret scanning**: gitleaks integration catches hardcoded secrets on every scan
 - **HTML reporting**: `bluei report --format html` generates a standalone dark-themed dashboard with vitality charts
@@ -347,6 +347,9 @@ Key design principles:
 
 | Area | Status | Notes |
 |------|--------|-------|
+| Local patch preview | Available; unreleased | `fix-preview` retains one safe Ruff F401 patch/report without changing the source checkout. This is narrower than the ordinary fixing engine. |
+| Trustworthy scan-and-fix | Under review | Explicit detector outcomes, fixture-scoped assumptions, and reversible deterministic attempts. Incomplete scans cannot claim clean health or close unverified findings. No new release tag. |
+| Substantive application qualification | Not passed | Three reproduced application runtime defects still lack validated deterministic repairs; a known deadlock was missed. Controlled arithmetic acceptance is separate evidence. Model-assisted qualification awaits explicit source-sharing and spending authorization. |
 | v0.2.0-alpha.1 "Evidence" | Delivered | Flywheel Ledger + Pattern Court Lite: deterministic-vs-LLM metrics, cascade-stage counts, honest three-way replay outcomes, savings, and Pattern Court Lite explainability |
 | v0.2.0-alpha.2 "Safe Learning" | Delivered | Governance substrate (Operator Control Plane, Golden Validation Bundles, Dry Replay, SPRT demotion, bluei learn CLI). Ships inert — evidence population in alpha.3. |
 | v0.2.0-alpha.3 "Evidence Foundation" | Delivered | Provenance-aware mining infrastructure (`open_pattern_store` + `register_asset`), envelope field completion, authoritative guidelines (ADR-0017), SPRT per-family calibration harness. Synthesize-then-validate Seed Library pipeline (ADR-0018) with 38 validated bundles (Python + JS). |

@@ -864,14 +864,14 @@ class TestVerifyFixClosed:
     def test_true_when_gone(self, mock_disc, tmp_path, make_finding):
         log = tmp_path / "log.txt"
         log.write_text("")
-        assert verify_fix_closed(tmp_path, make_finding(), log) is True
+        assert verify_fix_closed(tmp_path, make_finding(), log, discover_fn=mock_disc) is True
 
     @patch("bluei.engine.orchestrator.discover_findings")
     def test_false_when_persists(self, mock_disc, tmp_path, make_finding):
         mock_disc.return_value = [make_finding()]
         log = tmp_path / "log.txt"
         log.write_text("")
-        assert verify_fix_closed(tmp_path, make_finding(), log) is False
+        assert verify_fix_closed(tmp_path, make_finding(), log, discover_fn=mock_disc) is False
         assert "still_firing=1" in log.read_text()
 
 

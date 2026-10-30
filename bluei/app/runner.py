@@ -21,6 +21,7 @@ from .health import HealthEngine
 from .config import ConfigManager
 from bluei.review.cycle import ReviewCycleEngine
 from bluei.engine.jsonl import append_jsonl
+from bluei.engine.state_io import atomic_json_write
 
 _logger = logging.getLogger(__name__)
 
@@ -152,7 +153,7 @@ class RunEngine:
         self.state = state
         self.health = health
         self.config = config_manager
-        self.runner_path = config_manager.workspace / "bluei" / "engine" / "cli.py"
+        self.runner_path = Path(__file__).resolve().parents[1] / "engine" / "cli.py"
 
     def _lock_path(self, repo_name: str, phase: str) -> Path:
         """Return the lock file path for a repo/phase pair.
@@ -408,6 +409,88 @@ class RunEngine:
 
         return args
 
+    def _read_completed_run_metrics(
+        self, repo_name: str, run_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return the status artifact's run metrics only when they belong to
+        THIS run and mark a completed lifecycle.
+
+        The engine writes ``latest_run_metrics.run_completed = True`` at
+        finalize. A crash or timeout before finalize leaves the *previous*
+        run's success in the file — the run ID check rejects stale success.
+        """
+        status_file = self.state._get_state_dir(repo_name) / "status.json"
+        try:
+            data = json.loads(status_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        metrics = data.get("latest_run_metrics")
+        if not isinstance(metrics, dict) or not metrics.get("run_completed"):
+            return None
+        if metrics.get("run_id") != run_id:
+            return None  # stale success from a prior run
+        return metrics
+
+    def _mark_interrupted_status(
+        self, repo_name: str, phase: str, error: Optional[str]
+    ) -> None:
+        """Clear stale success metadata after an incomplete run.
+
+        Without this, status.json keeps advertising the previous run's
+        ``run_completed`` success after a crashed/timeout scan.
+        """
+        status_file = self.state._get_state_dir(repo_name) / "status.json"
+        try:
+            try:
+                data = json.loads(status_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            data["last_run_completed"] = False
+            data["run_interruption"] = {
+                "at": now_iso(),
+                "phase": phase,
+                "error": (error or "")[:500],
+            }
+            metrics = data.get("latest_run_metrics")
+            if isinstance(metrics, dict):
+                metrics["run_completed"] = False
+            atomic_json_write(status_file, data)
+        except (OSError, json.JSONDecodeError):
+            _logger.debug("Failed to mark interrupted status for %s", repo_name)
+
+    def _persisted_findings_since(self, repo_name: str, run_id: str) -> Optional[int]:
+        """Recover only a current-run discovery snapshot, never history totals."""
+        path = self.state._get_state_dir(repo_name) / "discovery-current.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if data.get("run_id") == run_id:
+                return int(data["findings_detected"])
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            pass
+        return None
+
+    def _new_persisted_findings(self, repo_name: str, offset: int) -> Optional[int]:
+        """Count newly appended records as a lower bound when no snapshot exists."""
+        try:
+            with self.state.get_findings_file(repo_name).open("rb") as fh:
+                if fh.seek(0, 2) < offset:
+                    return None
+                fh.seek(offset)
+                count = 0
+                for line in fh:
+                    try:
+                        if isinstance(json.loads(line), dict):
+                            count += 1
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                return count if count else None
+        except OSError:
+            return None
+
     def _parse_output(self, output: str) -> Dict[str, int]:
         """Parse bluei engine output for metrics."""
         metrics = {
@@ -537,57 +620,18 @@ class RunEngine:
         run.duration_seconds = int((end_dt - start_dt).total_seconds())
         run.prs_created = result.active_prs
         run.status = "completed"
-
-        findings = self.state.load_findings(repo.config.name)
-        health_score = self.health.calculate(findings)
-        run.health_before = repo.current_health_score
-        run.health_after = health_score.score
-        run.health_delta = health_score.score - repo.current_health_score
-
-        # Health trend — one record per cycle
-        _trend_file = self.config.workspace / "state" / "health_trend.jsonl"
-        try:
-            _trend_file.parent.mkdir(parents=True, exist_ok=True)
-            _tune_state = {}
-            _tune_path = self.config.workspace / "state" / "auto_tune.json"
-            if _tune_path.exists():
-                _tune_state = json.loads(_tune_path.read_text()).get("tuned_fields", {})
-            _trend_record = {
-                "ts": now_iso(),
-                "repo": repo.config.name,
-                "cycle": "review",
-                "health_score": health_score.score,
-                "open_issues": len(findings),
-                "active_prs": result.active_prs,
-                "blocked_prs": result.blocked_prs,
-                "retry_failed": result.retry_failed_prs,
-                "retry_exhausted": result.retry_exhausted_prs,
-                "merge_ready": result.merge_ready_prs,
-                "tune_batch": _tune_state.get("max_prs_per_run"),
-                "tune_cooldown_h": _tune_state.get("finding_cooldown_seconds", 0)
-                // 3600
-                if "finding_cooldown_seconds" in _tune_state
-                else None,
-            }
-            append_jsonl(_trend_file, _trend_record, default=str)
-        except OSError:
-            _logger.debug("Failed to append trend record")
+        # review-cycle is not a discovery scan: leave scan_complete False and
+        # do not republish health — a completed review cycle is not evidence
+        # of a new scan, so the last scan's health/history stand (same rule
+        # as the non-scanning phases in run()).
 
         self.registry.update(
             repo.config.name,
             {
                 "status": RepoStatus.READY.value,
                 "last_run_at": now_iso(),
-                "current_findings_count": len(findings),
-                "current_health_score": health_score.score,
                 "total_prs": max(repo.total_prs, result.active_prs),
             },
-        )
-        self.health.save_health_snapshot(
-            repo.config.name,
-            health_score,
-            len(findings),
-            self.state._get_state_dir(repo.config.name),
         )
         return RunResult(run=run, success=True, output=output)
 
@@ -631,6 +675,12 @@ class RunEngine:
             self.state.save_run(repo_name, run)
             return RunResult(run=run, success=False, output="", error=run.error)
 
+        findings_path = self.state.get_findings_file(repo_name)
+        try:
+            findings_offset = findings_path.stat().st_size
+        except OSError:
+            findings_offset = 0
+
         # Update repo status — inside try so errors are caught
         try:
             self.registry.update(
@@ -656,10 +706,30 @@ class RunEngine:
                 text=True,
                 timeout=3600,  # 1 hour timeout
                 cwd=str(self.config.workspace),
+                env={**os.environ, "BLUEI_RUN_ID": run_id},
             )
 
             output = result.stdout + "\n" + result.stderr
             (log_dir / f"{run_id}.log").write_text(output, encoding="utf-8")
+
+            # Completion identity: trust only this run's own finalize marker
+            # in the status artifact. Regex-scraping the log can't tell an
+            # interrupted scan (no summary printed) from a clean zero.
+            completed_metrics = (
+                self._read_completed_run_metrics(repo_name, run_id)
+                if result.returncode == 0
+                else None
+            )
+            scanning_phase = options.phase in {"issue-cycle", "orchestrated", "verify-only", "detect-only", "e2e"}
+            detector_outcomes = completed_metrics.get("detector_outcomes", {}) if completed_metrics else {}
+            detector_statuses = [record.get("status") for record in detector_outcomes.values()
+                                 if isinstance(record, dict)]
+            scan_complete = bool(
+                scanning_phase and completed_metrics is not None
+                and "ran" in detector_statuses
+                and not any(status in {"failed", "unavailable"} for status in detector_statuses)
+            )
+            lifecycle_complete = completed_metrics is not None and (scan_complete or not scanning_phase)
             metrics = self._parse_output(output)
 
             # Update run record
@@ -670,15 +740,75 @@ class RunEngine:
             end_dt = datetime.fromisoformat(run.ended_at.replace("Z", "+00:00"))
             run.duration_seconds = int((end_dt - start_dt).total_seconds())
 
-            run.findings_detected = metrics["findings_detected"]
-            run.issues_created = metrics["issues_created"]
-            run.fix_attempts = metrics["fix_attempts"]
-            run.fixes_verified = metrics["fixes_verified"]
-            run.fixes_failed = metrics["fixes_failed"]
-            run.prs_created = metrics["prs_created"]
-            run.merges_completed = metrics["merges_completed"]
-            run.status = "completed" if result.returncode == 0 else "failed"
-            run.error = result.stderr[:500] if result.returncode != 0 else None
+            run.scan_complete = scan_complete
+            if lifecycle_complete and completed_metrics is not None:
+                # Prefer the engine's own persisted counters over output
+                # text scraping.
+                run.findings_detected = int(
+                    completed_metrics.get("findings_detected", 0) or 0
+                )
+                run.issues_created = int(
+                    completed_metrics.get("issues_created", 0) or 0
+                )
+                run.fix_attempts = int(completed_metrics.get("fix_attempts", 0) or 0)
+                run.fixes_verified = int(
+                    completed_metrics.get("fixes_verified", 0) or 0
+                )
+                run.fixes_failed = int(
+                    completed_metrics.get("fixes_failed_verification", 0) or 0
+                )
+                run.prs_created = int(completed_metrics.get("prs_created", 0) or 0)
+                run.merges_completed = int(
+                    completed_metrics.get("merges_succeeded", 0) or 0
+                )
+            else:
+                run.findings_detected = metrics["findings_detected"]
+
+            run.status = "completed" if lifecycle_complete else (
+                "failed" if result.returncode != 0 else "incomplete"
+            )
+            run.error = (result.stderr[:500] or f"engine exited rc={result.returncode}; scan incomplete") if result.returncode != 0 else None
+
+            if not lifecycle_complete:
+                # Interrupted/partial scan: recover what this run already
+                # persisted instead of claiming zero, and do NOT publish
+                # health/state improvements derived from an incomplete scan.
+                recovered = (
+                    int(completed_metrics.get("findings_detected", 0))
+                    if completed_metrics is not None
+                    else self._persisted_findings_since(repo_name, run_id)
+                )
+                if recovered is None:
+                    recovered = self._new_persisted_findings(repo_name, findings_offset)
+                run.findings_detected = recovered if recovered is not None else 0
+                run.findings_recovered = recovered
+                self._mark_interrupted_status(
+                    repo_name,
+                    options.phase,
+                    run.error or f"engine exited rc={result.returncode}",
+                )
+                return RunResult(
+                    run=run,
+                    success=False,
+                    output=output,
+                    error=(
+                        run.error
+                        or f"scan incomplete: engine did not reach a completed "
+                        f"lifecycle (rc={result.returncode}); persisted count: "
+                        f"{recovered if recovered is not None else 'unknown'}"
+                    ),
+                )
+
+            if not scanning_phase:
+                # A completed repair/merge phase is not evidence of a new scan.
+                self.registry.update(repo_name, {
+                    "status": RepoStatus.READY.value,
+                    "last_run_at": now_iso(),
+                    "total_fixes": repo.total_fixes + run.fixes_verified,
+                    "total_prs": repo.total_prs + run.prs_created,
+                    "total_merges": repo.total_merges + run.merges_completed,
+                })
+                return RunResult(run=run, success=True, output=output)
 
             # Recalculate health
             findings = self.state.load_findings(repo_name)
@@ -704,12 +834,12 @@ class RunEngine:
                     "cycle": options.phase,
                     "health_score": health_score.score,
                     "open_issues": len(findings),
-                    "findings_detected": metrics.get("findings_detected", 0),
-                    "issues_created": metrics.get("issues_created", 0),
-                    "fixes_verified": metrics.get("fixes_verified", 0),
-                    "fixes_failed": metrics.get("fixes_failed", 0),
-                    "prs_created": metrics.get("prs_created", 0),
-                    "merges_completed": metrics.get("merges_completed", 0),
+                    "findings_detected": run.findings_detected,
+                    "issues_created": run.issues_created,
+                    "fixes_verified": run.fixes_verified,
+                    "fixes_failed": run.fixes_failed,
+                    "prs_created": run.prs_created,
+                    "merges_completed": run.merges_completed,
                     "tune_batch": _tune_state.get("max_prs_per_run"),
                     "tune_cooldown_h": _tune_state.get("finding_cooldown_seconds", 0)
                     // 3600
@@ -752,12 +882,26 @@ class RunEngine:
             run.status = "timeout"
             run.error = "Run exceeded 1 hour timeout"
             run.ended_at = now_iso()
+            run.scan_complete = False
+            recovered = self._persisted_findings_since(repo_name, run_id)
+            if recovered is None:
+                recovered = self._new_persisted_findings(repo_name, findings_offset)
+            run.findings_detected = recovered if recovered is not None else 0
+            run.findings_recovered = recovered
+            self._mark_interrupted_status(repo_name, options.phase, run.error)
             return RunResult(run=run, success=False, output="", error=run.error)
 
         except Exception as e:
             run.status = "error"
             run.error = str(e)
             run.ended_at = now_iso()
+            run.scan_complete = False
+            recovered = self._persisted_findings_since(repo_name, run_id)
+            if recovered is None:
+                recovered = self._new_persisted_findings(repo_name, findings_offset)
+            run.findings_detected = recovered if recovered is not None else 0
+            run.findings_recovered = recovered
+            self._mark_interrupted_status(repo_name, options.phase, run.error)
             return RunResult(run=run, success=False, output="", error=run.error)
 
         finally:

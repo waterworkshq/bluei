@@ -16,6 +16,12 @@ class ASTPattern:
     negation_constraints: Optional[Dict[str, Any]] = None
     confidence: float = 0.80
     category: str = "lint"
+    # Optional repository-relative paths (files or directories) this pattern
+    # is scoped to. Fixture-derived domain rules (the qa-sandbox family) set
+    # this so they never fire on unrelated repositories that merely contain
+    # similar code. Matching is boundary-safe: "src/qa_sandbox/catalog.py"
+    # does not match "src/qa_sandbox_evil/catalog.py".
+    path_prefixes: Optional[List[str]] = None
 
 
 @dataclass

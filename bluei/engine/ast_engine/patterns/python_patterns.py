@@ -47,6 +47,7 @@ PYTHON_PATTERNS: List[ASTPattern] = [
         },
         confidence=0.89,
         category="bug",
+        path_prefixes=["src/qa_sandbox/notifications.py"],
     ),
     ASTPattern(
         id="notifications-type-guard-missing",
@@ -60,6 +61,7 @@ PYTHON_PATTERNS: List[ASTPattern] = [
         },
         confidence=0.87,
         category="bug",
+        path_prefixes=["src/qa_sandbox/notifications.py"],
     ),
     ASTPattern(
         id="hardcoded-tmp-path",
@@ -97,6 +99,7 @@ PYTHON_PATTERNS: List[ASTPattern] = [
         },
         confidence=0.93,
         category="bug",
+        path_prefixes=["src/qa_sandbox/catalog.py"],
     ),
     ASTPattern(
         id="discount-math-sign",
@@ -111,6 +114,7 @@ PYTHON_PATTERNS: List[ASTPattern] = [
         },
         confidence=0.95,
         category="bug",
+        path_prefixes=["price.py", "src/qa_sandbox/orders.py"],
     ),
     ASTPattern(
         id="broad-except",

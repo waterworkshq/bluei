@@ -40,6 +40,31 @@ def _args(**overrides):
     return SimpleNamespace(**defaults)
 
 
+def test_incomplete_discovery_persists_but_does_not_route(tmp_path):
+    finding = _finding(rule="complex-method")
+
+    def partial(repo_path, **kwargs):
+        kwargs["outcomes"]["ruff"] = {"status": "failed", "count": 0, "reason": "timeout"}
+        return [finding]
+
+    with (
+        patch("bluei.engine.orchestrator.discover_findings", side_effect=partial),
+        patch("bluei.engine.orchestrator.route_findings_with_intent") as route,
+        patch("bluei.engine.commands.discover.filter_findings_by_cooldown") as cooldown,
+    ):
+        result = run_discover_phase(
+            repo_path=tmp_path, docs_index_file=tmp_path / "docs.json",
+            findings_file=tmp_path / "findings.jsonl", log_file=tmp_path / "log",
+            state={}, issues_data={"issues": []}, args=_args(),
+            run_issue_cycle=True, run_pr_cycle=True,
+        )
+    assert result[0] == [finding] and result[1] == 1
+    assert result[2:5] == ([], [], []) and result[-1] is True
+    assert "discovery incomplete" in result[-2][0]
+    route.assert_not_called()
+    cooldown.assert_not_called()
+
+
 class TestDiscoverPhaseRouting:
     @patch("bluei.engine.orchestrator.route_findings_with_intent")
     @patch("bluei.engine.reforge.classify_finding")

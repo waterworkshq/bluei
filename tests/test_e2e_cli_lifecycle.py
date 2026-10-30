@@ -216,7 +216,7 @@ class TestDuster:
         assert ret == 0
 
         result = _do_run(ev, monkeypatch)
-        assert result.success
+        assert not result.success and result.run.findings_recovered is not None
 
         sd = _state_dir(ev)
         findings_file = sd / "findings.jsonl"
@@ -360,7 +360,7 @@ class TestFullChain:
         assert ev["repo_name"] in capsys.readouterr().out
 
         result = _do_run(ev, monkeypatch)
-        assert result.success
+        assert not result.success and result.run.findings_recovered is not None
 
         sd = _state_dir(ev)
         assert (sd / "status.json").exists()
@@ -405,7 +405,7 @@ class TestFullChain:
 
         # ── 3. scan: produces findings.jsonl + status.json ──
         result = _do_run(ev, monkeypatch)
-        assert result.success, "scan (issue-cycle dry-run) should succeed"
+        assert not result.success and result.run.findings_recovered is not None
         sd = _state_dir(ev)
         assert (sd / "status.json").exists()
         assert (sd / "findings.jsonl").exists()
@@ -442,7 +442,7 @@ class TestHealth:
         ret = _do_onboard(ev, monkeypatch)
         assert ret == 0
         result = _do_run(ev, monkeypatch)
-        assert result.success
+        assert not result.success and result.run.findings_recovered is not None
 
         # ── Dispatch contract: _cmd_health forwards to _run_engine ──
         import bin.bluei as bluei_main
@@ -528,7 +528,7 @@ class TestReport:
         ret = _do_onboard(ev, monkeypatch)
         assert ret == 0
         result = _do_run(ev, monkeypatch)
-        assert result.success
+        assert not result.success and result.run.findings_recovered is not None
 
         capsys.readouterr()  # drain onboard/run stdout before report
         from bin.bluei import _cmd_report
