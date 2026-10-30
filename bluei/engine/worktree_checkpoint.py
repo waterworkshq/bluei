@@ -260,6 +260,11 @@ def capture_checkpoint(root: Path, backup_root: Path, *, exclude_paths: Iterable
             cp.index_backup.write_bytes(index_data)
         if _git_metadata(root, rootfd=rootfd) != (identity, index):
             raise CheckpointError("root Git metadata changed during capture")
+        if index is not None:
+            active_git = index.parent.stat(follow_symlinks=False)
+            captured_git = os.fstat(gitfd)
+            if (active_git.st_dev, active_git.st_ino, active_git.st_mode) != (captured_git.st_dev, captured_git.st_ino, captured_git.st_mode):
+                raise CheckpointError("Git directory identity changed during capture")
         current_root = root.lstat()
         if (current_root.st_dev, current_root.st_ino) != root_identity:
             raise CheckpointError("worktree root identity changed during capture")
@@ -477,8 +482,15 @@ def changed_paths(cp: WorktreeCheckpoint) -> set[str]:
     identity, index = _git_metadata(cp.root)
     if identity != cp.git_identity or index != cp.index_target:
         changed.add(".git")
-    elif index is not None and _index_bytes(index, dir_fd=cp.git_dir_fd) != (cp.index_backup.read_bytes() if cp.index_existed else None):
-        changed.add(".git/index")
+    elif index is not None:
+        if cp.git_dir_fd is None:
+            raise CheckpointError("Git directory descriptor missing")
+        active_git = index.parent.stat(follow_symlinks=False)
+        captured_git = os.fstat(cp.git_dir_fd)
+        if (active_git.st_dev, active_git.st_ino, active_git.st_mode) != (captured_git.st_dev, captured_git.st_ino, captured_git.st_mode):
+            changed.add(".git")
+        elif _index_bytes(index, dir_fd=cp.git_dir_fd) != (cp.index_backup.read_bytes() if cp.index_existed else None):
+            changed.add(".git/index")
     current = {rel: (p, entry) for rel, p, entry in _walk(cp.root, cp.exclude_paths)}
     for rel in cp.entries.keys() | current.keys():
         if rel not in cp.entries or rel not in current:

@@ -198,6 +198,45 @@ def test_checkpoint_roundtrip_through_symlinked_ancestor(tmp_path):
         wt.discard_checkpoint(cp)
 
 
+def test_capture_refuses_replaced_external_git_directory(tmp_path, monkeypatch):
+    root = tmp_path / "wt"
+    root.mkdir()
+    metadata = tmp_path / "metadata"
+    metadata.mkdir()
+    (metadata / "index").write_bytes(b"original-index")
+    (root / ".git").write_text(f"gitdir: {metadata}\n")
+    backups = tmp_path / "backups"
+    backups.mkdir()
+
+    def replace_metadata():
+        metadata.rename(tmp_path / "detached-metadata")
+        metadata.mkdir()
+        (metadata / "index").write_bytes(b"replacement-index")
+
+    _capture_refusing_staged_swap(monkeypatch, root, backups, replace_metadata)
+    assert (metadata / "index").read_bytes() == b"replacement-index"
+    assert (tmp_path / "detached-metadata/index").read_bytes() == b"original-index"
+
+
+def test_changed_paths_detects_replaced_external_git_directory(tmp_path):
+    root = tmp_path / "wt"
+    root.mkdir()
+    metadata = tmp_path / "metadata"
+    metadata.mkdir()
+    (metadata / "index").write_bytes(b"original-index")
+    (root / ".git").write_text(f"gitdir: {metadata}\n")
+    cp = capture_checkpoint(root, tmp_path / "backups")
+    try:
+        metadata.rename(tmp_path / "detached-metadata")
+        metadata.mkdir()
+        (metadata / "index").write_bytes(b"replacement-index")
+        assert ".git" in wt.changed_paths(cp)
+        assert (metadata / "index").read_bytes() == b"replacement-index"
+        assert cp.index_backup.read_bytes() == b"original-index"
+    finally:
+        wt.discard_checkpoint(cp)
+
+
 @pytest.mark.parametrize("case", ["symlink", "oversized"])
 def test_capture_refuses_raced_or_oversized_git_pointer(tmp_path, monkeypatch, case):
     root = tmp_path / "wt"
