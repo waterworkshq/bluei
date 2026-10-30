@@ -216,6 +216,37 @@ def test_cleanup_failure_after_rejection_blocks_dispatch(tmp_path, make_finding,
             real_remove(path)
 
 
+def test_direct_cascade_cleanup_error_preserves_cancellation(tmp_path, make_finding):
+    from bluei.engine import cascade, worktree_checkpoint as checkpoints
+    target = tmp_path / 'src/app.py'
+    target.parent.mkdir()
+    target.write_text('original\n')
+    real_delete = checkpoints.shutil.rmtree
+    leftovers = []
+
+    class Interrupt(cascade.CascadeStage):
+        name = 'interrupt'
+        def can_handle(self, finding, context):
+            return True
+        def attempt(self, finding, worktree, context):
+            target.write_text('partial\n')
+            raise KeyboardInterrupt
+
+    def fail_delete(path, *args, **kwargs):
+        leftovers.append(path)
+        raise PermissionError('denied')
+
+    context = cascade.CascadeContext(log_file=tmp_path / 'log', allow_llm=False)
+    with patch.object(checkpoints.shutil, 'rmtree', side_effect=fail_delete):
+        with pytest.raises(KeyboardInterrupt) as excinfo:
+            cascade.DeterministicCascade([Interrupt()]).execute(_finding(make_finding), tmp_path, context)
+    assert target.read_text() == 'original\n'
+    assert any('cleanup failed' in note for note in excinfo.value.__notes__)
+    for path in leftovers:
+        if path.exists():
+            real_delete(path)
+
+
 def test_dispatch_generic_failure_still_falls_back(tmp_path, make_finding):
     """Ordinary failures keep the intended fallback feature (regression guard)."""
     from types import SimpleNamespace

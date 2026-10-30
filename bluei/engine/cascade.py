@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from abc import ABC, abstractmethod
@@ -365,14 +366,14 @@ class DeterministicCascade:
                 # Self-created checkpoint: nothing outside execute() will tier-
                 # validate, so the backup is no longer needed (worktree is
                 # either restored or holds the accepted winning fix).
+                pending = sys.exception()
                 try:
                     discard_checkpoint(checkpoint)
-                except OSError as exc:
-                    _logger.warning(
-                        "checkpoint cleanup failed for %s: %s",
-                        checkpoint.backup_dir,
-                        exc,
-                    )
+                except CheckpointError as exc:
+                    if isinstance(pending, (KeyboardInterrupt, SystemExit, CheckpointRestoreError)):
+                        pending.add_note(str(exc))
+                    else:
+                        raise
 
     def _ensure_checkpoint(
         self, worktree: Path, context: CascadeContext
