@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -28,6 +30,30 @@ def _write_files(tmp_path, files):
 
 
 class TestParseOutput:
+    def test_real_ruff_json_preserves_target_paths(self, plugin, tmp_path):
+        ruff = shutil.which("ruff")
+        if ruff is None:
+            pytest.skip("ruff is not installed")
+        _write_files(tmp_path, {"src/first.py": "print(missing_name)\n",
+                                "src/second.py": "print(missing_name)\n"})
+        result = subprocess.run(
+            [ruff, "check", "--isolated", "--no-cache", "--select", "F821",
+             "--output-format", "json", "--", "src/first.py", "src/second.py"],
+            cwd=tmp_path, capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 1, result.stderr
+        findings = plugin.parse_output(result.stdout, tmp_path)
+        assert {(f.path, f.line) for f in findings} == {
+            ("src/first.py", 1), ("src/second.py", 1)
+        }
+        assert len({f.finding_id for f in findings}) == 2
+
+    @pytest.mark.parametrize("filename", [None, "", 123, "../outside.py"])
+    def test_missing_or_outside_filename_is_not_a_target(self, plugin, tmp_path, filename):
+        output = json.dumps([{"code": "F821", "filename": filename,
+                              "location": {"row": 1}, "message": "undefined name"}])
+        assert plugin.parse_output(output, tmp_path) == []
+
     def test_valid_json_maps_codes(self, plugin, tmp_path):
         output = json.dumps(
             [

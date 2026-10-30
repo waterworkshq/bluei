@@ -142,9 +142,7 @@ def test_git_commit_all_reports_no_changes_without_failing(tmp_path, monkeypatch
     assert "no staged changes to commit" in log_file.read_text()
 
 
-def test_verify_fix_closed_matches_specific_finding_not_whole_file(
-    tmp_path, monkeypatch
-):
+def test_verify_fix_closed_keeps_other_same_rule_instance_open(tmp_path):
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     log_file = tmp_path / "run.log"
@@ -172,11 +170,8 @@ def test_verify_fix_closed_matches_specific_finding_not_whole_file(
         safe_to_autofix=False,
     )
 
-    monkeypatch.setitem(
-        verify_fix_closed.__globals__,
-        "discover_findings",
-        lambda *args, **kwargs: [other_same_file],
-    )
-
-    assert verify_fix_closed(worktree, target, log_file) is True
-    assert "still_firing=0" in log_file.read_text()
+    assert verify_fix_closed(
+        worktree, target, log_file,
+        discover_fn=lambda *args, **kwargs: [other_same_file],
+    ) is False
+    assert "still_firing=1" in log_file.read_text()
