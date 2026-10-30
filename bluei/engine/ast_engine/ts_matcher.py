@@ -30,7 +30,8 @@ class TSPatternMatcher:
             return []
 
         matches: List[ASTMatch] = []
-        applicable = [p for p in self.patterns if p.language == language]
+        pattern_language = {"tsx": "typescript", "jsx": "javascript"}.get(language, language)
+        applicable = [p for p in self.patterns if p.language == pattern_language]
 
         for pattern in applicable:
             found_nodes = root.find_all(pattern.node_type)

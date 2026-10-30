@@ -188,10 +188,13 @@ def test_javascript_never_falls_back_to_typescript_grammar(tmp_path, monkeypatch
             TreeSitterAdapter._parsers["javascript"] = original_cache
 
 
-def test_tsx_uses_the_tsx_grammar():
+def test_tsx_uses_the_tsx_grammar(tmp_path):
     assert TreeSitterAdapter.language_available("tsx")
     adapter = TreeSitterAdapter("tsx")
     assert adapter.parse("const x = <div>hi</div>;") is not None
+    (tmp_path / "view.tsx").write_text("export const view = <div>hi</div>;\n")
+    outcome, _ = _scan(tmp_path, "typescript")
+    assert outcome["status"] == "ran"
 
 
 def test_syntax_error_tree_records_failed_not_clean_scan(tmp_path):

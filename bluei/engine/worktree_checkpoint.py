@@ -4,6 +4,7 @@ ponytail: Full copies are capped at 50,000 entries and 256 MiB; use a
 content-addressed snapshot if larger worktrees need support.
 """
 
+import contextlib
 import errno
 import os
 import shutil
@@ -43,7 +44,9 @@ class WorktreeCheckpoint:
     index_existed: bool = False
     retained: bool = False
     root_mode: int = 0
+    root_identity: object = None
     git_identity: object = None
+    git_dir_fd: Optional[int] = None
 
     def _backup_for(self, rel: str) -> Path:
         return self.backup_dir / "data" / rel
@@ -120,7 +123,7 @@ def _git_metadata(root: Path):
     return identity, gitdir / "index"
 
 
-def _index_bytes(path: Optional[Path]):
+def _index_bytes(path: Optional[Path], max_bytes: int = MAX_BYTES):
     if path is None:
         return None
     try:
@@ -129,7 +132,13 @@ def _index_bytes(path: Optional[Path]):
         return None
     if not stat.S_ISREG(st.st_mode):
         raise CheckpointError(f"unsupported Git index: {path}")
-    return path.read_bytes()
+    if st.st_size > max_bytes:
+        raise CheckpointError(f"checkpoint over byte ceiling ({max_bytes})")
+    with path.open("rb") as stream:
+        data = stream.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise CheckpointError(f"checkpoint over byte ceiling ({max_bytes})")
+    return data
 
 
 def _root_mode(root: Path):
@@ -145,6 +154,8 @@ def capture_checkpoint(root: Path, backup_root: Path, *, exclude_paths: Iterable
     try:
         root = Path(os.path.abspath(root))
         root_mode = _root_mode(root)
+        root_st = root.lstat()
+        root_identity = (root_st.st_dev, root_st.st_ino)
         exclude = {os.path.abspath(p) for p in exclude_paths}
         for item in exclude:
             path = Path(item)
@@ -158,9 +169,9 @@ def capture_checkpoint(root: Path, backup_root: Path, *, exclude_paths: Iterable
         if backup_root == root or root in backup_root.parents or backup_root == root.resolve() or root.resolve() in backup_root.parents:
             raise CheckpointError(f"backup root {backup_root} must live outside the worktree {root}")
         identity, index = _git_metadata(root)
-        index_data = _index_bytes(index)
+        index_data = _index_bytes(index, max_bytes)
         entries = {}
-        total = 0
+        total = len(index_data) if index_data is not None else 0
         for rel, path, entry in _walk(root, exclude):
             entries[rel] = entry
             if len(entries) > max_files:
@@ -176,6 +187,7 @@ def capture_checkpoint(root: Path, backup_root: Path, *, exclude_paths: Iterable
         backup_root.mkdir(parents=True, exist_ok=True)
         backup_dir = Path(tempfile.mkdtemp(prefix="bluei-ckpt-", dir=backup_root))
         cp = WorktreeCheckpoint(root, backup_dir, entries, exclude, root_mode=root_mode,
+                                root_identity=root_identity,
                                 git_identity=identity, index_target=index, index_existed=index_data is not None)
         for rel, entry in entries.items():
             if entry.kind == "file":
@@ -185,6 +197,8 @@ def capture_checkpoint(root: Path, backup_root: Path, *, exclude_paths: Iterable
         if index_data is not None:
             cp.index_backup = backup_dir / "git_index.bin"
             cp.index_backup.write_bytes(index_data)
+        if index is not None:
+            cp.git_dir_fd = os.open(index.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         return cp
     except (OSError, CheckpointError) as exc:
         if backup_dir is not None:
@@ -217,64 +231,145 @@ def _matches_snapshot(cp: WorktreeCheckpoint, rel: str, entry: _Entry, path: Pat
                 return True
 
 
+@contextlib.contextmanager
+def _open_parent(rootfd: int, rel: str):
+    """Anchor rel's parent directory, refusing swapped symlink components."""
+    parts = Path(rel).parts
+    fd = rootfd
+    chain = []
+    try:
+        for comp in parts[:-1]:
+            fd = os.open(comp, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            chain.append(fd)
+        yield fd, parts[-1]
+    finally:
+        for opened in chain:
+            os.close(opened)
+
+
+def _fd_copy(src: Path, dst_fd: int, mode: Optional[int] = None) -> None:
+    """Copy trusted backup bytes onto an already-anchored destination fd.
+
+    Takes ownership of dst_fd; entering fdopen first guarantees the fd is
+    closed even when opening src or the copy fails.
+    """
+    with os.fdopen(dst_fd, "wb") as target, open(src, "rb") as source:
+        shutil.copyfileobj(source, target)
+        if mode is not None:
+            target.flush()
+            os.fchmod(target.fileno(), mode)
+
+
 def restore_checkpoint(cp: WorktreeCheckpoint) -> None:
-    """Restore without traversing replacement symlinks or deleting excluded data."""
+    """Restore without traversing replacement symlinks or deleting excluded data.
+
+    ponytail: the scan may still race a concurrent writer (reads only); every
+    mutation is anchored to a root fd opened with O_NOFOLLOW, so a parent
+    swapped for an outside symlink fails closed instead of escaping the tree.
+    """
     try:
         _root_mode(cp.root)
         identity, index = _git_metadata(cp.root)
         if identity != cp.git_identity or index != cp.index_target:
             raise CheckpointError("root Git metadata changed")
-        # Scan before modifying anything: special files and nested repos fail-stop.
-        scanned = list(_walk(cp.root, cp.exclude_paths))
-        current = {rel: entry for rel, _, entry in scanned}
-        # Unchanged entries (same kind, mode, bytes/link target) are left untouched.
-        kept = {rel for rel, p, entry in scanned if _matches_snapshot(cp, rel, entry, p)}
-        # Delete bottom-up, never recursively: excluded children prevent rmdir.
-        for rel in sorted(current, key=lambda r: len(Path(r).parts), reverse=True):
-            if rel in kept:
-                continue
-            entry = current[rel]
-            path = cp.root / rel
-            if entry.kind == "dir":
-                previous = cp.entries.get(rel)
-                if previous is not None and previous.kind == "dir":
+        rootfd = os.open(cp.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            root_st = os.fstat(rootfd)
+            if cp.root_identity is not None and (root_st.st_dev, root_st.st_ino) != cp.root_identity:
+                raise CheckpointError("worktree root identity changed")
+            # Scan before modifying anything: special files and nested repos fail-stop.
+            scanned = list(_walk(cp.root, cp.exclude_paths))
+            current = {rel: entry for rel, _, entry in scanned}
+            # Unchanged entries (same kind, mode, bytes/link target) are left untouched.
+            kept = {rel for rel, p, entry in scanned if _matches_snapshot(cp, rel, entry, p)}
+            # Delete bottom-up, never recursively: excluded children prevent rmdir.
+            for rel in sorted(current, key=lambda r: len(Path(r).parts), reverse=True):
+                if rel in kept:
                     continue
+                entry = current[rel]
+                with _open_parent(rootfd, rel) as (parentfd, name):
+                    if entry.kind == "dir":
+                        previous = cp.entries.get(rel)
+                        if previous is not None and previous.kind == "dir":
+                            continue
+                        try:
+                            os.rmdir(name, dir_fd=parentfd)
+                        except OSError as exc:
+                            # A new directory containing excluded paths must remain.
+                            if exc.errno in (errno.ENOTEMPTY, errno.EEXIST) and cp.entries.get(rel) is None and any(Path(x).is_relative_to(cp.root / rel) for x in cp.exclude_paths):
+                                continue
+                            raise
+                    else:
+                        os.unlink(name, dir_fd=parentfd)
+            for rel, entry in sorted(cp.entries.items(), key=lambda item: len(Path(item[0]).parts)):
+                if rel in kept:
+                    continue
+                with _open_parent(rootfd, rel) as (parentfd, name):
+                    if entry.kind == "dir":
+                        try:
+                            os.mkdir(name, 0o755, dir_fd=parentfd)
+                        except FileExistsError:
+                            st = os.stat(name, dir_fd=parentfd, follow_symlinks=False)
+                            if not stat.S_ISDIR(st.st_mode):
+                                raise
+                    elif entry.kind == "symlink":
+                        os.symlink(entry.target, name, dir_fd=parentfd)
+                    else:
+                        # O_EXCL|O_NOFOLLOW: never create through or over a raced name.
+                        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parentfd)
+                        _fd_copy(cp._backup_for(rel), fd, entry.mode)
+            for rel, entry in sorted(cp.entries.items(), key=lambda item: len(Path(item[0]).parts), reverse=True):
+                if entry.kind == "dir" and rel not in kept:
+                    with _open_parent(rootfd, rel) as (parentfd, name):
+                        dirfd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parentfd)
+                        try:
+                            os.fchmod(dirfd, entry.mode)
+                        finally:
+                            os.close(dirfd)
+            os.fchmod(rootfd, cp.root_mode)
+            if index is not None:
+                if cp.git_dir_fd is None:
+                    raise CheckpointError("Git directory descriptor missing")
+                captured = os.fstat(cp.git_dir_fd)
+                if index.parent == cp.root / ".git":
+                    gitfd = os.open(".git", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=rootfd)
+                else:
+                    gitfd = os.dup(cp.git_dir_fd)
                 try:
-                    path.rmdir()
-                except OSError as exc:
-                    # A new directory containing excluded paths must remain.
-                    if exc.errno in (errno.ENOTEMPTY, errno.EEXIST) and cp.entries.get(rel) is None and any(Path(x).is_relative_to(path) for x in cp.exclude_paths):
-                        continue
-                    raise
-            else:
-                path.unlink()
-        for rel, entry in sorted(cp.entries.items(), key=lambda item: len(Path(item[0]).parts)):
-            if rel in kept:
-                continue
-            dest = cp.root / rel
-            if entry.kind == "dir":
-                dest.mkdir(exist_ok=True)
-            elif entry.kind == "symlink":
-                os.symlink(entry.target, dest)
-            else:
-                shutil.copyfile(cp._backup_for(rel), dest)
-                os.chmod(dest, entry.mode)
-        for rel, entry in sorted(cp.entries.items(), key=lambda item: len(Path(item[0]).parts), reverse=True):
-            if entry.kind == "dir" and rel not in kept:
-                os.chmod(cp.root / rel, entry.mode)
-        os.chmod(cp.root, cp.root_mode)
-        if index is not None:
-            _index_bytes(index)  # reject a substituted symlink or special file
-            if cp.index_existed:
-                shutil.copyfile(cp.index_backup, index)
-            else:
-                index.unlink(missing_ok=True)
+                    current_git = os.fstat(gitfd)
+                    if (current_git.st_dev, current_git.st_ino) != (captured.st_dev, captured.st_ino):
+                        raise CheckpointError("Git directory identity changed")
+                    if cp.index_existed:
+                        # No O_TRUNC: a hardlinked or special target must be rejected
+                        # by fstat before any byte of it is modified.
+                        fd = os.open(index.name, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=gitfd)
+                        try:
+                            st = os.fstat(fd)
+                            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                                raise CheckpointError(f"unsupported Git index: {index}")
+                            os.ftruncate(fd, 0)
+                        except BaseException:
+                            os.close(fd)
+                            raise
+                        _fd_copy(cp.index_backup, fd)
+                    else:
+                        try:
+                            os.unlink(index.name, dir_fd=gitfd)
+                        except FileNotFoundError:
+                            pass
+                finally:
+                    os.close(gitfd)
+        finally:
+            os.close(rootfd)
     except Exception as exc:
         cp.retained = True
         raise CheckpointRestoreError(f"checkpoint restore failed: {exc}; backup retained at {cp.backup_dir}") from exc
 
 
 def discard_checkpoint(cp: WorktreeCheckpoint) -> None:
+    if cp.git_dir_fd is not None:
+        os.close(cp.git_dir_fd)
+        cp.git_dir_fd = None
     if not cp.retained:
         shutil.rmtree(cp.backup_dir)
 

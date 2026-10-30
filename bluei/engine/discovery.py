@@ -148,9 +148,9 @@ LANGUAGE_SCAN_CONFIGS: Dict[str, LanguageScanConfig] = {
         skip_dirs=_TS_SKIP_DIRS,
         ext_to_language={
             ".ts": "typescript",
-            ".tsx": "typescript",
+            ".tsx": "tsx",
             ".js": "javascript",
-            ".jsx": "javascript",
+            ".jsx": "jsx",
         },
         needs_tree_sitter=True,
     ),
