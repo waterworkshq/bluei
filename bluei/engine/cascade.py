@@ -392,10 +392,13 @@ class DeterministicCascade:
         try:
             restore_checkpoint(checkpoint)
         except CheckpointRestoreError as exc:
-            _append_text(
-                context.log_file,
-                f"cascade: RESTORE FAILED stage={stage_name} error={exc} — halting, backup retained",
-            )
+            try:
+                _append_text(
+                    context.log_file,
+                    f"cascade: RESTORE FAILED stage={stage_name} error={exc} — halting, backup retained",
+                )
+            except BaseException:
+                pass  # Diagnostic failure must never replace the fail-stop error.
             raise
 
     def _stage_scope(self, stage, finding, worktree, context) -> Set[str]:

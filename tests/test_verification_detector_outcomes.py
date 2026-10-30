@@ -38,6 +38,46 @@ def test_actual_real_ruff_rescan_can_close_resolved_finding(tmp_path):
                              docs_index_file=tmp_path / "docs.json")
 
 
+@pytest.mark.parametrize("bad_status", ["failed", "unavailable"])
+def test_other_detector_failure_rejects_closure_despite_responsible_ran(
+    tmp_path, monkeypatch, bad_status
+):
+    """Root 6532498920: the responsible detector ran but another failed or was
+    unavailable — the rescan is incomplete scan-wide, so rule absence is not
+    closure evidence. Injected at the orchestrator adapter boundary (the
+    default path's discover source), not the trusted discover_fn param."""
+    import bluei.engine.orchestrator as orchestrator
+
+    def fake_discover(worktree_path, docs_index_file=None, outcomes=None):
+        outcomes["plugin:plugin-python"] = {"status": "ran", "count": 0}
+        outcomes["ast-python"] = {"status": bad_status, "count": 0}
+        return []  # finding absent from the partial rescan
+
+    monkeypatch.setattr(orchestrator, "discover_findings", fake_discover)
+    finding = Finding("missing", str(tmp_path), "app.py", 1, "ruff-F821",
+                      "Undefined name `missing_name`", 0.9, False, False)
+    log = tmp_path / "verification.log"
+    assert verify_fix_closed(tmp_path, finding, log,
+                             docs_index_file=tmp_path / "docs.json") is False
+    assert "incomplete discovery" in log.read_text()
+
+
+def test_complete_rescan_with_responsible_ran_still_closes(tmp_path, monkeypatch):
+    """Control: every detector ran, finding absent -> closed."""
+    import bluei.engine.orchestrator as orchestrator
+
+    def fake_discover(worktree_path, docs_index_file=None, outcomes=None):
+        outcomes["plugin:plugin-python"] = {"status": "ran", "count": 0}
+        outcomes["ast-python"] = {"status": "ran", "count": 0}
+        return []
+
+    monkeypatch.setattr(orchestrator, "discover_findings", fake_discover)
+    finding = Finding("missing", str(tmp_path), "app.py", 1, "ruff-F821",
+                      "Undefined name `missing_name`", 0.9, False, False)
+    assert verify_fix_closed(tmp_path, finding, tmp_path / "verification.log",
+                             docs_index_file=tmp_path / "docs.json") is True
+
+
 def test_validation_path_is_data_not_python_source(tmp_path):
     filename = 'guide\"); __import__("pathlib").Path("injected").touch(); #.md'
     (tmp_path / filename).write_text("Current documentation\n")

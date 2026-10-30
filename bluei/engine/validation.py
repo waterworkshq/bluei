@@ -471,6 +471,21 @@ def verify_fix_closed(
         rescanned = _default_discover(
             worktree_path, docs_index_file=docs_index_file, outcomes=outcomes,
         )
+        if any(
+            outcome.get("status") in ("failed", "unavailable")
+            for outcome in outcomes.values()
+            if isinstance(outcome, dict)
+        ):
+            # Scan-wide completion gate (mirrors the runner's scan_complete
+            # rule): a failed/unavailable detector means the rescan is
+            # incomplete, so rule absence is not closure evidence — even when
+            # the responsible detector itself ran.
+            _append_text(
+                log_file,
+                "verification: incomplete discovery; a detector failed or was "
+                f"unavailable (rule={finding.rule}); finding remains open",
+            )
+            return False
         if not responsible_detector_ran(finding.rule, outcomes):
             # A detector that cannot report this rule ran (or none did):
             # absence from the rescan is not closure evidence.
