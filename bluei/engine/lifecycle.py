@@ -617,8 +617,6 @@ def _transactional_autofix(func):
             except BaseException:
                 _restore_and_release()
                 raise
-            discard_checkpoint(checkpoint)
-            return True
         except BaseException:
             # Includes KeyboardInterrupt/SystemExit: restore unless already
             # restored or the failed restore retained its backup. Bare raise
@@ -626,6 +624,16 @@ def _transactional_autofix(func):
             if not restored and not checkpoint.retained:
                 _restore_and_release()
             raise
+        # Acceptance and learning finished. Cleanup cannot undo accepted source
+        # using a checkpoint that may already have been deleted or closed.
+        try:
+            discard_checkpoint(checkpoint)
+        except OSError as exc:
+            try:
+                logging.warning("accepted autofix checkpoint cleanup failed: %s", exc)
+            except Exception:
+                pass
+        return True
 
     return wrapped
 
