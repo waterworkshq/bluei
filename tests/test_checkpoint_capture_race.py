@@ -237,6 +237,33 @@ def test_changed_paths_detects_replaced_external_git_directory(tmp_path):
         wt.discard_checkpoint(cp)
 
 
+@pytest.mark.parametrize("case", ["empty-directory", "symlink"])
+def test_capture_revalidates_non_file_entries(tmp_path, monkeypatch, case):
+    root = tmp_path / "wt"
+    root.mkdir()
+    target = root / "entry"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "file").write_bytes(OUTSIDE)
+    if case == "empty-directory":
+        target.mkdir()
+    else:
+        target.symlink_to("original-target")
+    backups = tmp_path / "backups"
+    backups.mkdir()
+
+    def swap_entry():
+        if case == "empty-directory":
+            target.rmdir()
+            target.symlink_to(outside, target_is_directory=True)
+        else:
+            target.unlink()
+            target.symlink_to("changed-target")
+
+    _capture_refusing_staged_swap(monkeypatch, root, backups, swap_entry)
+    assert (outside / "file").read_bytes() == OUTSIDE
+
+
 @pytest.mark.parametrize("case", ["symlink", "oversized"])
 def test_capture_refuses_raced_or_oversized_git_pointer(tmp_path, monkeypatch, case):
     root = tmp_path / "wt"

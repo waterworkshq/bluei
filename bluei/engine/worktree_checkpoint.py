@@ -64,7 +64,10 @@ def _walk(root: Path, exclude: set[str]):
         if d != root and ".git" in dirnames + filenames:
             raise CheckpointError(f"nested Git metadata at {d / '.git'}")
         if d != root:
-            yield str(d.relative_to(root)), d, _Entry("dir", stat.S_IMODE(d.lstat().st_mode))
+            st = d.lstat()
+            if not stat.S_ISDIR(st.st_mode):
+                raise CheckpointError(f"directory changed during scan: {d}")
+            yield str(d.relative_to(root)), d, _Entry("dir", stat.S_IMODE(st.st_mode), source_stat=st)
         for name in dirnames[:]:
             p = d / name
             if d == root and name == ".git":
@@ -77,14 +80,17 @@ def _walk(root: Path, exclude: set[str]):
                             raise CheckpointError(f"nested Git metadata at {Path(nested) / '.git'}")
             elif p.is_symlink():
                 dirnames.remove(name)
-                yield str(p.relative_to(root)), p, _Entry("symlink", target=os.readlink(p))
+                st = p.lstat()
+                if not stat.S_ISLNK(st.st_mode):
+                    raise CheckpointError(f"symlink changed during scan: {p}")
+                yield str(p.relative_to(root)), p, _Entry("symlink", target=os.readlink(p), source_stat=st)
         for name in filenames:
             p = d / name
             if (d == root and name == ".git") or str(p) in exclude:
                 continue
             st = p.lstat()
             if stat.S_ISLNK(st.st_mode):
-                entry = _Entry("symlink", target=os.readlink(p))
+                entry = _Entry("symlink", target=os.readlink(p), source_stat=st)
             elif stat.S_ISREG(st.st_mode):
                 entry = _Entry("file", stat.S_IMODE(st.st_mode), source_stat=st)
             else:
@@ -255,6 +261,15 @@ def capture_checkpoint(root: Path, backup_root: Path, *, exclude_paths: Iterable
                         target.write(block)
                     if _file_signature(os.fstat(source.fileno())) != _file_signature(opened):
                         raise CheckpointError(f"source file changed during capture: {rel}")
+        for rel, entry in entries.items():
+            if entry.kind == "file":
+                continue
+            with _open_parent(rootfd, rel) as (parentfd, name):
+                current = os.stat(name, dir_fd=parentfd, follow_symlinks=False)
+                if _file_signature(current) != _file_signature(entry.source_stat):
+                    raise CheckpointError(f"source entry changed during capture: {rel}")
+                if entry.kind == "symlink" and os.readlink(name, dir_fd=parentfd) != entry.target:
+                    raise CheckpointError(f"symlink changed during capture: {rel}")
         if index_data is not None:
             cp.index_backup = backup_dir / "git_index.bin"
             cp.index_backup.write_bytes(index_data)
