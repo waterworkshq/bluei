@@ -10,7 +10,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 from abc import ABC, abstractmethod
@@ -222,6 +221,7 @@ class DeterministicCascade:
         checkpoint: Optional[WorktreeCheckpoint] = None
         owned_checkpoint = False
         accepted = False
+        pending = None
 
         try:
             for stage in self._stages:
@@ -354,7 +354,8 @@ class DeterministicCascade:
                 latency_ms=telemetry.total_latency_ms,
                 error=f"cascade exhausted after {len(telemetry.stages_tried)} stages: " + "; ".join(f"{x['stage']}: {x['reason']}" for x in telemetry.stages_failed),
             )
-        except BaseException:
+        except BaseException as exc:
+            pending = exc
             # Logging, scope checks, and telemetry can fail after a stage edits
             # files. Restore before releasing even a directly owned backup.
             # A failed restore retains its evidence and must not be retried here.
@@ -366,7 +367,6 @@ class DeterministicCascade:
                 # Self-created checkpoint: nothing outside execute() will tier-
                 # validate, so the backup is no longer needed (worktree is
                 # either restored or holds the accepted winning fix).
-                pending = sys.exception()
                 try:
                     discard_checkpoint(checkpoint)
                 except CheckpointError as exc:
