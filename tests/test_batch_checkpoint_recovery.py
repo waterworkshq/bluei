@@ -11,7 +11,7 @@ from bluei.engine.models import BatchGroup
 from bluei.engine.worktree_checkpoint import CheckpointError, CheckpointRestoreError
 
 
-@pytest.mark.parametrize("failure", [CheckpointError, CheckpointRestoreError])
+@pytest.mark.parametrize("failure", [CheckpointError, CheckpointRestoreError, KeyboardInterrupt, SystemExit])
 def test_batch_checkpoint_failure_preserves_real_worktree(git_repo, tmp_path, make_finding, failure):
     target = git_repo / "app.py"
     target.write_text("baseline\n")

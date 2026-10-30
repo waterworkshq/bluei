@@ -413,7 +413,7 @@ def process_batch(
         )
         return True, f"pr-created-#{pr_number}"
 
-    except (CheckpointError, CheckpointRestoreError) as exc:
+    except (CheckpointError, CheckpointRestoreError, KeyboardInterrupt, SystemExit) as exc:
         preserve_worktree = True
         batch.status = BatchStatus.FAILED.value
         exc.add_note(f"batch worktree retained for recovery: {worktree_path}; branch={branch}")
