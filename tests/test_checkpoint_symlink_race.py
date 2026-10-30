@@ -305,3 +305,25 @@ def test_comparison_rechecks_file_kind_after_scan(tmp_path, monkeypatch):
     assert fired and not target.is_symlink()
     assert target.read_text() == outside.read_text() == "original"
     wt.discard_checkpoint(cp)
+
+
+def test_replaced_external_git_directory_fails_and_closes_descriptor(tmp_path):
+    root = tmp_path / "wt"
+    root.mkdir()
+    metadata = tmp_path / "metadata"
+    metadata.mkdir()
+    (metadata / "index").write_bytes(b"original-index")
+    (root / ".git").write_text(f"gitdir: {metadata}\n")
+    cp = capture_checkpoint(root, tmp_path / "backups")
+    descriptor = cp.git_dir_fd
+    metadata.rename(tmp_path / "old-metadata")
+    metadata.mkdir()
+    (metadata / "index").write_bytes(b"replacement-index")
+    with pytest.raises(CheckpointRestoreError, match="external Git directory identity changed"):
+        restore_checkpoint(cp)
+    assert (metadata / "index").read_bytes() == b"replacement-index"
+    assert cp.retained and cp.backup_dir.exists() and cp.git_dir_fd is None
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
+    wt.discard_checkpoint(cp)
+    assert cp.backup_dir.exists()

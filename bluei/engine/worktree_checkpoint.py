@@ -344,6 +344,9 @@ def restore_checkpoint(cp: WorktreeCheckpoint) -> None:
                 if index.parent == cp.root / ".git":
                     gitfd = os.open(".git", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=rootfd)
                 else:
+                    active_git = index.parent.stat()
+                    if (active_git.st_dev, active_git.st_ino) != (captured.st_dev, captured.st_ino):
+                        raise CheckpointError("external Git directory identity changed")
                     gitfd = os.dup(cp.git_dir_fd)
                 try:
                     current_git = os.fstat(gitfd)
@@ -371,8 +374,11 @@ def restore_checkpoint(cp: WorktreeCheckpoint) -> None:
                     os.close(gitfd)
         finally:
             os.close(rootfd)
-    except Exception as exc:
+    except BaseException as exc:
         cp.retained = True
+        if cp.git_dir_fd is not None:
+            os.close(cp.git_dir_fd)
+            cp.git_dir_fd = None
         raise CheckpointRestoreError(f"checkpoint restore failed: {exc}; backup retained at {cp.backup_dir}") from exc
 
 
