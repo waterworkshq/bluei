@@ -89,6 +89,70 @@ def test_restore_error_survives_logging_failure_and_blocks_dispatch(tmp_path, ma
     discard_checkpoint(checkpoints[0])
 
 
+def test_execute_checkpoint_failure_diagnostic_is_best_effort(tmp_path, make_finding):
+    """A failing checkpoint-capture diagnostic log must not mask CheckpointError.
+
+    Direct execute() callers (no caller-owned checkpoint) capture inside
+    _ensure_checkpoint; the OSError from an unavailable log would otherwise
+    replace the CheckpointError and let dispatch fall back to the model.
+    """
+    from bluei.engine import cascade
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("original\n")
+
+    class AnyStage(cascade.CascadeStage):
+        name = "any"
+        def can_handle(self, finding, context):
+            return True
+        def attempt(self, finding, worktree, context):  # pragma: no cover - unreachable
+            return cascade.CascadeResult(False, self.name)
+
+    real_log = cascade._append_text
+
+    def fail_diagnostic(log, message):
+        if "checkpoint failed" in message:
+            raise OSError("log unavailable")
+        return real_log(log, message)
+
+    with patch.object(cascade, "capture_checkpoint", side_effect=CheckpointError("capture ceiling")), \
+            patch.object(cascade, "_append_text", side_effect=fail_diagnostic):
+        with pytest.raises(CheckpointError, match="capture ceiling"):
+            cascade.DeterministicCascade([AnyStage()]).execute(
+                _finding(make_finding), tmp_path,
+                cascade.CascadeContext(worktree=tmp_path, repo_path=tmp_path,
+                                       log_file=tmp_path / "log"),
+            )
+
+
+def test_dispatch_capture_error_survives_logging_failure_no_model(tmp_path, make_finding):
+    """Lifecycle capture CheckpointError + failing log must still block the model.
+
+    The OSError from the diagnostic log must not mask the CheckpointError:
+    a masked error looks like an ordinary cascade failure and dispatch
+    falls through to the Claude fallback. BOTH model entrypoints are
+    forbidden from the start.
+    """
+    real_log = lifecycle._append_text
+
+    def fail_diagnostic(log, message):
+        if "checkpoint capture failed" in message:
+            raise OSError("log unavailable")
+        return real_log(log, message)
+
+    with patch("bluei.engine.worktree_checkpoint.capture_checkpoint",
+               side_effect=CheckpointError("worktree over checkpoint ceiling")), \
+            patch.object(lifecycle, "_append_text", side_effect=fail_diagnostic), \
+            patch.object(lifecycle, "apply_claude_fix", side_effect=AssertionError("model forbidden")) as model, \
+            patch.object(fix_dispatch, "_try_claude_fix", side_effect=AssertionError("model forbidden")) as fallback:
+        with pytest.raises(CheckpointError, match="checkpoint ceiling"):
+            dispatch_fix(_finding(make_finding), tmp_path, FixStrategy.CASCADE_FIRST,
+                         repo_path=tmp_path, log_file=tmp_path / "log",
+                         claude_cmd_template="claude")
+    model.assert_not_called()
+    fallback.assert_not_called()
+
+
 def test_autofix_checkpoint_error_propagates_and_blocks_fallbacks(tmp_path, make_finding):
     called = []
 

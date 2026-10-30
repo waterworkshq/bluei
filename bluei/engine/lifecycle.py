@@ -6,6 +6,7 @@ Safety gates block destructive operations; failed validations auto-rollback.
 """
 
 import logging
+import os
 import re
 import shlex
 import subprocess
@@ -562,7 +563,7 @@ def _transactional_autofix(func):
     def wrapped(worktree_path, finding, log_file, pattern_store_path=None, detected_frameworks=None):
         from bluei.engine.cascade import default_checkpoint_dir
         from bluei.engine.worktree_checkpoint import (
-            capture_checkpoint, changed_paths, discard_checkpoint, restore_checkpoint,
+            CheckpointError, capture_checkpoint, changed_paths, discard_checkpoint, restore_checkpoint,
         )
 
         root = Path(worktree_path).resolve()
@@ -629,10 +630,13 @@ def _transactional_autofix(func):
         try:
             discard_checkpoint(checkpoint)
         except OSError as exc:
-            try:
-                logging.warning("accepted autofix checkpoint cleanup failed: %s", exc)
-            except Exception:
-                pass
+            raise CheckpointError(
+                f"autofix accepted, but checkpoint cleanup failed; stop before further fixes: {checkpoint.backup_dir}"
+            ) from exc
+        finally:
+            if checkpoint.git_dir_fd is not None:
+                os.close(checkpoint.git_dir_fd)
+                checkpoint.git_dir_fd = None
         return True
 
     return wrapped
@@ -910,7 +914,10 @@ def apply_cascade_fix(
             ],
         )
     except CheckpointError as exc:
-        _append_text(log_file, f"cascade: checkpoint capture failed: {exc}")
+        try:
+            _append_text(log_file, f"cascade: checkpoint capture failed: {exc}")
+        except BaseException:
+            pass  # Preserve the checkpoint failure so dispatch cannot fall back.
         raise
 
     context = CascadeContext(
@@ -972,11 +979,18 @@ def apply_cascade_fix(
         nonlocal checkpoint
         if checkpoint is None:
             return
+        releasing = checkpoint
+        checkpoint = None  # Cleanup must never make an accepted/restored source retry rollback.
         try:
-            discard_checkpoint(checkpoint)
+            discard_checkpoint(releasing)
         except OSError as exc:
-            logging.warning("checkpoint cleanup failed for %s: %s", checkpoint.backup_dir, exc)
-        checkpoint = None
+            raise CheckpointError(
+                f"checkpoint cleanup failed; stop before further fixes: {releasing.backup_dir}"
+            ) from exc
+        finally:
+            if releasing.git_dir_fd is not None:
+                os.close(releasing.git_dir_fd)
+                releasing.git_dir_fd = None
 
     restored = False
 
