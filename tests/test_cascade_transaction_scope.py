@@ -225,18 +225,90 @@ def test_interrupt_during_scope_recheck_still_rolls_back(tmp_path, make_finding)
 def test_scope_recheck_error_with_failing_log_still_rolls_back(tmp_path, make_finding):
     wt = _real_repo(tmp_path)
     records = []
-    # Same sequencing: the OSError hits the lifecycle post-tier recheck,
-    # and the log write inside the failure path also fails (Mira finding).
+    # Same sequencing: the OSError hits the lifecycle post-tier recheck;
+    # the post-rollback log also fails and must not abort the cycle.
     with patch('bluei.engine.cascade.default_cascade_stages', return_value=[Fixed()]), \
             patch('bluei.engine.lifecycle._tier_validate', return_value=True), \
             patch.object(DeterministicCascade, '_out_of_scope_edits',
                          side_effect=[None, OSError('walk failed')]), \
             patch('bluei.engine.lifecycle._append_text', side_effect=OSError('disk full')), \
             patch('bluei.engine.lifecycle._extract_fix_pattern') as learn:
-        with pytest.raises(OSError):
+        accepted = apply_cascade_fix(wt, make_finding(path='target.py'), tmp_path / 'log',
+                                     deterministic_only=True, ledger_records=records)
+    assert accepted is False
+    assert (wt / 'target.py').read_text() == 'original\n'
+    assert learn.call_count == 0
+    assert [row['outcome'] for row in records] == ['exhausted']
+
+
+def test_scope_recheck_oserror_returns_false_after_rollback(tmp_path, make_finding):
+    wt = _real_repo(tmp_path)
+    records = []
+    with patch('bluei.engine.cascade.default_cascade_stages', return_value=[Fixed()]), \
+            patch('bluei.engine.lifecycle._tier_validate', return_value=True), \
+            patch.object(DeterministicCascade, '_out_of_scope_edits',
+                         side_effect=[None, OSError('walk failed')]), \
+            patch('bluei.engine.lifecycle._extract_fix_pattern') as learn:
+        accepted = apply_cascade_fix(wt, make_finding(path='target.py'), tmp_path / 'log',
+                                     deterministic_only=True, ledger_records=records)
+    assert accepted is False
+    assert (wt / 'target.py').read_text() == 'original\n'
+    assert learn.call_count == 0
+    assert [row['outcome'] for row in records] == ['exhausted']
+
+
+def test_ledger_interrupt_after_commit_keeps_source_and_record(tmp_path, make_finding):
+    wt = _real_repo(tmp_path)
+    records = []
+
+    def partial_ledger(ctx, telemetry, outcome=None, **kwargs):
+        records.append({'outcome': outcome})
+        raise KeyboardInterrupt
+
+    with patch('bluei.engine.cascade.default_cascade_stages', return_value=[Fixed()]), \
+            patch('bluei.engine.lifecycle._extract_fix_pattern'), \
+            patch.object(DeterministicCascade, '_emit_ledger_record',
+                         side_effect=partial_ledger):
+        with pytest.raises(KeyboardInterrupt):
             apply_cascade_fix(wt, make_finding(path='target.py'), tmp_path / 'log',
                               deterministic_only=True, ledger_records=records)
+    # Committed: the interrupt must NOT roll back accepted source, and the
+    # success record that was already appended matches the kept fix.
+    assert (wt / 'target.py').read_text() == 'fixed\n'
+    assert [row['outcome'] for row in records] == ['resolved_deterministic']
+
+
+def test_rejection_cleanup_interrupt_does_not_restore_twice(tmp_path, make_finding):
+    from bluei.engine import worktree_checkpoint as wc
+
+    wt = _real_repo(tmp_path)
+    records = []
+    calls = []
+    real_restore = wc.restore_checkpoint
+
+    def counting_restore(cp):
+        calls.append(1)
+        return real_restore(cp)
+
+    def rogue_tier(tier, worktree_path, finding, log_file, state=None):
+        (worktree_path / 'other.py').write_text('hijacked\n')
+        return True
+
+    with patch('bluei.engine.cascade.default_cascade_stages', return_value=[Fixed()]), \
+            patch('bluei.engine.lifecycle._tier_validate', side_effect=rogue_tier), \
+            patch('bluei.engine.worktree_checkpoint.restore_checkpoint',
+                  side_effect=counting_restore), \
+            patch('bluei.engine.worktree_checkpoint.discard_checkpoint',
+                  side_effect=[KeyboardInterrupt, None]), \
+            patch('bluei.engine.lifecycle._extract_fix_pattern') as learn:
+        with pytest.raises(KeyboardInterrupt):
+            apply_cascade_fix(wt, make_finding(path='target.py'), tmp_path / 'log',
+                              deterministic_only=True, ledger_records=records)
+    # The worktree was marked restored BEFORE cleanup, so the cleanup
+    # interrupt must not trigger a second restore from the backup.
+    assert len(calls) == 1
     assert (wt / 'target.py').read_text() == 'original\n'
+    assert (wt / 'other.py').read_text() == 'other\n'
     assert learn.call_count == 0
     assert records == []
 

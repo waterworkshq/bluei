@@ -44,6 +44,51 @@ def test_cascade_restore_error_propagates_and_blocks_claude_fallback(
     assert called == ["cascade"], "no fallback may run after unsafe state"
 
 
+def test_restore_error_survives_logging_failure_and_blocks_dispatch(tmp_path, make_finding):
+    from bluei.engine import cascade
+
+    target = tmp_path / "src/app.py"
+    target.parent.mkdir()
+    target.write_text("original\n")
+    checkpoints = []
+
+    class MutatingFailure(cascade.CascadeStage):
+        name = "mutating-failure"
+        def can_handle(self, finding, context):
+            return True
+        def attempt(self, finding, worktree, context):
+            target.write_text("unaccepted\n")
+            return cascade.CascadeResult(success=False, stage_name=self.name)
+
+    def fail_restore(cp):
+        cp.retained = True
+        checkpoints.append(cp)
+        raise CheckpointRestoreError("retained restore failure")
+
+    real_log = cascade._append_text
+    def fail_restore_diagnostic(log, message):
+        if "RESTORE FAILED" in message:
+            raise OSError("log unavailable")
+        return real_log(log, message)
+
+    with patch.object(cascade, "default_cascade_stages", return_value=[MutatingFailure()]), \
+            patch.object(cascade, "restore_checkpoint", side_effect=fail_restore), \
+            patch.object(cascade, "_append_text", side_effect=fail_restore_diagnostic), \
+            patch.object(lifecycle, "apply_claude_fix", side_effect=AssertionError("model forbidden")) as model, \
+            patch.object(fix_dispatch, "_try_claude_fix", return_value=(1, "blocked", None)) as fallback:
+        with pytest.raises(CheckpointRestoreError, match="retained restore failure"):
+            dispatch_fix(_finding(make_finding), tmp_path, FixStrategy.CASCADE_FIRST,
+                         repo_path=tmp_path, log_file=tmp_path / "log", claude_cmd_template="claude")
+    fallback.assert_not_called()
+    model.assert_not_called()
+    assert target.read_text() == "unaccepted\n"
+    assert checkpoints and checkpoints[0].retained
+    assert checkpoints[0].backup_dir.exists()
+    # Retention in the fake models failure only; release the real capture fd.
+    from bluei.engine.worktree_checkpoint import discard_checkpoint
+    discard_checkpoint(checkpoints[0])
+
+
 def test_autofix_checkpoint_error_propagates_and_blocks_fallbacks(tmp_path, make_finding):
     called = []
 
