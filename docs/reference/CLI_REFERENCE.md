@@ -970,6 +970,31 @@ bluei run my-app --dry-run           # Preview only
 bluei run my-app --fix-engine claude # Use Claude for fixes
 ```
 
+**Bounded Python repair:**
+
+```bash
+bluei duster my-app --discovery-scope python
+bluei run my-app --discovery-scope python --finding-id <current-finding-id> \
+  --fix-engine claude --no-dry-run
+```
+
+`--discovery-scope` defaults to `repository`; `python` is the only narrower scope.
+Python scans keep the full source tree but invoke only Python producers. Required
+producer failures still block routing. Completion is labeled **Python scope complete**
+and does not change repository-wide findings counts or health/history.
+
+`--finding-id` requires Python scope, the orchestrated phase, and an explicit
+`claude` or `opencode` backend. Every attempt starts with fresh discovery; missing,
+ambiguous, suppressed, or ineligible IDs do not select another finding. The selected
+lane permits one model attempt, disables batching, replay/learning, GitHub publication,
+and merge, and does not process unrelated issues. `--no-learning` is also available
+for ordinary runs. F821 uses the model lane, never deterministic autofix.
+
+Selecting a backend does not grant permission to transmit source or incur charges.
+Obtain that authorization and configure backend-enforced spending limits separately;
+bluei's token-cost estimates are not actual-spend enforcement. Default dry runs do
+not execute the selected repair.
+
 **Exit codes:** `0` (success), `1` (error or missing project name)
 
 ---

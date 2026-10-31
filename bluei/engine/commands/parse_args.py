@@ -81,6 +81,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--force-push", action="store_true", default=False)
 
     # Discovery/creation policy
+    p.add_argument("--discovery-scope", choices=("repository", "python"), default="repository")
+    p.add_argument("--finding-id", help="Repair only this freshly discovered Python finding")
+    p.add_argument("--no-learning", action="store_true", default=False)
     p.add_argument("--max-issues-per-run", type=int, default=10)
     p.add_argument("--refresh-docs-index", action="store_true", default=False)
     p.add_argument("--issue-confidence-threshold", type=float, default=0.7)
@@ -148,7 +151,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--fix-engine",
-        choices=[FixEngine.DETERMINISTIC.value, FixEngine.CLAUDE.value],
+        choices=[FixEngine.DETERMINISTIC.value, FixEngine.CLAUDE.value, "opencode"],
         default=DEFAULT_FIX_ENGINE,
     )
     p.add_argument(
@@ -254,6 +257,27 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = p.parse_args()
+    if args.discovery_scope == "python" and (
+        args.run_phase not in {"issue-cycle", "detect-only", "orchestrated"}
+        or args.reconcile_only or args.migrate_context or args.live_github_actions
+        or args.auto_merge_sandbox or args.allow_main_commit or args.force_push
+    ):
+        p.error("Python scope supports local discovery or selected orchestrated repair only")
+    if args.finding_id is not None:
+        if (not args.finding_id.strip() or args.discovery_scope != "python"
+                or args.run_phase != "orchestrated" or args.fix_engine not in {"claude", "opencode"}
+                or args.deterministic_only or args.allow_main_commit or args.force_push
+                or args.review_feedback or args.log_lesson or args.smoke_test):
+            p.error("--finding-id requires Python scope, orchestrated phase, and an explicit model engine")
+        args.batch_pr_enabled = False
+        args.max_prs_per_run = 1
+        args.max_issues_per_run = 1
+        args.max_fix_attempts_per_issue = 1
+        args.no_learning = True
+    elif args.discovery_scope == "python" and args.run_phase == "orchestrated":
+        p.error("Python repair requires --finding-id")
+    if args.no_learning:
+        args.pattern_store_path = None
 
     # Ensure a basic handler is configured so logger.info(...) prints to stderr
     if not logging.getLogger().handlers:

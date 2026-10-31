@@ -160,13 +160,22 @@ def load_applicable_plugins(
     repo_path: Path,
     plugins_dir: Optional[Path] = None,
     outcomes: Optional[Dict[str, Dict[str, Any]]] = None,
+    discovery_scope: str = "repository",
 ) -> List[Any]:
     """Load all plugins that are applicable to the given repository.
 
     Detects repo languages, scans plugins, and returns instantiated plugin
     objects for the matching plugins. When ``outcomes`` is given, records why
-    each discovered plugin did or did not reach the loaded state.
+    each discovered plugin did or did not reach the loaded state. When
+    ``discovery_scope`` is not ``"repository"``, only manifests declaring that
+    language are loaded (scope assertion replaces language detection).
     """
+
+    if discovery_scope not in ("repository", "python"):
+        raise ValueError(
+            f"unknown discovery_scope {discovery_scope!r}; "
+            "expected 'repository' or 'python'"
+        )
     if plugins_dir is None:
         found_dir = _find_plugins_dir(repo_path)
         if found_dir is None:
@@ -189,21 +198,31 @@ def load_applicable_plugins(
             }
         return []
 
-    languages = detect_repo_languages(repo_path)
+    languages = (
+        detect_repo_languages(repo_path)
+        if discovery_scope == "repository"
+        else []
+    )
 
     loaded: List[Any] = []
     for plugin_id, manifest in manifests.items():
         key = f"plugin:{plugin_id}"
         plugin_languages = [l.lower() for l in (manifest.get("languages") or [])]
-        # Match if the plugin supports any detectable language
-        matches = any(lang.lower() in plugin_languages for lang in languages)
+        # Match if the plugin supports any detectable language; a scoped
+        # discovery asserts the language instead of detecting it.
+        if discovery_scope != "repository":
+            matches = discovery_scope in plugin_languages
+        else:
+            matches = any(lang.lower() in plugin_languages for lang in languages)
         if not matches:
             if outcomes is not None:
-                outcomes[key] = {
-                    "status": "skipped",
-                    "count": 0,
-                    "reason": f"plugin languages {plugin_languages} not detected in repo",
-                }
+                reason = (
+                    f"plugin languages {plugin_languages} outside "
+                    f"{discovery_scope} discovery scope"
+                    if discovery_scope != "repository"
+                    else f"plugin languages {plugin_languages} not detected in repo"
+                )
+                outcomes[key] = {"status": "skipped", "count": 0, "reason": reason}
             continue
 
         # Direct ID-based loading
@@ -252,20 +271,33 @@ def run_plugin_discovery(
     plugins_dir: Optional[Path] = None,
     config: Optional[Dict[str, Any]] = None,
     outcomes: Optional[Dict[str, Dict[str, Any]]] = None,
+    discovery_scope: str = "repository",
 ) -> List[Finding]:
     """Run discovery against all applicable plugins and return findings.
 
     This is the main integration point called from discover_findings().
-    It loads plugins matching the repo's languages and calls each
-    plugin's discover() method. When ``outcomes`` is given, one record per
-    plugin records whether it ran, why it was skipped/failed, and — via the
-    ToolWrapperPlugin outcome hook — whether its external tool actually ran.
+    It loads plugins matching the repo's languages (or the asserted
+    ``discovery_scope`` language) and calls each plugin's discover() method.
+    When ``outcomes`` is given, one record per plugin records whether it ran,
+    why it was skipped/failed, and — via the ToolWrapperPlugin outcome hook —
+    whether its external tool actually ran.
     """
+
+    if discovery_scope not in ("repository", "python"):
+        raise ValueError(
+            f"unknown discovery_scope {discovery_scope!r}; "
+            "expected 'repository' or 'python'"
+        )
     if config is None:
         config = {}
 
     plugin_outcomes: Dict[str, Dict[str, Any]] = {}
-    plugins = load_applicable_plugins(repo_path, plugins_dir, plugin_outcomes)
+    if discovery_scope != "repository":
+        plugins = load_applicable_plugins(
+            repo_path, plugins_dir, plugin_outcomes, discovery_scope
+        )
+    else:
+        plugins = load_applicable_plugins(repo_path, plugins_dir, plugin_outcomes)
     if outcomes is not None:
         outcomes.update(plugin_outcomes)
     if not plugins:

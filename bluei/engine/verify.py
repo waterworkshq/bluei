@@ -45,6 +45,7 @@ def verify_fix_closed(
     finding: Finding,
     log_file: Path,
     docs_index_file: Optional[Path] = None,
+    discovery_scope: str = "repository",
 ) -> VerificationResult:
     """Verify that a finding is closed after a fix.
 
@@ -56,6 +57,8 @@ def verify_fix_closed(
         finding: The finding to verify.
         log_file: Path to the log file.
         docs_index_file: Optional path to docs index file. If None, uses default.
+        discovery_scope: Optional discovery scope forwarded to the lower-level
+            verifier (``"repository"`` default or ``"python"``).
 
     Returns:
         VerificationResult with is_closed set to the verification result.
@@ -63,6 +66,8 @@ def verify_fix_closed(
     kwargs = {}
     if docs_index_file is not None:
         kwargs["docs_index_file"] = docs_index_file
+    if discovery_scope != "repository":
+        kwargs["discovery_scope"] = discovery_scope
 
     is_closed = _verify_fix_closed(
         worktree_path=worktree_path,

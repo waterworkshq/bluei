@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import subprocess
 import time
 
 from bluei.engine.models import Finding, FixEngine, IssueStatus, now_iso
@@ -41,6 +42,7 @@ from bluei.engine.validation import (
     choose_validation_baseline,
     run_named_checks,
     run_validation_gate,
+    responsible_detector_ran,
 )
 from bluei.engine.verify import verify_fix_closed
 from bluei.engine.utils import (
@@ -703,6 +705,13 @@ def _process_one_issue(
     worktree_branch = wt.worktree_branch
 
     run_status = "unknown"
+    # Scoped runs verify closure against the same discovery scope that
+    # produced the finding; repository runs keep the default verification.
+    _verify_kwargs = (
+        {"discovery_scope": args.discovery_scope}
+        if getattr(args, "discovery_scope", "repository") != "repository"
+        else {}
+    )
     try:
         counters.fix_attempts += 1
         set_issue_status(issue, "fix_attempted", "starting sandbox autofix attempt")
@@ -845,7 +854,13 @@ def _process_one_issue(
                         replay_pattern_hint = format_pattern_hint(pattern)
 
         if not replay_succeeded:
-            if getattr(finding, "refactor_class", "") == "cascade_fix":
+            # Selected repairs are model-only: the cascade would run its own
+            # deterministic (and potentially model) stages ahead of the single
+            # approved model attempt, so it is skipped entirely.
+            if (
+                getattr(finding, "refactor_class", "") == "cascade_fix"
+                and not getattr(args, "finding_id", None)
+            ):
                 from bluei.engine.lifecycle import apply_cascade_fix
 
                 applied = apply_cascade_fix(
@@ -916,9 +931,7 @@ def _process_one_issue(
                     or finding.rule in CLAUDE_REQUIRED_RULES
                     or is_llm_fixable
                 )
-                if use_claude_engine:
-                    counters.claude_invocations += 1
-                else:
+                if not use_claude_engine:
                     counters.deterministic_invocations += 1
                 extra_prompt = (
                     llm_rules.get(finding.rule, {}).get("prompt_hint")
@@ -961,19 +974,30 @@ def _process_one_issue(
                 # ClaudeFixRequest.claude_cmd_template below.
                 from bluei.engine.model_governor import resolve_governed_model
 
-                _gov_rec, _gov_resolved, resolved_tmpl, model_name = (
-                    resolve_governed_model(
-                        finding=finding,
-                        selection_fn=ctx.selection_fn,
-                        pattern_store=ctx.pattern_store,
-                        discovery=ctx.discovery,
-                        base_template=args.claude_cmd_template,
-                        ledger_path=ctx.governor_ledger_path,
-                        run_id=ctx.run_id,
+                if getattr(args, "finding_id", None):
+                    # The operator explicitly chose the engine for this one
+                    # attempt; the governor must neither swap the model nor
+                    # append ledger records here.
+                    _gov_resolved = None
+                    resolved_tmpl = args.claude_cmd_template
+                    model_name = str(args.fix_engine)
+                else:
+                    _gov_rec, _gov_resolved, resolved_tmpl, model_name = (
+                        resolve_governed_model(
+                            finding=finding,
+                            selection_fn=ctx.selection_fn,
+                            pattern_store=ctx.pattern_store,
+                            discovery=ctx.discovery,
+                            base_template=args.claude_cmd_template,
+                            ledger_path=ctx.governor_ledger_path,
+                            run_id=ctx.run_id,
+                        )
                     )
-                )
 
                 if use_claude_engine:
+                    # Counted at the actual call, after the cost-limit check,
+                    # so a skipped attempt is never reported as an invocation.
+                    counters.claude_invocations += 1
                     rc, claude_output, prompt_file = apply_claude_fix(
                         ClaudeFixRequest(
                             worktree_path=worktree_path,
@@ -985,7 +1009,11 @@ def _process_one_issue(
                             max_loc_diff=args.max_loc_diff,
                             log_file=log_file,
                             findings_file=findings_file,
-                            lessons_file=lessons_file,
+                            lessons_file=(
+                                None
+                                if getattr(args, "no_learning", False)
+                                else lessons_file
+                            ),
                             extra_prompt=extra_prompt,
                             pattern_store_path=Path(args.pattern_store_path)
                             if args.pattern_store_path
@@ -1206,6 +1234,7 @@ def _process_one_issue(
                 finding,
                 log_file,
                 docs_index_file=docs_index_file,
+                **_verify_kwargs,
             )
             verified_without_changes = vfc_result.is_closed
             if verified_without_changes:
@@ -1312,7 +1341,11 @@ def _process_one_issue(
             raise _BreakLoop()
 
         vfc_result = verify_fix_closed(
-            worktree_path, finding, log_file, docs_index_file=docs_index_file
+            worktree_path,
+            finding,
+            log_file,
+            docs_index_file=docs_index_file,
+            **_verify_kwargs,
         )
         verified = vfc_result.is_closed
         if not verified:
@@ -1346,6 +1379,29 @@ def _process_one_issue(
                 last_error="detector still firing after fix",
             )
             return counters.to_deltas()
+
+        if getattr(args, "finding_id", None):
+            import hashlib
+            from uuid import uuid4
+            try:
+                _patch_proc = subprocess.run(
+                    ["git", "diff", "--binary", "HEAD"], cwd=str(worktree_path),
+                    capture_output=True, timeout=60, check=True,
+                )
+                if not _patch_proc.stdout.strip() or len(_patch_proc.stdout) > (1 << 20):
+                    raise ValueError("selected patch is empty or exceeds 1 MiB")
+                _patch_key = hashlib.sha256(finding.finding_id.encode()).hexdigest()
+                _patch_path = ctx.state_file.parent / f"selected-fix-{_patch_key}-{uuid4().hex}.patch"
+                _patch_path.parent.mkdir(parents=True, exist_ok=True)
+                with _patch_path.open("xb") as _patch_stream:
+                    _patch_stream.write(_patch_proc.stdout)
+                issue["selected_fix_patch"] = str(_patch_path)
+                _append_text(log_file, f"selected-fix-patch: path={_patch_path}")
+            except (OSError, ValueError, subprocess.SubprocessError) as _patch_exc:
+                counters.fixes_failed_verification += 1
+                set_issue_status(issue, "fix_failed_verification", f"patch retention failed: {_patch_exc}")
+                counters.blocked_reasons.append("selected patch could not be retained")
+                return counters.to_deltas()
 
         finalize_result = _finalize_pr_for_issue(
             issue=issue,
@@ -1524,7 +1580,60 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
     # cycle start. Defaults to ``active`` when no config.yaml is present.
     from bluei.app.config import load_global_config
 
-    ctx.learning_mode = resolve_learning_mode(load_global_config())
+    if getattr(args, "no_learning", False):
+        ctx.learning_mode = "paused"
+        ctx.pattern_store = None
+        args.pattern_store_path = None
+    else:
+        ctx.learning_mode = resolve_learning_mode(load_global_config())
+
+    # Restrict the walk before any unrelated issue can be mutated.
+    selected_id = getattr(args, "finding_id", None)
+    selected_error = ""
+    _walk_issues_data = issues_data
+    _selected_fresh_finding = None
+    if selected_id is not None:
+        _fresh = [
+            f
+            for f in ctx.eligible_findings
+            if f.finding_id == selected_id
+        ]
+        if (
+            getattr(args, "run_phase", "orchestrated") != "orchestrated"
+            or getattr(args, "discovery_scope", "repository") != "python"
+            or str(getattr(args, "fix_engine", "")) not in ("claude", "opencode")
+            or getattr(args, "live_github_actions", False)
+            or not getattr(args, "no_learning", False)
+            or len(_fresh) != 1
+            or any(record.get("status") in {"failed", "unavailable"}
+                   for record in ctx.detector_outcomes.values())
+            or not responsible_detector_ran(_fresh[0].rule, ctx.detector_outcomes)
+        ):
+            selected_error = (
+                f"selected finding {selected_id} is not a single fresh eligible "
+                "model-lane finding of a local scoped run"
+            )
+        else:
+            _matching = [
+                issue
+                for issue in issues_data.get("issues", [])
+                if (
+                    _f := finding_from_issue_record(issue)
+                )
+                is not None
+                and _f.finding_id == selected_id
+            ]
+            if len(_matching) != 1:
+                # Duplicates are ambiguous, not a pick-one situation: none of
+                # them is mutated and the run fails closed.
+                selected_error = (
+                    f"selected finding {selected_id} must map to exactly one "
+                    "issue in the fresh queue"
+                )
+            else:
+                _walk_issues_data = dict(issues_data)
+                _walk_issues_data["issues"] = _matching
+                _selected_fresh_finding = _fresh[0]
 
     queue_candidates, _escalated = _select_candidates(
         repo_path=repo_path,
@@ -1532,9 +1641,41 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
         log_file=log_file,
         gh_repo_slug=gh_repo_slug,
         args=args,
-        issues_data=issues_data,
+        issues_data={"issues": []} if selected_error else _walk_issues_data,
     )
     issues_escalated_max_retries += _escalated
+
+    if selected_id is not None and not selected_error:
+        if not queue_candidates:
+            selected_error = (
+                f"selected finding {selected_id} is not eligible for the single "
+                "model attempt"
+            )
+        else:
+            # The issue record carries a stale copy of the finding fields; the
+            # attempt runs against this run's fresh finding object.
+            queue_candidates = [(queue_candidates[0][0], _selected_fresh_finding)]
+    if selected_error or (selected_id is not None and args.dry_run):
+        if selected_error:
+            _append_text(log_file, f"pr-cycle: fail-closed: {selected_error}")
+            blocked_reasons.append(selected_error)
+        else:
+            _append_text(log_file, f"selected-repair-preview: {selected_id}; no model invoked")
+        return {
+            "created_prs": created_prs,
+            "open_prs": open_prs,
+            "fix_attempts": fix_attempts,
+            "fixes_verified": fixes_verified,
+            "fixes_failed_verification": fixes_failed_verification,
+            "issues_escalated_max_retries": issues_escalated_max_retries,
+            "claude_invocations": claude_invocations,
+            "deterministic_invocations": deterministic_invocations,
+            "blocked_reasons": blocked_reasons,
+            "state": state,
+            "issues_data": issues_data,
+            "eligible_findings": eligible_findings,
+            "selected_error": selected_error,
+        }
 
     if not queue_candidates:
         _append_text(log_file, "pr-cycle: no eligible issue-queue items for autofix")
@@ -1567,7 +1708,11 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
             "safety: main branch direct commit blocked; using isolated worktree branch",
         )
 
-    if getattr(args, "batch_pr_enabled", False) and queue_candidates:
+    if (
+        getattr(args, "batch_pr_enabled", False)
+        and selected_id is None
+        and queue_candidates
+    ):
         from bluei.engine.batch_pr import (
             group_findings_for_batch,
             parse_pr_count,
@@ -1663,6 +1808,21 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
             break
     # end for
 
+    # A selected run that made its one attempt but did not come back verified
+    # is a public failure, not a silent no-op success. Dry-run previews finalize
+    # without publishing and are exempt.
+    if (
+        selected_id is not None
+        and not selected_error
+        and not getattr(args, "dry_run", False)
+        and fixes_verified < 1
+    ):
+        selected_error = (
+            f"selected finding {selected_id} failed its single model attempt"
+        )
+        blocked_reasons.append(selected_error)
+        _append_text(log_file, f"pr-cycle: fail-closed: {selected_error}")
+
     # SPRT check (ADR-0012): batch-evaluate LLR for every Pattern that had
     # Dry Replays this cycle. Runs in both ``active`` and ``audit_only`` modes;
     # in ``audit_only`` the decisions are computed but NOT written (no
@@ -1725,4 +1885,5 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
         "state": state,
         "issues_data": issues_data,
         "eligible_findings": eligible_findings,
+        "selected_error": selected_error,
     }

@@ -374,6 +374,7 @@ def discover_findings(
     log_file: Path = DEFAULT_LOG,
     docs_index_file: Path = DEFAULT_DOCS_INDEX,
     outcomes: Optional[Dict[str, Dict[str, Any]]] = None,
+    discovery_scope: str = "repository",
 ) -> List[Finding]:
     """
     Main public entry for finding discovery.
@@ -385,6 +386,8 @@ def discover_findings(
         outcomes: Optional dict filled with one record per invoked detector
             (``{detector: {status, count, reason?}}``). The list return value
             is unchanged; outcomes are purely additive metadata.
+        discovery_scope: ``"repository"`` (default, full tree) or ``"python"``
+            for the minimal Python-only branch.
 
     Returns:
         Deduplicated list of Finding objects across all detection sources.
@@ -402,6 +405,59 @@ def discover_findings(
             reason="--skip-internal-discovery set; external discovery owns this repo",
         )
         return []
+
+    if discovery_scope not in ("repository", "python"):
+        raise ValueError(
+            f"unknown discovery_scope {discovery_scope!r}; "
+            "expected 'repository' or 'python'"
+        )
+
+    # Scoped completeness covers only Python AST and Ruff producers.
+    if discovery_scope == "python":
+        findings: List[Finding] = []
+        rule_meta = {entry["rule"]: entry for entry in DETECTOR_CATALOG}
+
+        ast_outcome: Dict[str, Any] = {}
+        findings.extend(
+            _ast_scan_python_files(repo_path, log_file, rule_meta, ast_outcome)
+        )
+        if outcomes is not None and ast_outcome:
+            outcomes.update(ast_outcome)
+
+        python_outcome: Dict[str, Any] = {}
+        ruff_findings = discover_python_linter_findings(
+            repo_path, log_file, outcome=python_outcome
+        )
+        if outcomes is not None:
+            outcomes.update(python_outcome)
+        findings.extend(ruff_findings)
+        if ruff_findings:
+            _append_text(
+                log_file, f"python-discovery: added {len(ruff_findings)} ruff findings"
+            )
+
+        plugin_findings = run_plugin_discovery(
+            repo_path, outcomes=outcomes, discovery_scope="python"
+        )
+        findings.extend(plugin_findings)
+
+        _record_outcome(
+            outcomes, "test-coverage", "skipped",
+            reason="outside python discovery scope: coverage report not provably Python",
+        )
+        for detector in (
+            "sandbox-string-detectors",
+            "ast-typescript",
+            "ast-go",
+            "ast-rust",
+            "typescript-types",
+            "xo-linter",
+        ):
+            _record_outcome(
+                outcomes, detector, "skipped",
+                reason="outside python discovery scope",
+            )
+        return findings
 
     findings: List[Finding] = []
 

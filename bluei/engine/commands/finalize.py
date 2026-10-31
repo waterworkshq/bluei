@@ -251,6 +251,7 @@ def run_finalize_phase(*args, **kwargs) -> int:
             # from a complete zero-finding scan.
             "run_completed": True,
             "run_id": getattr(ctx, "run_id", "") if ctx else "",
+            "discovery_scope": getattr(args, "discovery_scope", "repository"),
             "detector_outcomes": (
                 getattr(ctx, "detector_outcomes", {}) if ctx else {}
             ),

@@ -133,6 +133,7 @@ class Run:
     # findings were already persisted, and its counts are recovered from
     # persisted state rather than reported as zero.
     scan_complete: bool = False
+    discovery_scope: str = "repository"
     # Populated only when scan_complete is False: how many of this run's
     # findings were recovered from the persisted findings file.
     findings_recovered: Optional[int] = None

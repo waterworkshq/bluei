@@ -80,6 +80,8 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
             log_file=log_file,
             docs_index_file=docs_index_file,
             outcomes=detector_outcomes,
+            **({"discovery_scope": args.discovery_scope}
+               if getattr(args, "discovery_scope", "repository") != "repository" else {}),
         )
     elif not cap_ok:
         detector_outcomes["discovery"] = {
@@ -104,6 +106,7 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
         atomic_json_write(ctx.status_file.parent / "discovery-current.json", {
             "run_id": ctx.run_id, "findings_detected": len(findings),
             "findings_written": written_findings, "detector_outcomes": detector_outcomes,
+            "discovery_scope": getattr(args, "discovery_scope", "repository"),
         })
     _append_text(
         log_file,
@@ -115,8 +118,20 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
         blocked_reasons.append("discovery incomplete; findings retained but not routed")
         return (findings, written_findings, [], [], [], blocked_reasons, cap_ok)
 
+    selected_id = getattr(args, "finding_id", None)
+    routed_findings = findings
+    if selected_id is not None:
+        routed_findings = [finding for finding in findings if finding.finding_id == selected_id]
+        if len(routed_findings) != 1:
+            blocked_reasons.append("selected finding was not uniquely rediscovered in this run")
+            return (findings, written_findings, [], [], [], blocked_reasons, cap_ok)
+        from bluei.engine.validation import responsible_detector_ran
+        if not responsible_detector_ran(routed_findings[0].rule, detector_outcomes):
+            blocked_reasons.append("selected finding's responsible detector did not complete")
+            return (findings, written_findings, [], [], [], blocked_reasons, cap_ok)
+
     eligible_findings, suppressed_findings = filter_findings_by_cooldown(
-        findings=findings,
+        findings=routed_findings,
         state=state,
         cooldown_seconds=args.finding_cooldown_seconds,
         log_file=log_file,

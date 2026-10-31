@@ -305,18 +305,62 @@ def _cmd_run(name: str, passthrough: list[str]):
         passthrough, "--no-dry-run"
     )
     fix_engine = _parse_option(passthrough, "--fix-engine")
+    discovery_scope = _parse_option(passthrough, "--discovery-scope") or "repository"
+    finding_id = _parse_option(passthrough, "--finding-id")
+    for flag in ("--discovery-scope", "--finding-id"):
+        if flag in passthrough and (_parse_option(passthrough, flag) is None
+                                    or _parse_option(passthrough, flag).startswith("--")
+                                    or not _parse_option(passthrough, flag).strip()
+                                    or passthrough.count(flag) != 1):
+            print(f"bluei: {flag} requires exactly one value", file=sys.stderr)
+            return 2
+    if discovery_scope != "repository" or finding_id is not None:
+        value_flags = {"--phase", "--fix-engine", "--discovery-scope", "--finding-id"}
+        switches = {"--dry-run", "--no-dry-run", "--no-learning"}
+        index = 0
+        while index < len(passthrough):
+            flag = passthrough[index]
+            if flag in value_flags and index + 1 < len(passthrough) and not passthrough[index + 1].startswith("--"):
+                index += 2
+            elif flag in switches:
+                index += 1
+            else:
+                print(f"bluei: unsupported scoped option: {flag}", file=sys.stderr)
+                return 2
+        if fix_engine is not None and fix_engine not in {"auto", "deterministic", "claude", "opencode"}:
+            print("bluei: unknown fix engine", file=sys.stderr)
+            return 2
+    if discovery_scope not in {"repository", "python"}:
+        print("bluei: discovery scope must be repository or python", file=sys.stderr)
+        return 2
+    if finding_id is not None and (discovery_scope != "python" or phase != "orchestrated"
+                                   or fix_engine not in {"claude", "opencode"} or not finding_id.strip()):
+        print("bluei: --finding-id requires Python scope, orchestrated phase, and an explicit model engine", file=sys.stderr)
+        return 2
+    if discovery_scope == "python" and (phase not in {"issue-cycle", "orchestrated"}
+                                       or phase == "orchestrated" and finding_id is None):
+        print("bluei: Python scope supports discovery or selected orchestrated repair only", file=sys.stderr)
+        return 2
     engine = RunEngine(
         registry, StateManager(config_mgr.repos_dir), HealthEngine(), config_mgr
     )
-    result = engine.run(
-        repo, RunOptions(phase=phase, dry_run=dry_run, fix_engine=fix_engine)
-    )
+    try:
+        result = engine.run(
+            repo, RunOptions(phase=phase, dry_run=dry_run, fix_engine=fix_engine,
+                             discovery_scope=discovery_scope, finding_id=finding_id,
+                             no_learning=_has_flag(passthrough, "--no-learning"))
+        )
+    except ValueError as exc:
+        print(f"bluei: {exc}", file=sys.stderr)
+        return 2
     if result.output:
         print(result.output, end="" if result.output.endswith("\n") else "\n")
     if result.error:
         print(result.error, file=sys.stderr)
     run = result.run
     if getattr(run, "scan_complete", False):
+        if getattr(run, "discovery_scope", "repository") == "python":
+            print("Python scope complete; repository-wide health unchanged.")
         print(f"Findings: {run.findings_detected}")
     elif result.success and phase in {"pr-cycle", "merge-cycle", "review-cycle", "refactor-cycle"}:
         print(f"Completed {phase}; no discovery scan was performed.")
@@ -673,7 +717,7 @@ def main():
         }
         fn = handlers[cmd]
         if cmd == "duster":
-            return fn(name)
+            return _cmd_run(name, ["--phase", "issue-cycle", "--dry-run"] + passthrough) if passthrough else fn(name)
         return fn(name, passthrough)
 
     # ── Commands with optional project name ──
