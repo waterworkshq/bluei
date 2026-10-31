@@ -36,4 +36,63 @@ def test_markdownlint_native_streams(tmp_path, monkeypatch, stdout, stderr, code
     else:
         findings = plugin.parse_output(output, repo)
         assert len(findings) == 1
-        assert findings[0].path == "README.md" and findings[0].rule == "MD041"
+        assert findings[0].path == "README.md" and findings[0].rule == "md-MD041"
+
+
+@pytest.mark.parametrize("payload", [
+    "[null]",
+    json.dumps([{"fileName": "README.md"}]),  # missing lineNumber
+    json.dumps([{"fileName": "README.md", "lineNumber": 0}]),
+    json.dumps([{"fileName": "README.md", "lineNumber": "2"}]),
+    json.dumps([{"lineNumber": 2}]),  # missing file target
+    json.dumps([{"fileName": "", "lineNumber": 2}]),
+    json.dumps({"README.md": [None]}),  # dict-shaped null diagnostic
+    json.dumps({"": [{"lineNumber": 2, "ruleNames": ["MD009"]}]}),
+])
+def test_malformed_diagnostics_never_read_as_clean(tmp_path, monkeypatch, payload):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    tool = tools / "markdownlint"
+    tool.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write({payload!r})\n"
+                    "raise SystemExit(1)\n")
+    tool.chmod(0o755)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text("plain text \n")
+    monkeypatch.setenv("PATH", str(tools))
+    plugin = Plugin()
+    output = plugin._run_tool(repo, extra_args=["README.md"])
+    assert plugin.last_tool_outcome == "tool-error"
+    assert output is None
+
+
+def test_filename_keyed_shape_still_completes(tmp_path, monkeypatch):
+    payload = json.dumps({"README.md": [{"lineNumber": 2, "ruleNames": ["MD009"],
+                                         "ruleDescription": "Trailing spaces"}]})
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    tool = tools / "markdownlint"
+    tool.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write({payload!r})\n"
+                    "raise SystemExit(1)\n")
+    tool.chmod(0o755)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text("# Title\ntext \n")
+    monkeypatch.setenv("PATH", str(tools))
+    plugin = Plugin()
+    output = plugin._run_tool(repo, extra_args=["README.md"])
+    assert plugin.last_tool_outcome == "tool-ran"
+    findings = plugin.parse_output(output, repo)
+    assert [f.rule for f in findings] == ["md-MD009"]
+
+
+def test_native_rule_ids_are_canonical_md_prefixed(tmp_path):
+    """Native MD009 and fallback md-MD009 share one ID — no false closure."""
+    plugin = Plugin()
+    findings = plugin.parse_output(
+        json.dumps([{"fileName": "README.md", "lineNumber": 3,
+                     "ruleNames": ["MD009"], "ruleDescription": "Trailing spaces"}]),
+        tmp_path,
+    )
+    assert findings[0].rule == "md-MD009"
+    assert findings[0].rule in plugin.rules  # health manifest prefix contract

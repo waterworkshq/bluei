@@ -35,7 +35,7 @@ class TestParseOutput:
         )
         findings = plugin.parse_output(output, tmp_path)
         assert len(findings) == 1
-        assert findings[0].rule == "MD009"
+        assert findings[0].rule == "md-MD009"
 
     def test_rule_fallback_from_rule_field(self, plugin, tmp_path):
         output = json.dumps(
@@ -49,7 +49,7 @@ class TestParseOutput:
             ]
         )
         findings = plugin.parse_output(output, tmp_path)
-        assert findings[0].rule == "MD041"
+        assert findings[0].rule == "md-MD041"
 
     def test_empty_rule_names_uses_default(self, plugin, tmp_path):
         output = json.dumps(
@@ -63,7 +63,7 @@ class TestParseOutput:
             ]
         )
         findings = plugin.parse_output(output, tmp_path)
-        assert findings[0].rule == "MD000"
+        assert findings[0].rule == "md-MD000"
 
     def test_invalid_json_returns_empty(self, plugin, tmp_path):
         assert plugin.parse_output("bad", tmp_path) == []
@@ -311,7 +311,7 @@ class TestParseOutputFieldValues:
         findings = plugin.parse_output(output, tmp_path)
         assert len(findings) == 1
         f = findings[0]
-        assert f.rule == "MD013"
+        assert f.rule == "md-MD013"
         assert f.path == "docs/guide.md"
         assert f.line == 42
         assert f.snippet == "Line length"
@@ -324,8 +324,8 @@ class TestParseOutputFieldValues:
     @pytest.mark.parametrize(
         "output_field,expected_rule",
         [
-            ("ruleNames", "MD041"),
-            ("rule", "MD041"),
+            ("ruleNames", "md-MD041"),
+            ("rule", "md-MD041"),
         ],
     )
     def test_rule_names_vs_rule_field(
@@ -379,7 +379,7 @@ class TestParseOutputFieldValues:
         findings = plugin.parse_output(output, tmp_path)
         # ruleNames is a string (not list), so falls back to item.get('rule', 'MD000')
         # which defaults to MD000 since 'rule' key is absent
-        assert findings[0].rule == "MD000"
+        assert findings[0].rule == "md-MD000"
 
 
 class TestDiscoverCleanFiles:

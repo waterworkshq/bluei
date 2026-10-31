@@ -23,6 +23,21 @@ def stable_finding_id(repo: str, path: str, line: int, rule: str, snippet: str) 
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+def canonical_rule(rule: str) -> str:
+    """Canonical rule IDs carry the ``md-`` prefix (health mapping keys on md-MDxxx).
+
+    Native markdownlint emits bare codes (``MD009``); the regex fallback already
+    emits ``md-MD009``. One canonical ID prevents false closures and unmapped
+    health components.
+    """
+    rule = str(rule)
+    if rule.startswith("md-"):
+        return rule
+    if rule.startswith("MD") and rule[2:].isdigit():
+        return f"md-{rule}"
+    return rule
+
+
 class Plugin(ToolWrapperPlugin):
     """Wraps ``markdownlint``; falls back to regex-based checks when unavailable."""
 
@@ -77,9 +92,10 @@ class Plugin(ToolWrapperPlugin):
                 continue
             rule_names = item.get("ruleNames", item.get("rule", []))
             if isinstance(rule_names, list) and rule_names:
-                rule_name = rule_names[0]
+                rule_name = str(rule_names[0])
             else:
                 rule_name = str(item.get("rule", "MD000"))
+            rule_name = canonical_rule(rule_name)
             line = item.get("lineNumber", 1)
             description = item.get("ruleDescription", item.get("message", ""))
             file_path = item.get("fileName", "")

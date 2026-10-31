@@ -55,6 +55,40 @@ class DiscoveryPlugin(ABC):
         pass
 
 
+def _validate_markdownlint_output(parsed: Any) -> None:
+    """Reject malformed markdownlint payloads so dropped diagnostics cannot read as clean.
+
+    Every diagnostic — flat array entry or filename-keyed dict record — must be
+    an object with a non-empty file target and a 1-based integer lineNumber.
+    """
+    if isinstance(parsed, dict):
+        if not all(isinstance(records, list) for records in parsed.values()):
+            raise ValueError("expected filename-keyed JSON lists")
+        pairs = [
+            (entry, entry.get("fileName", filename) if isinstance(entry, dict) else None)
+            for filename, records in parsed.items()
+            for entry in records
+        ]
+    elif isinstance(parsed, list):
+        pairs = [
+            (entry, entry.get("fileName") if isinstance(entry, dict) else None)
+            for entry in parsed
+        ]
+    else:
+        raise ValueError("expected JSON array")
+    for entry, target in pairs:
+        line = entry.get("lineNumber") if isinstance(entry, dict) else None
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(target, str)
+            or not target
+            or not isinstance(line, int)
+            or isinstance(line, bool)
+            or line < 1
+        ):
+            raise ValueError("malformed markdownlint diagnostic")
+
+
 class ToolWrapperPlugin(DiscoveryPlugin):
     """Base class for plugins that invoke external CLI tools.
 
@@ -122,9 +156,8 @@ class ToolWrapperPlugin(DiscoveryPlugin):
             try:
                 if tool in ("ruff", "shellcheck", "hadolint", "markdownlint"):
                     parsed = json.loads(output)
-                    if tool == "markdownlint" and isinstance(parsed, dict):
-                        if not all(isinstance(items, list) for items in parsed.values()):
-                            raise ValueError("expected filename-keyed JSON lists")
+                    if tool == "markdownlint":
+                        _validate_markdownlint_output(parsed)
                     elif not isinstance(parsed, list):
                         raise ValueError("expected JSON array")
                 elif tool in ("staticcheck", "cargo"):
