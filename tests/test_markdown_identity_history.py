@@ -1,4 +1,9 @@
-"""Markdown legacy bare-rule (MD009) IDs must survive md-MD009 canonicalization."""
+"""Markdown legacy bare-rule (MD009) IDs must survive md-MD009 canonicalization.
+
+Truncated snippets (>200 chars share a prefix) must never merge: alias
+adoption and read projection require the finding_id to recompute from the
+record's own stored fields.
+"""
 
 import json
 
@@ -10,20 +15,22 @@ from plugins.markdown.plugin import stable_finding_id
 REPO = "/tmp/example-repo"
 PATH = "docs/readme.md"
 DESC = "Trailing spaces [Expected: 0 or 2; Actual: 1]"
+LONG_A = "tail " * 50 + "AAAA"
+LONG_B = "tail " * 50 + "BBBB"  # identical first 200 chars, distinct full text
 
 
-def _legacy_id(line: int) -> str:
-    return stable_finding_id(REPO, PATH, line, "MD009", DESC)
+def _legacy_id(line: int, desc: str = DESC) -> str:
+    return stable_finding_id(REPO, PATH, line, "MD009", desc)
 
 
-def _legacy_record(line: int) -> dict:
+def _legacy_record(line: int, desc: str = DESC) -> dict:
     return {
-        "finding_id": _legacy_id(line),
+        "finding_id": _legacy_id(line, desc),
         "repo": REPO,
         "path": PATH,
         "line": line,
         "rule": "MD009",
-        "snippet": DESC[:200],
+        "snippet": desc[:200],
         "confidence": 0.85,
         "quick_win": False,
         "safe_to_autofix": False,
@@ -33,15 +40,15 @@ def _legacy_record(line: int) -> dict:
     }
 
 
-def _current_finding(line: int) -> Finding:
+def _current_finding(line: int, desc: str = DESC) -> Finding:
     rule = "md-MD009"
     return Finding(
-        finding_id=stable_finding_id(REPO, PATH, line, rule, DESC),
+        finding_id=stable_finding_id(REPO, PATH, line, rule, desc),
         repo=REPO,
         path=PATH,
         line=line,
         rule=rule,
-        snippet=DESC[:200],
+        snippet=desc[:200],
         confidence=0.85,
         quick_win=False,
         safe_to_autofix=False,
@@ -71,11 +78,16 @@ def test_append_adopts_legacy_id_and_preserves_jsonl(tmp_path):
     assert len(lines) == 2 and lines[0] == before.splitlines()[0]
 
 
-def test_legacy_cooldown_applies_after_id_adoption(tmp_path):
+def test_mixed_aliases_adopt_earliest_before_seen(tmp_path):
     findings_file = tmp_path / "findings.jsonl"
-    _write_jsonl(findings_file, [_legacy_record(3)])
-    finding = _current_finding(3)
-    append_findings(findings_file, [finding])
+    canonical = _legacy_record(3)
+    canonical["rule"] = "md-MD009"
+    canonical["finding_id"] = stable_finding_id(REPO, PATH, 3, "md-MD009", DESC)
+    _write_jsonl(findings_file, [_legacy_record(3), canonical])
+
+    finding = _current_finding(3)  # own ID already persisted (in seen)
+    assert append_findings(findings_file, [finding]) == 0
+    assert finding.finding_id == _legacy_id(3)  # adopted before seen fast-path
 
     state = {
         "finding_activity": {
@@ -89,24 +101,22 @@ def test_legacy_cooldown_applies_after_id_adoption(tmp_path):
     allowed, suppressed = filter_findings_by_cooldown(
         [finding], state, 3600, tmp_path / "log.txt"
     )
-
     assert allowed == []
     assert [f.finding_id for f in suppressed] == [_legacy_id(3)]
 
 
-def test_load_projection_collapses_aliases_keeps_distinct_lines(tmp_path):
+def test_truncated_snippets_never_merge(tmp_path):
     state = StateManager(tmp_path / "repos")
-    alias = _legacy_record(3)
-    alias["rule"] = "md-MD009"
-    alias["finding_id"] = stable_finding_id(REPO, PATH, 3, "md-MD009", DESC)
-    _write_jsonl(
-        state.get_findings_file("demo"),
-        [_legacy_record(3), alias, _legacy_record(4)],
-    )
+    findings_file = state.get_findings_file("demo")
+    _write_jsonl(findings_file, [_legacy_record(3, LONG_A)])
 
-    findings = state.load_findings("demo")
+    finding = _current_finding(3, LONG_B)  # distinct full-hash ID
+    own_id = finding.finding_id
+    assert append_findings(findings_file, [finding]) == 1
+    assert finding.finding_id == own_id  # not adopted; distinct ID preserved
 
-    assert sorted(f.finding_id for f in findings) == sorted(
-        [_legacy_id(3), _legacy_id(4)]
+    projected = state.load_findings("demo")
+    assert sorted(f.finding_id for f in projected) == sorted(
+        [_legacy_id(3, LONG_A), own_id]
     )
-    assert {f.rule for f in findings} == {"md-MD009"}
+    assert {f.rule for f in projected} == {"md-MD009"}

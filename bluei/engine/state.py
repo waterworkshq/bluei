@@ -14,7 +14,7 @@ from bluei.engine.constants import (
 )
 from bluei.engine.jsonl import append_jsonl
 from bluei.engine.reforge import RefactorPhase, RefactorWork
-from bluei.engine.models import Finding, age_seconds, now_iso
+from bluei.engine.models import Finding, age_seconds, now_iso, stable_finding_id
 from bluei.engine.utils import run_capture
 from bluei.engine.gh import fetch_github_live_counts, get_origin_url
 
@@ -138,7 +138,12 @@ def canonical_markdown_rule(rule: str) -> Optional[str]:
 
 
 def _load_markdown_identities(path: Path) -> Dict[Tuple[str, str, Any, str, str], str]:
-    """Map Markdown diagnostic identity -> earliest persisted finding_id."""
+    """Map Markdown diagnostic identity -> earliest persisted finding_id.
+
+    Only records whose finding_id equals the hash recomputed from their own
+    stored fields participate: a mismatch means the snippet was truncated
+    (``description[:200]``) so the full identity material is unrecoverable.
+    """
     identities: Dict[Tuple[str, str, Any, str, str], str] = {}
     if not path.exists():
         return identities
@@ -153,6 +158,14 @@ def _load_markdown_identities(path: Path) -> Dict[Tuple[str, str, Any, str, str]
                     continue
                 fid = str(obj.get("finding_id") or "")
                 if not fid:
+                    continue
+                if fid != stable_finding_id(
+                    str(obj.get("repo") or ""),
+                    str(obj.get("path") or ""),
+                    obj.get("line"),
+                    str(obj.get("rule") or ""),
+                    str(obj.get("snippet") or ""),
+                ):
                     continue
                 identity = (
                     str(obj.get("repo") or ""),
@@ -172,8 +185,6 @@ def append_findings(path: Path, findings: List[Finding]) -> int:
     md_identities: Optional[Dict[Tuple[str, str, Any, str, str], str]] = None
     written = 0
     for finding in findings:
-        if finding.finding_id in seen:
-            continue
         rule = canonical_markdown_rule(str(finding.rule))
         if rule is not None:
             if md_identities is None:
@@ -186,10 +197,17 @@ def append_findings(path: Path, findings: List[Finding]) -> int:
                 str(finding.snippet).strip(),
             )
             legacy_id = md_identities.get(identity)
-            if legacy_id:
-                # Adopt the legacy ID so activity/cooldown/issue links survive.
+            # Alias adoption runs before the seen fast-path so a re-discovered
+            # diagnostic adopts the earliest valid ID even if its own current
+            # ID was already persisted. Both sides must carry untruncated
+            # material (ID recomputes from own fields) before merging.
+            if legacy_id and finding.finding_id == stable_finding_id(
+                finding.repo, finding.path, finding.line, finding.rule, finding.snippet
+            ):
                 finding.finding_id = legacy_id
                 continue
+        if finding.finding_id in seen:
+            continue
         if finding.discovered_at is None:
             finding.discovered_at = now_iso()
         payload = finding.to_dict()

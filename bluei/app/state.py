@@ -33,7 +33,7 @@ _logger = logging.getLogger(__name__)
 
 from bluei.engine import issue_lifecycle
 from bluei.engine import state as engine_state
-from bluei.engine.models import Finding
+from bluei.engine.models import Finding, stable_finding_id
 from bluei.engine.state_io import (
     atomic_json_write,
     rotate_jsonl_if_needed,
@@ -169,7 +169,7 @@ class StateManager:
         findings_file = self.get_findings_file(repo_name)
         records = read_jsonl(findings_file)
         projected: List[Dict[str, Any]] = []
-        seen_md_identities: set = set()
+        seen_md_keys: set = set()
         for record in records:
             canonical = engine_state.canonical_markdown_rule(
                 str(record.get("rule") or "")
@@ -177,16 +177,30 @@ class StateManager:
             if canonical is None:
                 projected.append(record)
                 continue
-            identity = (
+            fid = str(record.get("finding_id") or "")
+            if fid and fid == stable_finding_id(
                 str(record.get("repo") or ""),
                 str(record.get("path") or ""),
                 record.get("line"),
-                canonical,
-                str(record.get("snippet") or "").strip(),
-            )
-            if identity in seen_md_identities:
+                str(record.get("rule") or ""),
+                str(record.get("snippet") or ""),
+            ):
+                # Untruncated material: dedup on shared identity.
+                key: tuple = (
+                    "identity",
+                    str(record.get("repo") or ""),
+                    str(record.get("path") or ""),
+                    record.get("line"),
+                    canonical,
+                    str(record.get("snippet") or "").strip(),
+                )
+            else:
+                # Truncated snippet: full identity unverifiable — dedup on
+                # finding_id only so distinct diagnostics never merge.
+                key = ("id", fid)
+            if key in seen_md_keys:
                 continue
-            seen_md_identities.add(identity)
+            seen_md_keys.add(key)
             if record.get("rule") != canonical:
                 record = {**record, "rule": canonical}
             projected.append(record)
