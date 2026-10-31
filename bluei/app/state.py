@@ -160,15 +160,37 @@ class StateManager:
         return self._get_state_dir(repo_name) / "findings.jsonl"
 
     def load_findings(self, repo_name: str) -> List[Finding]:
-        """Load all findings for a repo.
+        """Load findings; Markdown aliases collapse to the earliest legacy ID.
 
-        Uses bluei.engine.jsonl.read_jsonl for the read primitive; wraps each
-        record in Finding.from_dict(). Malformed lines are silently skipped
-        (skip_errors=True default).
+        Read projection only (no disk rewrite): bare ``MDxxx`` rules normalize
+        to ``md-MDxxx`` and same-identity Markdown records dedup to the first,
+        keeping the legacy finding_id so activity/cooldown links still resolve.
         """
         findings_file = self.get_findings_file(repo_name)
         records = read_jsonl(findings_file)
-        return [Finding.from_dict(r) for r in records]
+        projected: List[Dict[str, Any]] = []
+        seen_md_identities: set = set()
+        for record in records:
+            canonical = engine_state.canonical_markdown_rule(
+                str(record.get("rule") or "")
+            )
+            if canonical is None:
+                projected.append(record)
+                continue
+            identity = (
+                str(record.get("repo") or ""),
+                str(record.get("path") or ""),
+                record.get("line"),
+                canonical,
+                str(record.get("snippet") or "").strip(),
+            )
+            if identity in seen_md_identities:
+                continue
+            seen_md_identities.add(identity)
+            if record.get("rule") != canonical:
+                record = {**record, "rule": canonical}
+            projected.append(record)
+        return [Finding.from_dict(r) for r in projected]
 
     def append_findings(self, repo_name: str, findings: List[Finding]) -> int:
         """Append findings to repo's findings file.

@@ -128,12 +128,68 @@ def load_findings_seen(path: Path) -> set[str]:
     return seen
 
 
+def canonical_markdown_rule(rule: str) -> Optional[str]:
+    """Canonical Markdown rule (``md-MDxxx``) or None for non-Markdown rules."""
+    if rule.startswith("md-MD") and rule[5:].isdigit():
+        return rule
+    if rule.startswith("MD") and rule[2:].isdigit():
+        return f"md-{rule}"
+    return None
+
+
+def _load_markdown_identities(path: Path) -> Dict[Tuple[str, str, Any, str, str], str]:
+    """Map Markdown diagnostic identity -> earliest persisted finding_id."""
+    identities: Dict[Tuple[str, str, Any, str, str], str] = {}
+    if not path.exists():
+        return identities
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            try:
+                obj = json.loads(raw)
+                if not isinstance(obj, dict):
+                    continue
+                rule = canonical_markdown_rule(str(obj.get("rule") or ""))
+                if rule is None:
+                    continue
+                fid = str(obj.get("finding_id") or "")
+                if not fid:
+                    continue
+                identity = (
+                    str(obj.get("repo") or ""),
+                    str(obj.get("path") or ""),
+                    obj.get("line"),
+                    rule,
+                    str(obj.get("snippet") or "").strip(),
+                )
+                identities.setdefault(identity, fid)
+            except Exception:
+                continue
+    return identities
+
+
 def append_findings(path: Path, findings: List[Finding]) -> int:
     seen = load_findings_seen(path)
+    md_identities: Optional[Dict[Tuple[str, str, Any, str, str], str]] = None
     written = 0
     for finding in findings:
         if finding.finding_id in seen:
             continue
+        rule = canonical_markdown_rule(str(finding.rule))
+        if rule is not None:
+            if md_identities is None:
+                md_identities = _load_markdown_identities(path)
+            identity = (
+                str(finding.repo),
+                str(finding.path),
+                finding.line,
+                rule,
+                str(finding.snippet).strip(),
+            )
+            legacy_id = md_identities.get(identity)
+            if legacy_id:
+                # Adopt the legacy ID so activity/cooldown/issue links survive.
+                finding.finding_id = legacy_id
+                continue
         if finding.discovered_at is None:
             finding.discovered_at = now_iso()
         payload = finding.to_dict()
