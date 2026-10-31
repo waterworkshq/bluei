@@ -114,9 +114,14 @@ class ToolWrapperPlugin(DiscoveryPlugin):
             if result.returncode not in (0, 1):
                 self.last_tool_outcome = "tool-error"
                 return None
+            output = result.stdout
+            if tool == "markdownlint" and not output.strip():
+                output = result.stderr
+                if result.returncode == 0 and not output.strip():
+                    output = "[]"
             try:
                 if tool in ("ruff", "shellcheck", "hadolint", "markdownlint"):
-                    parsed = json.loads(result.stdout)
+                    parsed = json.loads(output)
                     if tool == "markdownlint" and isinstance(parsed, dict):
                         if not all(isinstance(items, list) for items in parsed.values()):
                             raise ValueError("expected filename-keyed JSON lists")
@@ -130,7 +135,7 @@ class ToolWrapperPlugin(DiscoveryPlugin):
                 self.last_tool_outcome = "tool-error"
                 return None
             self.last_tool_outcome = "tool-ran"
-            return result.stdout
+            return output
         except FileNotFoundError:
             self.last_tool_outcome = "tool-missing"
             return None

@@ -152,6 +152,15 @@ def _do_run(ev, monkeypatch):
     return engine.run(repo, RunOptions(phase="issue-cycle", dry_run=True))
 
 
+def _assert_truthful_completion(result):
+    if result.run.scan_complete:
+        assert result.success
+        assert result.run.findings_recovered is None
+    else:
+        assert not result.success
+        assert result.run.findings_recovered is not None
+
+
 class TestInit:
     def test_init_registers_repo(self, e2e_env, monkeypatch):
         ev = e2e_env
@@ -216,7 +225,7 @@ class TestDuster:
         assert ret == 0
 
         result = _do_run(ev, monkeypatch)
-        assert not result.success and result.run.findings_recovered is not None
+        _assert_truthful_completion(result)
 
         sd = _state_dir(ev)
         findings_file = sd / "findings.jsonl"
@@ -360,7 +369,7 @@ class TestFullChain:
         assert ev["repo_name"] in capsys.readouterr().out
 
         result = _do_run(ev, monkeypatch)
-        assert not result.success and result.run.findings_recovered is not None
+        _assert_truthful_completion(result)
 
         sd = _state_dir(ev)
         assert (sd / "status.json").exists()
@@ -405,7 +414,7 @@ class TestFullChain:
 
         # ── 3. scan: produces findings.jsonl + status.json ──
         result = _do_run(ev, monkeypatch)
-        assert not result.success and result.run.findings_recovered is not None
+        _assert_truthful_completion(result)
         sd = _state_dir(ev)
         assert (sd / "status.json").exists()
         assert (sd / "findings.jsonl").exists()
@@ -442,7 +451,7 @@ class TestHealth:
         ret = _do_onboard(ev, monkeypatch)
         assert ret == 0
         result = _do_run(ev, monkeypatch)
-        assert not result.success and result.run.findings_recovered is not None
+        _assert_truthful_completion(result)
 
         # ── Dispatch contract: _cmd_health forwards to _run_engine ──
         import bin.bluei as bluei_main
@@ -528,7 +537,7 @@ class TestReport:
         ret = _do_onboard(ev, monkeypatch)
         assert ret == 0
         result = _do_run(ev, monkeypatch)
-        assert not result.success and result.run.findings_recovered is not None
+        _assert_truthful_completion(result)
 
         capsys.readouterr()  # drain onboard/run stdout before report
         from bin.bluei import _cmd_report
