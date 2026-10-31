@@ -161,6 +161,10 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
                 f"discovery-skip-summary: untracked_findings={untracked_count}",
             )
 
+    if getattr(args, "discovery_scope", "repository") == "python" and args.dry_run:
+        return (findings, written_findings, eligible_findings, suppressed_findings,
+                [], blocked_reasons, cap_ok)
+
     refactor_findings: List[Finding] = []
     remaining_findings: List[Finding] = []
     for finding in eligible_findings:

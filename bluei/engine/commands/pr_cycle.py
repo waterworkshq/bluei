@@ -1384,6 +1384,14 @@ def _process_one_issue(
             import hashlib
             from uuid import uuid4
             try:
+                _untracked = subprocess.run(
+                    ["git", "ls-files", "--others", "-z"], cwd=str(worktree_path),
+                    capture_output=True, timeout=60, check=True,
+                )
+                from bluei.engine.constants import QA_FIX_PROMPT_FILENAME
+                if any(path for path in _untracked.stdout.split(b"\0")
+                       if path and path != QA_FIX_PROMPT_FILENAME.encode()):
+                    raise ValueError("selected repair contains new files not represented by its tracked-file patch")
                 _patch_proc = subprocess.run(
                     ["git", "diff", "--binary", "HEAD"], cwd=str(worktree_path),
                     capture_output=True, timeout=60, check=True,

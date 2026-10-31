@@ -11,10 +11,11 @@ from bluei.app.config import ConfigManager
 from bluei.app.registry import RepoRegistry
 
 
-@pytest.mark.parametrize("backend_name,backend_exit,missing_id", [
-    ("claude", 0, False), ("claude", 9, False), ("claude", 0, True), ("opencode", 0, False),
+@pytest.mark.parametrize("backend_name,backend_exit,missing_id,new_module", [
+    ("claude", 0, False, False), ("claude", 9, False, False),
+    ("claude", 0, True, False), ("opencode", 0, False, False), ("claude", 0, False, True),
 ])
-def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit, missing_id):
+def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit, missing_id, new_module):
     root = Path(__file__).resolve().parents[1]
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -42,6 +43,7 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
         f"#!{sys.executable}\nimport json,sys\nfrom pathlib import Path\n"
         f"with Path({str(calls)!r}).open('a') as stream: stream.write(json.dumps(sys.argv[1:])+'\\n')\n"
         f"if {backend_exit} == 0:\n    Path('app.py').write_text('def answer():\\n    return 42\\n')\n"
+        f"if {new_module!r}:\n    Path('helper.py').write_text('answer = 42\\n')\n    Path('app.py').write_text('from helper import answer\\n')\n"
         f"raise SystemExit({backend_exit})\n"
     )
     backend.chmod(0o755)
@@ -73,7 +75,13 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
         assert not calls.exists()
     else:
         assert len(calls.read_text().splitlines()) == 1, output
-        assert (result.returncode == 0) == (backend_exit == 0), output
+        assert (result.returncode == 0) == (backend_exit == 0 and not new_module), output
+        if backend_exit != 0 or new_module:
+            failed = json.loads((state / "status.json").read_text())["latest_run_metrics"]
+            assert failed["run_completed"] is False
+            assert failed["fix_attempts"] == failed["claude_invocations"] == 1
+            assert failed["fixes_failed_verification"] == 1
+            assert not list(state.glob("*.patch"))
     issues = json.loads((state / "issues.json").read_text())["issues"]
     assert next(issue for issue in issues if issue["issue_id"] == "unrelated") == unrelated
     assert (target / "app.py").read_bytes() == before
@@ -82,7 +90,7 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
     assert stored.current_health_score == 73 and stored.current_findings_count == 8
     assert not (state / "health_history.jsonl").exists()
     assert not (state / "fix_patterns.jsonl").exists()
-    if backend_exit == 0 and not missing_id:
+    if backend_exit == 0 and not missing_id and not new_module:
         assert "Python scope complete" in output
         patches = list(state.rglob("*.patch"))
         assert len(patches) == 1

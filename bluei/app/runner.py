@@ -811,6 +811,14 @@ class RunEngine:
                     recovered = self._new_persisted_findings(repo_name, findings_offset)
                 run.findings_detected = recovered if recovered is not None else 0
                 run.findings_recovered = recovered
+                try:
+                    failed_metrics = json.loads((self.state._get_state_dir(repo_name) / "status.json").read_text()).get("latest_run_metrics", {})
+                except (OSError, ValueError):
+                    failed_metrics = {}
+                if failed_metrics.get("run_id") == run_id:
+                    run.fix_attempts = int(failed_metrics.get("fix_attempts", 0) or 0)
+                    run.fixes_verified = int(failed_metrics.get("fixes_verified", 0) or 0)
+                    run.fixes_failed = int(failed_metrics.get("fixes_failed_verification", 0) or 0)
                 self._mark_interrupted_status(
                     repo_name,
                     options.phase,

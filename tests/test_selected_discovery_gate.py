@@ -31,7 +31,8 @@ def test_selected_finding_requires_fresh_responsible_producer(
     monkeypatch.setattr(orchestrator, "discover_findings", discover)
     args = SimpleNamespace(run_phase="orchestrated", open_issues_cap=20,
                            finding_cooldown_seconds=0, live_github_actions=False,
-                           issue_confidence_threshold=0, discovery_scope="python", finding_id=selected)
+                           issue_confidence_threshold=0, discovery_scope="python", finding_id=selected,
+                           dry_run=False)
     ctx = RunContext(args=args, repo_path=tmp_path, log_file=tmp_path / "run.log",
                      findings_file=tmp_path / "findings.jsonl", docs_index_file=tmp_path / "docs.json",
                      status_file=tmp_path / "status.json", run_id="fresh-run", run_issue_cycle=True,

@@ -450,7 +450,7 @@ def main() -> int:
                 )
             print(f"Reclassified {len(changes)} findings.")
 
-    if ctx.run_issue_cycle:
+    if ctx.run_issue_cycle and not (getattr(args, "discovery_scope", "repository") == "python" and args.dry_run):
         _created, _open, _blocked = run_issue_creation_phase(ctx)
         ctx.created_issues.extend(_created)
         ctx.open_issues = _open
@@ -459,11 +459,8 @@ def main() -> int:
     if args.run_phase == "verify-only":
         return run_verify_only(ctx)
 
-    if ctx.run_pr_cycle:
+    if ctx.run_pr_cycle and not (getattr(args, "discovery_scope", "repository") == "python" and args.dry_run):
         pr_result = run_pr_cycle_phase(ctx)
-        if pr_result.get("selected_error"):
-            print(f"[ABORT] {pr_result['selected_error']}")
-            return 2
         ctx.created_prs = pr_result["created_prs"]
         ctx.open_prs = pr_result["open_prs"]
         ctx.fix_attempts = pr_result["fix_attempts"]
@@ -476,8 +473,29 @@ def main() -> int:
         ctx.state = pr_result["state"]
         ctx.issues_data = pr_result["issues_data"]
         ctx.eligible_findings = pr_result["eligible_findings"]
-        if getattr(args, "finding_id", None) and not args.dry_run and ctx.fixes_verified != 1:
-            print("[INCOMPLETE] Selected repair did not produce one verified fix")
+        if pr_result.get("selected_error") or (
+            getattr(args, "finding_id", None) and not args.dry_run and ctx.fixes_verified != 1
+        ):
+            from bluei.engine.state import save_issues, save_state
+            error = pr_result.get("selected_error") or "Selected repair did not produce one verified fix"
+            save_issues(ctx.issues_file, ctx.issues_data)
+            save_state(ctx.state_file, ctx.state)
+            try:
+                status = json.loads(ctx.status_file.read_text())
+            except (OSError, ValueError):
+                status = {}
+            status["last_run_completed"] = False
+            status["latest_run_metrics"] = {
+                "run_id": ctx.run_id, "run_completed": False,
+                "discovery_scope": args.discovery_scope,
+                "findings_detected": len(ctx.findings), "detector_outcomes": ctx.detector_outcomes,
+                "fix_attempts": ctx.fix_attempts, "claude_invocations": ctx.claude_invocations,
+                "fixes_verified": ctx.fixes_verified,
+                "fixes_failed_verification": ctx.fixes_failed_verification,
+                "selected_error": error, "prs_created": 0,
+            }
+            atomic_json_write(ctx.status_file, status)
+            print(f"[INCOMPLETE] {error}")
             return 1
     if ctx.run_merge_cycle:
         (

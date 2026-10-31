@@ -281,8 +281,9 @@ class TestSelectedSingleModelAttempt:
             ),
             patch(
                 "bluei.engine.commands.pr_cycle.subprocess.run",
-                return_value=SimpleNamespace(
-                    returncode=0, stdout=b"diff --git a/src/billing.py b/src/billing.py\n"
+                side_effect=lambda command, **kwargs: SimpleNamespace(
+                    returncode=0, stdout=b"" if command[1] == "ls-files"
+                    else b"diff --git a/src/billing.py b/src/billing.py\n"
                 ),
             ),
             patch(
