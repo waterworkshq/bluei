@@ -1649,9 +1649,13 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
                 is not None
                 and _f.finding_id == selected_id
             ]
-            if len(_matching) != 1:
-                # Duplicates are ambiguous, not a pick-one situation: none of
-                # them is mutated and the run fails closed.
+            if not _matching and args.dry_run:
+                _selected_fresh_finding = _fresh[0]
+                if not (_selected_fresh_finding.safe_to_autofix
+                        or _selected_fresh_finding.rule in _get_llm_fixable_rules()):
+                    selected_error = "selected preview finding is not model-lane eligible"
+                _walk_issues_data = {"issues": []}
+            elif len(_matching) != 1:
                 selected_error = (
                     f"selected finding {selected_id} must map to exactly one "
                     "issue in the fresh queue"
@@ -1667,11 +1671,11 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
         log_file=log_file,
         gh_repo_slug=gh_repo_slug,
         args=args,
-        issues_data={"issues": []} if selected_error else _walk_issues_data,
+        issues_data={"issues": []} if selected_error or (selected_id is not None and args.dry_run) else _walk_issues_data,
     )
     issues_escalated_max_retries += _escalated
 
-    if selected_id is not None and not selected_error:
+    if selected_id is not None and not selected_error and not args.dry_run:
         if not queue_candidates:
             selected_error = (
                 f"selected finding {selected_id} is not eligible for the single "

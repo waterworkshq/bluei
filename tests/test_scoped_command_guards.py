@@ -38,6 +38,11 @@ def test_opencode_without_template_rejected(monkeypatch, capsys):
     assert "requires --claude-cmd-template" in err
 
 
+def test_discovery_only_opencode_does_not_require_template(monkeypatch):
+    args = _parse(["--fix-engine", "opencode", "--run-phase", "issue-cycle"], monkeypatch)
+    assert args.fix_engine == "opencode" and args.run_phase == "issue-cycle"
+
+
 def test_opencode_with_template_accepted(monkeypatch):
     args = _parse(
         ["--fix-engine", "opencode", "--claude-cmd-template", "opencode run {prompt}"],

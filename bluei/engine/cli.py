@@ -459,7 +459,7 @@ def main() -> int:
     if args.run_phase == "verify-only":
         return run_verify_only(ctx)
 
-    if ctx.run_pr_cycle and not (getattr(args, "discovery_scope", "repository") == "python" and args.dry_run):
+    if ctx.run_pr_cycle:
         pr_result = run_pr_cycle_phase(ctx)
         ctx.created_prs = pr_result["created_prs"]
         ctx.open_prs = pr_result["open_prs"]

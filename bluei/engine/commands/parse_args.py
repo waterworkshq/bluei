@@ -271,7 +271,7 @@ def parse_args() -> argparse.Namespace:
     # can never silently send prompts to the wrong backend. An explicitly
     # selected template is operator config and is not otherwise validated.
     if args.claude_cmd_template is None:
-        if args.fix_engine == "opencode":
+        if args.fix_engine == "opencode" and args.run_phase in {"pr-cycle", "orchestrated", "e2e"}:
             p.error(
                 "--fix-engine opencode requires --claude-cmd-template: the "
                 "default template targets the Claude CLI backend, not opencode"

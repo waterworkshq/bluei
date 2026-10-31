@@ -169,6 +169,14 @@ class TestSelectedFailClosed:
         fix.assert_not_called()
         assert all(issue["status"] == "open" for issue in dupes)
 
+    def test_selected_dry_run_can_validate_without_creating_an_issue(self, tmp_path):
+        ctx = _ctx(tmp_path, _selected_args(tmp_path, dry_run=True), [], eligible=[_fresh_finding()])
+        with patch("bluei.engine.commands.pr_cycle.apply_claude_fix") as model:
+            result = run_pr_cycle_phase(ctx)
+        assert not result["selected_error"] and result["fix_attempts"] == 0
+        assert result["issues_data"] == {"issues": []}
+        model.assert_not_called()
+
     def test_selected_dry_run_does_not_invoke_model_or_create_worktree(self, tmp_path):
         issue = _issue()
         before = dict(issue)
