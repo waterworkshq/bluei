@@ -20,6 +20,12 @@ from bluei.engine.models import Finding
 SELECTED_ID = "py-f821-0001"
 
 
+def _fake_git_output(command, **kwargs):
+    if command[1] == "diff":
+        kwargs["stdout"].write(b"diff --git a/src/billing.py b/src/billing.py\n")
+    return SimpleNamespace(returncode=0, stdout=b"")
+
+
 def _fresh_finding(**overrides):
     defaults = dict(
         finding_id=SELECTED_ID,
@@ -88,6 +94,10 @@ def _issue(finding_id=SELECTED_ID, **overrides):
 
 
 def _ctx(tmp_path, args, issues, eligible=None):
+    import subprocess
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
     fresh = [] if eligible is None else eligible
     return RunContext(
         args=args,
@@ -281,10 +291,7 @@ class TestSelectedSingleModelAttempt:
             ),
             patch(
                 "bluei.engine.commands.pr_cycle.subprocess.run",
-                side_effect=lambda command, **kwargs: SimpleNamespace(
-                    returncode=0, stdout=b"" if command[1] == "ls-files"
-                    else b"diff --git a/src/billing.py b/src/billing.py\n"
-                ),
+                side_effect=_fake_git_output,
             ),
             patch(
                 "bluei.engine.model_governor.resolve_governed_model",
@@ -349,6 +356,7 @@ class TestSelectedSingleModelAttempt:
         assert patch_path.exists()
         assert patch_path.read_bytes().startswith(b"diff --git")
         assert issues[0]["selected_fix_patch"] == str(patch_path)
+        assert issues[0]["status"] == "open"
         assert sub_run.call_args.args[0] == ["git", "diff", "--binary", "HEAD"]
         assert sub_run.call_args.kwargs["cwd"].startswith(str(ctx.worktree_root))
 

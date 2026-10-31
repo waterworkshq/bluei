@@ -172,7 +172,15 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Disable auto-closing excess duplicate PRs (detection still runs)",
     )
-    p.add_argument("--claude-cmd-template", default=DEFAULT_CLAUDE_CMD_TEMPLATE)
+    p.add_argument(
+        "--claude-cmd-template",
+        default=None,
+        help=(
+            "Command template for the fix-engine backend. Defaults to the "
+            "Claude CLI template; required for --fix-engine opencode because "
+            "the default template targets the wrong backend"
+        ),
+    )
 
     # Fix scope policy
     p.add_argument("--max-files-changed", type=int, default=5)
@@ -257,6 +265,18 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = p.parse_args()
+    # Template sentinel: None means "not specified". The Claude default is
+    # applied only for the Claude backend; opencode must get an explicit
+    # template (the app path passes a matching one) so a direct opencode run
+    # can never silently send prompts to the wrong backend. An explicitly
+    # selected template is operator config and is not otherwise validated.
+    if args.claude_cmd_template is None:
+        if args.fix_engine == "opencode":
+            p.error(
+                "--fix-engine opencode requires --claude-cmd-template: the "
+                "default template targets the Claude CLI backend, not opencode"
+            )
+        args.claude_cmd_template = DEFAULT_CLAUDE_CMD_TEMPLATE
     if args.discovery_scope == "python" and (
         args.run_phase not in {"issue-cycle", "detect-only", "orchestrated"}
         or args.reconcile_only or args.migrate_context or args.live_github_actions

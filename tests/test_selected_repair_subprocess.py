@@ -97,3 +97,6 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
         assert "return 42" in patches[0].read_text()
         latest = json.loads((state / "status.json").read_text())["latest_run_metrics"]
         assert latest["claude_invocations"] == 1 and latest["prs_created"] == 0
+        selected_issue = next(issue for issue in issues if issue.get("finding_id") == finding_id)
+        assert selected_issue["status"] == "open"
+        assert selected_issue["selected_fix_patch"] == str(patches[0])

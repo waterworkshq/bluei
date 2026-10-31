@@ -289,6 +289,19 @@ def _reconcile_issue_pr_link(
     return False
 
 
+_STATUS_CYCLE_COMMAND_KEYS = (
+    "manual_one_cycle_command",
+    "issue_cycle_command",
+    "pr_cycle_command",
+    "merge_cycle_command",
+    "orchestrated_cycle_command",
+    "refactor_cycle_command",
+    "reconcile_only_command",
+    "verification_only_command",
+    "docs_index_refresh_command",
+)
+
+
 def update_status_artifact(
     status_file: Path,
     state: Dict[str, Any],
@@ -385,15 +398,32 @@ def update_status_artifact(
         "was_stale_before_run": previous_age_seconds is not None
         and previous_age_seconds > threshold_seconds,
     }
-    status["manual_one_cycle_command"] = build_active_cycle_command(args)
-    status["issue_cycle_command"] = build_issue_cycle_command(args)
-    status["pr_cycle_command"] = build_pr_cycle_command(args)
-    status["merge_cycle_command"] = build_merge_cycle_command(args)
-    status["orchestrated_cycle_command"] = build_orchestrated_cycle_command(args)
-    status["refactor_cycle_command"] = build_refactor_cycle_command(args)
-    status["reconcile_only_command"] = build_reconcile_only_command(args)
-    status["verification_only_command"] = build_verification_only_command(args)
-    status["docs_index_refresh_command"] = build_docs_index_refresh_command(args)
+    if getattr(args, "discovery_scope", "repository") == "python":
+        # Python scope supports only local discovery / selected orchestrated
+        # repair — persist only command fields whose phase parse_args accepts.
+        # The status dict may carry *_command keys from a prior repository-
+        # scope run; drop the whole known set before emitting the valid ones,
+        # or stale unsupported commands survive the scoped overwrite.
+        for stale_key in _STATUS_CYCLE_COMMAND_KEYS:
+            status.pop(stale_key, None)
+        status["manual_one_cycle_command"] = build_active_cycle_command(args)
+        if getattr(args, "run_phase", "") == "orchestrated":
+            status["orchestrated_cycle_command"] = (
+                build_orchestrated_cycle_command(args)
+            )
+    else:
+        for key, build in (
+            ("manual_one_cycle_command", build_active_cycle_command),
+            ("issue_cycle_command", build_issue_cycle_command),
+            ("pr_cycle_command", build_pr_cycle_command),
+            ("merge_cycle_command", build_merge_cycle_command),
+            ("orchestrated_cycle_command", build_orchestrated_cycle_command),
+            ("refactor_cycle_command", build_refactor_cycle_command),
+            ("reconcile_only_command", build_reconcile_only_command),
+            ("verification_only_command", build_verification_only_command),
+            ("docs_index_refresh_command", build_docs_index_refresh_command),
+        ):
+            status[key] = build(args)
     status["detector_catalog"] = DETECTOR_CATALOG
     latest_run_metrics = dict(
         run_metrics

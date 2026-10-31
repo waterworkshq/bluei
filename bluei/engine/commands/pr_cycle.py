@@ -928,6 +928,7 @@ def _process_one_issue(
                 )
                 use_claude_engine = (
                     args.fix_engine == FixEngine.CLAUDE.value
+                    or bool(getattr(args, "finding_id", None))
                     or finding.rule in CLAUDE_REQUIRED_RULES
                     or is_llm_fixable
                 )
@@ -1392,19 +1393,30 @@ def _process_one_issue(
                 if any(path for path in _untracked.stdout.split(b"\0")
                        if path and path != QA_FIX_PROMPT_FILENAME.encode()):
                     raise ValueError("selected repair contains new files not represented by its tracked-file patch")
-                _patch_proc = subprocess.run(
-                    ["git", "diff", "--binary", "HEAD"], cwd=str(worktree_path),
-                    capture_output=True, timeout=60, check=True,
-                )
-                if not _patch_proc.stdout.strip() or len(_patch_proc.stdout) > (1 << 20):
-                    raise ValueError("selected patch is empty or exceeds 1 MiB")
                 _patch_key = hashlib.sha256(finding.finding_id.encode()).hexdigest()
                 _patch_path = ctx.state_file.parent / f"selected-fix-{_patch_key}-{uuid4().hex}.patch"
                 _patch_path.parent.mkdir(parents=True, exist_ok=True)
+                import resource
+                import tempfile
+                with tempfile.TemporaryFile() as _diff_output:
+                    subprocess.run(
+                        ["git", "diff", "--binary", "HEAD"], cwd=str(worktree_path),
+                        stdout=_diff_output, stderr=subprocess.DEVNULL, timeout=60, check=True,
+                        preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_FSIZE, ((1 << 20) + 1,) * 2),
+                    )
+                    _diff_output.seek(0)
+                    _patch_bytes = _diff_output.read((1 << 20) + 1)
+                if not _patch_bytes.strip() or len(_patch_bytes) > (1 << 20):
+                    raise ValueError("selected patch is empty or exceeds 1 MiB")
                 with _patch_path.open("xb") as _patch_stream:
-                    _patch_stream.write(_patch_proc.stdout)
+                    _patch_stream.write(_patch_bytes)
                 issue["selected_fix_patch"] = str(_patch_path)
+                set_issue_status(issue, "open", "candidate patch verified; source finding remains open until applied")
+                mark_finding_activity(state=state, finding_ids=[finding.finding_id], action="patch-verified")
+                counters.fixes_verified += 1
+                run_status = "selected-patch-verified"
                 _append_text(log_file, f"selected-fix-patch: path={_patch_path}")
+                return counters.to_deltas()
             except (OSError, ValueError, subprocess.SubprocessError) as _patch_exc:
                 counters.fixes_failed_verification += 1
                 set_issue_status(issue, "fix_failed_verification", f"patch retention failed: {_patch_exc}")
@@ -1601,6 +1613,11 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
     _walk_issues_data = issues_data
     _selected_fresh_finding = None
     if selected_id is not None:
+        _source_status = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"], cwd=str(repo_path),
+            capture_output=True, timeout=30,
+        )
+        _source_dirty = _source_status.returncode != 0 or bool(_source_status.stdout.strip())
         _fresh = [
             f
             for f in ctx.eligible_findings
@@ -1612,6 +1629,7 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
             or str(getattr(args, "fix_engine", "")) not in ("claude", "opencode")
             or getattr(args, "live_github_actions", False)
             or not getattr(args, "no_learning", False)
+            or _source_dirty
             or len(_fresh) != 1
             or any(record.get("status") in {"failed", "unavailable"}
                    for record in ctx.detector_outcomes.values())

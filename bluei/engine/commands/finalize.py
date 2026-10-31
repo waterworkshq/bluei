@@ -367,6 +367,9 @@ def run_finalize_phase(*args, **kwargs) -> int:
     if (
         args.run_phase in ("issue-cycle", "pr-cycle", "merge-cycle", "orchestrated")
         and not args.reconcile_only
+        # no_learning must gate the lesson WRITE (reads above stay live);
+        # selected python-scope repair sets no_learning and must not append.
+        and not getattr(args, "no_learning", False)
     ):
         broke_parts: List[str] = []
         changed_parts: List[str] = []
