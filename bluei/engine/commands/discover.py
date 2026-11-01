@@ -120,8 +120,18 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
 
     selected_id = getattr(args, "finding_id", None)
     routed_findings = findings
+    if getattr(args, "discovery_scope", "repository") == "python":
+        routed_findings = [f for f in findings if f.rule.casefold() != "ruff-e722"]
+        if len(routed_findings) != len(findings):
+            _append_text(log_file, "discovery: raw E722 retained as non-actionable diagnostics")
+        if selected_id is not None and any(
+            f.finding_id == selected_id and f.rule.casefold() == "ruff-e722"
+            for f in findings
+        ):
+            blocked_reasons.append("selected raw E722 repair is unsupported in Python scope")
+            return (findings, written_findings, [], [], [], blocked_reasons, cap_ok)
     if selected_id is not None:
-        routed_findings = [finding for finding in findings if finding.finding_id == selected_id]
+        routed_findings = [finding for finding in routed_findings if finding.finding_id == selected_id]
         if len(routed_findings) != 1:
             blocked_reasons.append("selected finding was not uniquely rediscovered in this run")
             return (findings, written_findings, [], [], [], blocked_reasons, cap_ok)

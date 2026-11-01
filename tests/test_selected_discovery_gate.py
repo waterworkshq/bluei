@@ -7,6 +7,43 @@ from bluei.engine.commands.context import RunContext
 from bluei.engine.commands.discover import run_discover_phase
 
 
+@pytest.mark.parametrize("selected", [None, "raw-e722"])
+def test_scoped_raw_e722_is_recorded_but_not_actionable(
+    tmp_path, monkeypatch, make_finding, selected
+):
+    import bluei.engine.orchestrator as orchestrator
+
+    raw = make_finding(finding_id="raw-e722", rule="ruff-E722", path=".venv/extra.py")
+    supported = make_finding(finding_id="f821", rule="ruff-F821", path="app.py")
+
+    def discover(repo, outcomes=None, **kwargs):
+        outcomes["plugin:plugin-python"] = {"status": "ran", "count": 2}
+        return [raw, supported]
+
+    monkeypatch.setattr(orchestrator, "discover_findings", discover)
+    args = SimpleNamespace(
+        run_phase="orchestrated", open_issues_cap=1,
+        finding_cooldown_seconds=0, live_github_actions=False,
+        issue_confidence_threshold=0, discovery_scope="python", finding_id=selected,
+        dry_run=False,
+    )
+    ctx = RunContext(
+        args=args, repo_path=tmp_path, log_file=tmp_path / "run.log",
+        findings_file=tmp_path / "findings.jsonl", docs_index_file=tmp_path / "docs.json",
+        status_file=tmp_path / "status.json", run_id="fresh-run", run_issue_cycle=True,
+        run_pr_cycle=True, issues_data={"issues": []},
+    )
+    result = run_discover_phase(ctx)
+    assert [f.finding_id for f in result[0]] == ["raw-e722", "f821"]
+    assert '"raw-e722"' in ctx.findings_file.read_text()
+    assert [f.finding_id for f in result[2]] == ([] if selected else ["f821"])
+    assert result[4] == [] and result[6]
+    assert ctx.issues_data == {"issues": []}
+    assert "non-actionable" in ctx.log_file.read_text()
+    if selected:
+        assert any("unsupported" in reason for reason in result[5])
+
+
 @pytest.mark.parametrize("status,selected,present,duplicates,expected", [
     ("ran", "f-selected", True, False, ["f-selected"]),
     ("failed", "f-selected", True, False, []),
