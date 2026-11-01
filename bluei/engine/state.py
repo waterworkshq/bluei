@@ -14,7 +14,7 @@ from bluei.engine.constants import (
 )
 from bluei.engine.jsonl import append_jsonl
 from bluei.engine.reforge import RefactorPhase, RefactorWork
-from bluei.engine.models import Finding, age_seconds, now_iso
+from bluei.engine.models import Finding, age_seconds, now_iso, stable_finding_id
 from bluei.engine.utils import run_capture
 from bluei.engine.gh import fetch_github_live_counts, get_origin_url
 
@@ -128,10 +128,90 @@ def load_findings_seen(path: Path) -> set[str]:
     return seen
 
 
+def canonical_markdown_rule(rule: str) -> Optional[str]:
+    """Canonical Markdown rule (``md-MDxxx``) or None for non-Markdown rules."""
+    if rule.startswith("md-MD") and rule[5:].isdigit():
+        return rule
+    if rule.startswith("MD") and rule[2:].isdigit():
+        return f"md-{rule}"
+    return None
+
+
+def _load_markdown_identities(
+    path: Path, aliases: Optional[Dict[str, set[str]]] = None,
+) -> Dict[Tuple[str, str, Any, str, str], str]:
+    """Map Markdown diagnostic identity -> earliest persisted finding_id.
+
+    Only records whose finding_id equals the hash recomputed from their own
+    stored fields participate: a mismatch means the snippet was truncated
+    (``description[:200]``) so the full identity material is unrecoverable.
+    """
+    identities: Dict[Tuple[str, str, Any, str, str], str] = {}
+    if not path.exists():
+        return identities
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            try:
+                obj = json.loads(raw)
+                if not isinstance(obj, dict):
+                    continue
+                rule = canonical_markdown_rule(str(obj.get("rule") or ""))
+                if rule is None:
+                    continue
+                fid = str(obj.get("finding_id") or "")
+                if not fid:
+                    continue
+                if fid != stable_finding_id(
+                    str(obj.get("repo") or ""),
+                    str(obj.get("path") or ""),
+                    obj.get("line"),
+                    str(obj.get("rule") or ""),
+                    str(obj.get("snippet") or ""),
+                ):
+                    continue
+                identity = (
+                    str(obj.get("repo") or ""),
+                    str(obj.get("path") or ""),
+                    obj.get("line"),
+                    rule,
+                    str(obj.get("snippet") or "").strip(),
+                )
+                first_id = identities.setdefault(identity, fid)
+                if aliases is not None:
+                    group = aliases.setdefault(first_id, {first_id})
+                    group.add(fid)
+                    aliases[fid] = group
+            except Exception:
+                continue
+    return identities
+
+
 def append_findings(path: Path, findings: List[Finding]) -> int:
     seen = load_findings_seen(path)
+    md_identities: Optional[Dict[Tuple[str, str, Any, str, str], str]] = None
     written = 0
     for finding in findings:
+        rule = canonical_markdown_rule(str(finding.rule))
+        if rule is not None:
+            if md_identities is None:
+                md_identities = _load_markdown_identities(path)
+            identity = (
+                str(finding.repo),
+                str(finding.path),
+                finding.line,
+                rule,
+                str(finding.snippet).strip(),
+            )
+            legacy_id = md_identities.get(identity)
+            # Alias adoption runs before the seen fast-path so a re-discovered
+            # diagnostic adopts the earliest valid ID even if its own current
+            # ID was already persisted. Both sides must carry untruncated
+            # material (ID recomputes from own fields) before merging.
+            if legacy_id and finding.finding_id == stable_finding_id(
+                finding.repo, finding.path, finding.line, finding.rule, finding.snippet
+            ):
+                finding.finding_id = legacy_id
+                continue
         if finding.finding_id in seen:
             continue
         if finding.discovered_at is None:
@@ -300,6 +380,7 @@ def filter_findings_by_cooldown(
     state: Dict[str, Any],
     cooldown_seconds: int,
     log_file: Path,
+    aliases: Optional[Dict[str, set[str]]] = None,
 ) -> tuple[List[Finding], List[Finding]]:
     allowed: List[Finding] = []
     suppressed: List[Finding] = []
@@ -307,11 +388,18 @@ def filter_findings_by_cooldown(
     now = datetime.now(timezone.utc)
 
     for finding in findings:
-        entry = activity.get(finding.finding_id, {})
+        ids = (aliases or {}).get(finding.finding_id, {finding.finding_id})
+        blocked = []
+        for fid in ids:
+            entry = activity.get(fid, {})
+            elapsed = age_seconds(entry.get("last_action_at"), reference=now)
+            cooldown = get_effective_cooldown(fid, state, cooldown_seconds)
+            if elapsed is not None and elapsed < cooldown:
+                blocked.append((cooldown - elapsed, fid))
+        fid = max(blocked)[1] if blocked else finding.finding_id
+        entry = activity.get(fid, {})
         last_action_at = entry.get("last_action_at")
-        effective_cooldown = get_effective_cooldown(
-            finding.finding_id, state, cooldown_seconds
-        )
+        effective_cooldown = get_effective_cooldown(fid, state, cooldown_seconds)
         elapsed = age_seconds(last_action_at, reference=now)
         if elapsed is not None and elapsed < effective_cooldown:
             remaining = effective_cooldown - elapsed

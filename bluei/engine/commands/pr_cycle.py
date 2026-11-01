@@ -144,9 +144,10 @@ def _select_candidates(
     for issue in issues_data.get("issues", []):
         if issue.get("status") in ("resolved_merged",):
             continue
-        issue_github = (
-            issue.get("github", {}) if isinstance(issue.get("github"), dict) else {}
-        )
+        if issue.get("github") is not None and not isinstance(issue.get("github"), dict):
+            _append_text(log_file, "skip: malformed GitHub metadata requires manual resolution")
+            continue
+        issue_github = issue.get("github") or {}
         if issue_github.get("pr_number") or issue_github.get("pr_url"):
             if not args.live_github_actions:
                 continue

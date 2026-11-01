@@ -74,11 +74,9 @@ def find_existing_github_pr(
     )
     if not isinstance(payload, list):
         return None
-    for pr in payload:
-        body = str(pr.get("body") or "")
-        if marker in body:
-            return pr
-    return None
+    matches = [pr for pr in payload if marker in str(pr.get("body") or "")]
+    return next((pr for pr in matches if str(pr.get("state", "")).upper() == "OPEN"),
+                matches[0] if matches else None)
 
 
 def find_batch_pr_by_rule(
@@ -268,7 +266,7 @@ def create_or_update_github_pr(
 
     marker = _facade.finding_dedupe_marker(finding.finding_id)
     existing = _facade.find_existing_github_pr(repo_slug, finding.finding_id, cwd=cwd)
-    if existing:
+    if existing and str(existing.get("state", "OPEN")).upper() == "OPEN":
         number = int(existing["number"])
         url = str(existing.get("url") or "")
         _append_text(
@@ -348,7 +346,7 @@ def create_or_update_github_pr(
         existing_after_create = _facade.find_existing_github_pr(
             repo_slug, finding.finding_id, cwd=cwd
         )
-        if existing_after_create:
+        if existing_after_create and str(existing_after_create.get("state", "OPEN")).upper() == "OPEN":
             number = int(existing_after_create["number"])
             url = str(existing_after_create.get("url") or url)
     _append_text(

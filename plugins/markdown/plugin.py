@@ -23,6 +23,21 @@ def stable_finding_id(repo: str, path: str, line: int, rule: str, snippet: str) 
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+def canonical_rule(rule: str) -> str:
+    """Canonical rule IDs carry the ``md-`` prefix (health mapping keys on md-MDxxx).
+
+    Native markdownlint emits bare codes (``MD009``); the regex fallback already
+    emits ``md-MD009``. One canonical ID prevents false closures and unmapped
+    health components.
+    """
+    rule = str(rule)
+    if rule.startswith("md-"):
+        return rule
+    if rule.startswith("MD") and rule[2:].isdigit():
+        return f"md-{rule}"
+    return rule
+
+
 class Plugin(ToolWrapperPlugin):
     """Wraps ``markdownlint``; falls back to regex-based checks when unavailable."""
 
@@ -77,9 +92,16 @@ class Plugin(ToolWrapperPlugin):
                 continue
             rule_names = item.get("ruleNames", item.get("rule", []))
             if isinstance(rule_names, list) and rule_names:
-                rule_name = rule_names[0]
+                selected_rule = rule_names[0]
             else:
-                rule_name = str(item.get("rule", "MD000"))
+                # Legacy direct-parse default when the entry carries no rule.
+                # The strict wrapper rejects these; only direct callers keep it.
+                selected_rule = item.get("rule", "MD000")
+            if not isinstance(selected_rule, str) or not selected_rule.strip():
+                # Malformed rule (e.g. ruleNames: [42] or [""]): drop the
+                # diagnostic rather than manufacture a rule via str() coercion.
+                continue
+            rule_name = canonical_rule(selected_rule.strip())
             line = item.get("lineNumber", 1)
             description = item.get("ruleDescription", item.get("message", ""))
             file_path = item.get("fileName", "")
