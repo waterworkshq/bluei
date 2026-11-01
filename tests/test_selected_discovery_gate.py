@@ -1,4 +1,5 @@
 """Selection must use fresh discovery and never route another finding."""
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -35,7 +36,8 @@ def test_scoped_raw_e722_is_recorded_but_not_actionable(
     )
     result = run_discover_phase(ctx)
     assert [f.finding_id for f in result[0]] == ["raw-e722", "f821"]
-    assert '"raw-e722"' in ctx.findings_file.read_text()
+    recorded = [json.loads(line) for line in ctx.findings_file.read_text().splitlines()]
+    assert any(f["finding_id"] == "raw-e722" and f["rule"] == "ruff-E722" for f in recorded)
     assert [f.finding_id for f in result[2]] == ([] if selected else ["f821"])
     assert result[4] == [] and result[6]
     assert ctx.issues_data == {"issues": []}
