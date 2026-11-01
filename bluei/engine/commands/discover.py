@@ -10,6 +10,8 @@ from bluei.engine.state import (
     count_actionable_issues,
     filter_findings_by_cooldown,
     guard_open_issues,
+    canonical_markdown_rule,
+    _load_markdown_identities,
 )
 
 DiscoverResult = Tuple[
@@ -115,11 +117,67 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
         blocked_reasons.append("discovery incomplete; findings retained but not routed")
         return (findings, written_findings, [], [], [], blocked_reasons, cap_ok)
 
+    aliases: Dict[str, set[str]] = {}
+    if any(canonical_markdown_rule(finding.rule) for finding in findings):
+        _load_markdown_identities(findings_file, aliases=aliases)
+    if args.run_phase == "verify-only":
+        return (findings, written_findings, [], [], [], blocked_reasons, cap_ok)
+    issues_by_id: Dict[str, List[Dict[str, Any]]] = {}
+    all_issues_by_id: Dict[str, List[Dict[str, Any]]] = {}
+    for issue in issues_data.get("issues", []) if aliases else []:
+        fid = issue.get("finding_id")
+        all_issues_by_id.setdefault(fid, []).append(issue)
+        github = issue.get("github")
+        github = {} if github is None else github
+        has_pr = (github.get("pr_number") or github.get("pr_url")) if isinstance(github, dict) else True
+        if issue.get("status") not in {"resolved_verified", "resolved_merged", "closed"} or (
+            has_pr and issue.get("status") != "resolved_merged"
+        ):
+            issues_by_id.setdefault(fid, []).append(issue)
+    pr_ids = set()
+    for record in state.get("created", []) if aliases else []:
+        if record.get("github_pr_number") is not None or record.get("github_pr_url"):
+            for fid in record.get("linked_finding_ids", []):
+                history = all_issues_by_id.get(fid, [])
+                if not history or fid in issues_by_id:
+                    pr_ids.add(fid)
+    routed_findings = []
+    for finding in findings:
+        ids = aliases.get(finding.finding_id, {finding.finding_id})
+        if len(ids) < 2:
+            routed_findings.append(finding)
+            continue
+        matches = [issue for fid in ids for issue in issues_by_id.get(fid, [])]
+        linked_ids = {issue["finding_id"] for issue in matches} | ids.intersection(pr_ids)
+        if len(ids) > 1 and (len(matches) > 1 or len(linked_ids) > 1):
+            reason = f"Markdown alias conflict for {finding.finding_id}; manual resolution required"
+            blocked_reasons.append(reason)
+            _append_text(log_file, reason)
+            detector_outcomes["markdown-identity"] = {
+                "status": "failed", "count": 0, "reason": reason,
+            }
+            suppressed_findings.append(finding)
+            continue
+        if len(ids) > 1 and linked_ids:
+            finding.finding_id = next(iter(linked_ids))
+        elif not matches:
+            terminal = [issue for fid in ids for issue in all_issues_by_id.get(fid, [])]
+            if terminal:
+                finding.finding_id = terminal[0]["finding_id"]
+        routed_findings.append(finding)
+    if detector_outcomes.get("markdown-identity", {}).get("status") == "failed":
+        if ctx is not None and ctx.run_id:
+            atomic_json_write(ctx.status_file.parent / "discovery-current.json", {
+                "run_id": ctx.run_id, "findings_detected": len(findings),
+                "findings_written": written_findings, "detector_outcomes": detector_outcomes,
+            })
+        return (findings, written_findings, [], findings, [], blocked_reasons, cap_ok)
     eligible_findings, suppressed_findings = filter_findings_by_cooldown(
-        findings=findings,
+        findings=routed_findings,
         state=state,
         cooldown_seconds=args.finding_cooldown_seconds,
         log_file=log_file,
+        **({"aliases": aliases} if aliases else {}),
     )
     if suppressed_findings:
         _append_text(

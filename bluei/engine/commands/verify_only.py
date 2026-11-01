@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from bluei.engine.models import now_iso
-from bluei.engine.state import _append_text, save_issues, save_state
+from bluei.engine.state import _append_text, save_issues, save_state, canonical_markdown_rule
 from bluei.engine.commands.helpers import update_status_artifact
 
 
@@ -129,9 +129,10 @@ def run_verify_only(*args, **kwargs) -> int:
     fixes_failed_verification = 0
     fixes_untouched = 0
 
-    active_keys = {(f.rule, f.path) for f in findings}
+    active_keys = {(canonical_markdown_rule(f.rule) or f.rule, f.path) for f in findings}
     for issue in issues_data.get("issues", []):
-        key = (str(issue.get("rule", "")), str(issue.get("path", "")))
+        rule = str(issue.get("rule", ""))
+        key = (canonical_markdown_rule(rule) or rule, str(issue.get("path", "")))
         if key in active_keys:
             set_issue_status(
                 issue,

@@ -27,7 +27,7 @@ def test_markdown_filename_keyed_json_is_completed_and_retained(tmp_path, monkey
     plugin = MarkdownPlugin()
     findings = plugin.discover(repo, {})
     assert plugin.last_tool_outcome == "tool-ran"
-    assert any(finding.path == "README.md" and finding.rule == "MD009" for finding in findings)
+    assert any(finding.path == "README.md" and finding.rule == "md-MD009" for finding in findings)
 
 
 def test_npx_wrapper_uses_already_installed_local_tool_without_installing(tmp_path, monkeypatch):

@@ -55,6 +55,56 @@ class DiscoveryPlugin(ABC):
         pass
 
 
+def _validate_markdownlint_output(parsed: Any) -> None:
+    """Reject malformed markdownlint payloads so dropped diagnostics cannot read as clean.
+
+    Every diagnostic — flat array entry or filename-keyed dict record — must be
+    an object with a non-empty file target, a 1-based integer lineNumber, and a
+    selected rule that is a non-empty string. For dict records the validated
+    target is the filename key itself: the parser overwrites ``fileName`` with
+    the key, so a valid entry field cannot redeem an empty key. Unlike the
+    legacy MD000 fallback in ``parse_output``, native output is expected to
+    carry its own rule code — no default is accepted here.
+    """
+    if isinstance(parsed, dict):
+        if not all(isinstance(records, list) for records in parsed.values()):
+            raise ValueError("expected filename-keyed JSON lists")
+        pairs = [
+            (entry, filename)
+            for filename, records in parsed.items()
+            for entry in records
+        ]
+    elif isinstance(parsed, list):
+        pairs = [
+            (entry, entry.get("fileName") if isinstance(entry, dict) else None)
+            for entry in parsed
+        ]
+    else:
+        raise ValueError("expected JSON array")
+    for entry, target in pairs:
+        line = entry.get("lineNumber") if isinstance(entry, dict) else None
+        rule_names = (
+            entry.get("ruleNames", entry.get("rule", []))
+            if isinstance(entry, dict)
+            else None
+        )
+        if isinstance(rule_names, list) and rule_names:
+            selected_rule = rule_names[0]
+        else:
+            selected_rule = entry.get("rule") if isinstance(entry, dict) else None
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(target, str)
+            or not target
+            or not isinstance(line, int)
+            or isinstance(line, bool)
+            or line < 1
+            or not isinstance(selected_rule, str)
+            or not selected_rule.strip()
+        ):
+            raise ValueError("malformed markdownlint diagnostic")
+
+
 class ToolWrapperPlugin(DiscoveryPlugin):
     """Base class for plugins that invoke external CLI tools.
 
@@ -114,12 +164,16 @@ class ToolWrapperPlugin(DiscoveryPlugin):
             if result.returncode not in (0, 1):
                 self.last_tool_outcome = "tool-error"
                 return None
+            output = result.stdout
+            if tool == "markdownlint" and not output.strip():
+                output = result.stderr
+                if result.returncode == 0 and not output.strip():
+                    output = "[]"
             try:
                 if tool in ("ruff", "shellcheck", "hadolint", "markdownlint"):
-                    parsed = json.loads(result.stdout)
-                    if tool == "markdownlint" and isinstance(parsed, dict):
-                        if not all(isinstance(items, list) for items in parsed.values()):
-                            raise ValueError("expected filename-keyed JSON lists")
+                    parsed = json.loads(output)
+                    if tool == "markdownlint":
+                        _validate_markdownlint_output(parsed)
                     elif not isinstance(parsed, list):
                         raise ValueError("expected JSON array")
                 elif tool in ("staticcheck", "cargo"):
@@ -130,7 +184,7 @@ class ToolWrapperPlugin(DiscoveryPlugin):
                 self.last_tool_outcome = "tool-error"
                 return None
             self.last_tool_outcome = "tool-ran"
-            return result.stdout
+            return output
         except FileNotFoundError:
             self.last_tool_outcome = "tool-missing"
             return None
