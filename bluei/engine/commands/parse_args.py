@@ -285,14 +285,14 @@ def parse_args() -> argparse.Namespace:
             "refactor phase hardcodes the Claude backend; use --fix-engine claude"
         )
     if args.discovery_scope == "python" and (
-        args.run_phase not in {"issue-cycle", "detect-only", "orchestrated"}
+        args.run_phase not in {"issue-cycle", "detect-only", "orchestrated", "e2e"}
         or args.reconcile_only or args.migrate_context or args.live_github_actions
         or args.auto_merge_sandbox or args.allow_main_commit or args.force_push
     ):
         p.error("Python scope supports local discovery or selected orchestrated repair only")
     if args.finding_id is not None:
         if (not args.finding_id.strip() or args.discovery_scope != "python"
-                or args.run_phase != "orchestrated" or args.fix_engine not in {"claude", "opencode"}
+                or args.run_phase not in {"orchestrated", "e2e"} or args.fix_engine not in {"claude", "opencode"}
                 or args.deterministic_only or args.allow_main_commit or args.force_push
                 or args.review_feedback or args.log_lesson or args.smoke_test):
             p.error("--finding-id requires Python scope, orchestrated phase, and an explicit model engine")
@@ -301,7 +301,7 @@ def parse_args() -> argparse.Namespace:
         args.max_issues_per_run = 1
         args.max_fix_attempts_per_issue = 1
         args.no_learning = True
-    elif args.discovery_scope == "python" and args.run_phase == "orchestrated":
+    elif args.discovery_scope == "python" and args.run_phase in {"orchestrated", "e2e"}:
         p.error("Python repair requires --finding-id")
     if args.no_learning:
         args.pattern_store_path = None

@@ -69,6 +69,16 @@ _SANDBOX_STRING_RULES = frozenset({
     "trailing-whitespace", "docs-legacy-reference", "docs-missing-rollback",
     "docs-quickstart-gap", "test-gap-missing-file", "test-gap-missing-case",
 })
+# Internal rule names plugin-python emits from real ruff diagnostics via its
+# _RUFF_RULE_MAP (E501/E722/B001/S108). The python plugin is a producer for
+# them too — mapping them only to the sandbox string detectors (skipped
+# under the python scope) made scoped plugin findings unverifiable.
+# python-linter-ruff is NOT listed: it emits ruff-<code> names only.
+_RUFF_MAPPED_RULES: Dict[str, tuple] = {
+    "broad-except": ("ast-python", "plugin:plugin-python"),
+    "trailing-whitespace": ("sandbox-string-detectors", "plugin:plugin-python"),
+    "hardcoded-tmp-path": ("ast-python", "plugin:plugin-python"),
+}
 
 
 def responsible_detector_ran(rule: str, outcomes: Dict[str, Dict[str, Any]]) -> bool:
@@ -95,6 +105,8 @@ def responsible_detector_ran(rule: str, outcomes: Dict[str, Dict[str, Any]]) -> 
         rule_lower.startswith("md") and rule_lower[2:3].isdigit()
     ):
         detectors = _RULE_FAMILY_DETECTORS["md-"]
+    if detectors is None:
+        detectors = _RUFF_MAPPED_RULES.get(rule_lower)
     if detectors is None and rule_lower in _AST_PYTHON_RULES:
         detectors = ("ast-python",)
     if detectors is None and rule_lower in _SANDBOX_STRING_RULES:
@@ -496,6 +508,21 @@ def verify_fix_closed(
                 f"path={finding.path} rule={finding.rule}; python discovery "
                 "scope cannot verify it (path outside scope or rule has no "
                 "python producer); finding remains open",
+            )
+            return False
+
+        if discover_fn is not None:
+            # An injected rescan carries no detector outcomes, so neither the
+            # completion gate nor the responsible-producer gate can run on
+            # it — its result is not closure evidence. Fail closed instead of
+            # trusting the injected callback. (The default-producer path
+            # above keeps its full gate.) The repository scope still accepts
+            # injected callbacks for test compatibility.
+            _append_text(
+                log_file,
+                "verification: refusing injected discover_fn under python "
+                f"discovery scope (rule={finding.rule}); an ungated rescan "
+                "is not closure evidence; finding remains open",
             )
             return False
 

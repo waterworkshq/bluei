@@ -10,7 +10,7 @@ defined here because they are only used by app/ (runner, health,
 dashboard).
 """
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from enum import Enum
 from typing import Any, Dict, Optional
 
@@ -133,10 +133,11 @@ class Run:
     # findings were already persisted, and its counts are recovered from
     # persisted state rather than reported as zero.
     scan_complete: bool = False
-    discovery_scope: str = "repository"
     # Populated only when scan_complete is False: how many of this run's
     # findings were recovered from the persisted findings file.
     findings_recovered: Optional[int] = None
+    discovery_scope: str = "repository"
+    model_invocations_by_backend: Dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

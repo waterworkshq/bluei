@@ -7,16 +7,19 @@ from bluei.engine.commands.context import RunContext
 from bluei.engine.commands.discover import run_discover_phase
 
 
-@pytest.mark.parametrize("status,selected,present,expected", [
-    ("ran", "f-selected", True, ["f-selected"]),
-    ("failed", "f-selected", True, []),
-    ("unavailable", "f-selected", True, []),
-    ("skipped", "f-selected", True, []),
-    ("ran", "absent", True, []),
-    ("ran", "f-selected", False, []),
+@pytest.mark.parametrize("status,selected,present,duplicates,expected", [
+    ("ran", "f-selected", True, False, ["f-selected"]),
+    ("failed", "f-selected", True, False, []),
+    ("unavailable", "f-selected", True, False, []),
+    ("skipped", "f-selected", True, False, []),
+    ("ran", "absent", True, False, []),
+    ("ran", "f-selected", False, False, []),
+    # Two exact copies of the selected ID: not uniquely rediscovered, so
+    # nothing is eligible and the run must fail closed.
+    ("ran", "f-selected", True, True, []),
 ])
 def test_selected_finding_requires_fresh_responsible_producer(
-    tmp_path, monkeypatch, make_finding, status, selected, present, expected
+    tmp_path, monkeypatch, make_finding, status, selected, present, duplicates, expected
 ):
     import bluei.engine.orchestrator as orchestrator
 
@@ -26,7 +29,9 @@ def test_selected_finding_requires_fresh_responsible_producer(
     def discover(repo, outcomes=None, **kwargs):
         assert kwargs["discovery_scope"] == "python"
         outcomes["plugin:plugin-python"] = {"status": status, "count": 2}
-        return [actual, other] if present else [other]
+        if not present:
+            return [other]
+        return [actual, other, actual] if duplicates else [actual, other]
 
     monkeypatch.setattr(orchestrator, "discover_findings", discover)
     args = SimpleNamespace(run_phase="orchestrated", open_issues_cap=20,
@@ -42,3 +47,5 @@ def test_selected_finding_requires_fresh_responsible_producer(
     assert ctx.issues_data == {"issues": []}
     if not expected:
         assert result[5]
+        if status == "ran":
+            assert "selected finding was not uniquely rediscovered in this run" in result[5]

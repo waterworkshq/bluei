@@ -15,6 +15,31 @@ from bluei.app.state import StateManager
 from bluei.app.health import HealthEngine
 
 
+def test_run_positional_recovered_slot_remains_compatible():
+    from dataclasses import fields, MISSING
+    from bluei.app.models import Run
+    old_fields = [field for field in fields(Run) if field.name not in {"discovery_scope", "model_invocations_by_backend"}]
+    values = []
+    for field in old_fields:
+        if field.name == "findings_recovered":
+            values.append(17)
+        elif field.default is not MISSING:
+            values.append(field.default)
+        else:
+            values.append("fixture")
+    run = Run(*values)
+    assert run.findings_recovered == 17 and run.discovery_scope == "repository"
+
+
+def test_python_scope_e2e_alias_is_accepted(monkeypatch):
+    from bluei.engine.commands.parse_args import parse_args, normalize_run_phase
+    monkeypatch.setattr(sys, "argv", ["bluei", "--discovery-scope", "python", "--run-phase", "e2e",
+                                      "--finding-id", "f-1", "--fix-engine", "claude"])
+    args = parse_args()
+    normalize_run_phase(args)
+    assert args.run_phase == "orchestrated" and args.finding_id == "f-1"
+
+
 @pytest.mark.parametrize("extra", [
     ["--discovery-scope", "other"],
     ["--finding-id", "f-1"],

@@ -81,6 +81,9 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
             assert failed["run_completed"] is False
             assert failed["fix_attempts"] == failed["claude_invocations"] == 1
             assert failed["fixes_failed_verification"] == 1
+            assert failed["model_invocations_by_backend"] == {backend_name: 1}
+            assert failed["cost_total_usd"] > 0 and failed["learning_mode"] == "paused"
+            assert failed["blocked_reasons"] and not failed["cost_limit_reached"]
             assert not list(state.glob("*.patch"))
     issues = json.loads((state / "issues.json").read_text())["issues"]
     assert next(issue for issue in issues if issue["issue_id"] == "unrelated") == unrelated
@@ -97,6 +100,9 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
         assert "return 42" in patches[0].read_text()
         latest = json.loads((state / "status.json").read_text())["latest_run_metrics"]
         assert latest["claude_invocations"] == 1 and latest["prs_created"] == 0
+        assert latest["model_invocations_by_backend"] == {backend_name: 1}
+        run_history = [json.loads(path.read_text()) for path in (state.parent / "runs").glob("*.json")]
+        assert any(run["model_invocations_by_backend"] == {backend_name: 1} for run in run_history)
         selected_issue = next(issue for issue in issues if issue.get("finding_id") == finding_id)
         assert selected_issue["status"] == "open"
         assert selected_issue["selected_fix_patch"] == str(patches[0])

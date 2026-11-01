@@ -780,6 +780,7 @@ class RunEngine:
                     completed_metrics.get("issues_created", 0) or 0
                 )
                 run.fix_attempts = int(completed_metrics.get("fix_attempts", 0) or 0)
+                run.model_invocations_by_backend = completed_metrics.get("model_invocations_by_backend", {})
                 run.fixes_verified = int(
                     completed_metrics.get("fixes_verified", 0) or 0
                 )
@@ -817,6 +818,7 @@ class RunEngine:
                     failed_metrics = {}
                 if failed_metrics.get("run_id") == run_id:
                     run.fix_attempts = int(failed_metrics.get("fix_attempts", 0) or 0)
+                    run.model_invocations_by_backend = failed_metrics.get("model_invocations_by_backend", {})
                     run.fixes_verified = int(failed_metrics.get("fixes_verified", 0) or 0)
                     run.fixes_failed = int(failed_metrics.get("fixes_failed_verification", 0) or 0)
                 self._mark_interrupted_status(

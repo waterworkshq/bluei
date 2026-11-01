@@ -493,6 +493,14 @@ def main() -> int:
                 "fixes_verified": ctx.fixes_verified,
                 "fixes_failed_verification": ctx.fixes_failed_verification,
                 "selected_error": error, "prs_created": 0,
+                "deterministic_invocations": ctx.deterministic_invocations,
+                "model_invocations_by_backend": {args.fix_engine: ctx.claude_invocations},
+                "cost_total_usd": round(ctx.cost_tracker.cycle_total(), 6),
+                "cost_warned": ctx.cost_tracker.warned(),
+                "cost_limit_reached": ctx.cost_tracker.exceeded_limit(),
+                "learning_mode": ctx.learning_mode,
+                "blocked_reasons": ctx.blocked_reasons,
+                "blocked_events": len(ctx.blocked_reasons),
             }
             atomic_json_write(ctx.status_file, status)
             print(f"[INCOMPLETE] {error}")

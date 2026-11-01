@@ -106,7 +106,7 @@ def _preview_ineligibility_reasons(
     if classify_finding(finding) == RefactorClass.REFACTOR_CLASS:
         reasons.append("structural refactor finding routes to refactor review")
     if not _model_lane_eligible(finding):
-        reasons.append("selected preview finding is not model-lane eligible")
+        reasons.append("selected finding is not eligible for the model lane")
     if finding.confidence < args.issue_confidence_threshold:
         reasons.append(
             f"finding confidence {finding.confidence} is below the "
@@ -1652,11 +1652,14 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
     _walk_issues_data = issues_data
     _selected_fresh_finding = None
     if selected_id is not None:
-        _source_status = subprocess.run(
-            ["git", "status", "--porcelain=v1", "--untracked-files=all"], cwd=str(repo_path),
-            capture_output=True, timeout=30,
-        )
-        _source_dirty = _source_status.returncode != 0 or bool(_source_status.stdout.strip())
+        try:
+            _source_status = subprocess.run(
+                ["git", "status", "--porcelain=v1", "--untracked-files=all"], cwd=str(repo_path),
+                capture_output=True, timeout=30,
+            )
+            _source_dirty = _source_status.returncode != 0 or bool(_source_status.stdout.strip())
+        except (OSError, subprocess.TimeoutExpired):
+            _source_dirty = True
         _fresh = [
             f
             for f in ctx.eligible_findings
@@ -1705,12 +1708,11 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
                 _walk_issues_data = dict(issues_data)
                 _walk_issues_data["issues"] = _matching
                 _selected_fresh_finding = _fresh[0]
-                if args.dry_run:
-                    _reasons = _preview_ineligibility_reasons(
-                        _matching[0], _selected_fresh_finding, args
-                    )
-                    if _reasons:
-                        selected_error = "; ".join(_reasons)
+                _reasons = _preview_ineligibility_reasons(
+                    _matching[0], _selected_fresh_finding, args
+                )
+                if _reasons:
+                    selected_error = "; ".join(_reasons)
 
     queue_candidates, _escalated = _select_candidates(
         repo_path=repo_path,
@@ -1718,20 +1720,12 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
         log_file=log_file,
         gh_repo_slug=gh_repo_slug,
         args=args,
-        issues_data={"issues": []} if selected_error or (selected_id is not None and args.dry_run) else _walk_issues_data,
+        issues_data={"issues": []} if selected_id is not None else _walk_issues_data,
     )
     issues_escalated_max_retries += _escalated
 
     if selected_id is not None and not selected_error and not args.dry_run:
-        if not queue_candidates:
-            selected_error = (
-                f"selected finding {selected_id} is not eligible for the single "
-                "model attempt"
-            )
-        else:
-            # The issue record carries a stale copy of the finding fields; the
-            # attempt runs against this run's fresh finding object.
-            queue_candidates = [(queue_candidates[0][0], _selected_fresh_finding)]
+        queue_candidates = [(_matching[0], _selected_fresh_finding)]
     if selected_error or (selected_id is not None and args.dry_run):
         if selected_error:
             _append_text(log_file, f"pr-cycle: fail-closed: {selected_error}")

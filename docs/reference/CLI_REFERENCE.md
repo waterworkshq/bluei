@@ -981,7 +981,7 @@ bluei run my-app --discovery-scope python --finding-id <current-finding-id> \
 `--discovery-scope` defaults to `repository`; `python` is the only narrower scope.
 Python scans keep the full source tree but invoke only Python producers. Required
 producer failures still block routing. Completion is labeled **Python scope complete**
-and does not change repository-wide findings counts or health/history.
+and does not recalculate repository-wide health/history; scoped findings are still recorded.
 
 `--finding-id` requires Python scope, the orchestrated phase, and an explicit
 `claude` or `opencode` backend. Every attempt starts with fresh discovery; missing,

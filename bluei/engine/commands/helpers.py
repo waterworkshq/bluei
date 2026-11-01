@@ -423,6 +423,9 @@ def update_status_artifact(
             ("verification_only_command", build_verification_only_command),
             ("docs_index_refresh_command", build_docs_index_refresh_command),
         ):
+            if key == "refactor_cycle_command" and args.fix_engine == "opencode":
+                status.pop(key, None)
+                continue
             status[key] = build(args)
     status["detector_catalog"] = DETECTOR_CATALOG
     latest_run_metrics = dict(

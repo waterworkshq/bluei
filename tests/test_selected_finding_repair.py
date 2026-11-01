@@ -142,9 +142,11 @@ class TestSelectedFailClosed:
         before = [dict(issue) for issue in issues]
         ctx = _ctx(tmp_path, _selected_args(tmp_path), issues, eligible=[_fresh_finding()])
         ctx.detector_outcomes = {"plugin:plugin-python": {"status": status}}
-        with patch("bluei.engine.commands.pr_cycle.apply_claude_fix") as fix:
+        with patch("bluei.engine.commands.pr_cycle.apply_claude_fix") as fix, patch(
+            "bluei.engine.commands.pr_cycle.create_worktree", side_effect=AssertionError("repair boundary reached")
+        ):
             result = run_pr_cycle_phase(ctx)
-        assert result["selected_error"] and result["fix_attempts"] == 0
+        assert "not a single fresh eligible" in result["selected_error"] and result["fix_attempts"] == 0
         assert issues == before
         fix.assert_not_called()
 
@@ -152,10 +154,37 @@ class TestSelectedFailClosed:
         issues = [_issue()]
         ctx = _ctx(tmp_path, _selected_args(tmp_path), issues)
         ctx.findings = [_fresh_finding()]
-        with patch("bluei.engine.commands.pr_cycle.apply_claude_fix") as fix:
+        with patch("bluei.engine.commands.pr_cycle.apply_claude_fix") as fix, patch(
+            "bluei.engine.commands.pr_cycle.create_worktree", side_effect=AssertionError("repair boundary reached")
+        ):
             result = run_pr_cycle_phase(ctx)
-        assert result["selected_error"] and issues[0]["status"] == "open"
+        assert "not a single fresh eligible" in result["selected_error"] and issues[0]["status"] == "open"
         fix.assert_not_called()
+
+    @pytest.mark.parametrize("fresh_fields", [{"confidence": 0.1}, {"rule": "ruff-F999"}])
+    def test_non_dry_selection_validates_fresh_not_stale_issue(self, tmp_path, fresh_fields):
+        import copy
+        issue = _issue()
+        before = copy.deepcopy(issue)
+        ctx = _ctx(tmp_path, _selected_args(tmp_path), [issue], eligible=[_fresh_finding(**fresh_fields)])
+        with patch("bluei.engine.commands.pr_cycle.apply_claude_fix") as model, patch(
+            "bluei.engine.commands.pr_cycle.create_worktree", side_effect=AssertionError("repair boundary reached")
+        ):
+            result = run_pr_cycle_phase(ctx)
+        assert result["selected_error"] and ctx.issues_data["issues"] == [before]
+        assert result["fix_attempts"] == 0
+        model.assert_not_called()
+
+    @pytest.mark.parametrize("error", [OSError("git unavailable"), __import__("subprocess").TimeoutExpired("git", 30)])
+    def test_unavailable_source_status_is_recorded_fail_closed(self, tmp_path, error):
+        ctx = _ctx(tmp_path, _selected_args(tmp_path), [_issue()], eligible=[_fresh_finding()])
+        with patch("bluei.engine.commands.pr_cycle.subprocess.run", side_effect=error), patch(
+            "bluei.engine.commands.pr_cycle.apply_claude_fix"
+        ) as model:
+            result = run_pr_cycle_phase(ctx)
+        assert "not a single fresh eligible" in result["selected_error"]
+        assert result["fix_attempts"] == 0
+        model.assert_not_called()
 
     def test_duplicate_issue_records_fail_closed_untouched(self, tmp_path):
         dupes = [_issue(), _issue(issue_id="i-dup-2")]

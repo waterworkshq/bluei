@@ -240,6 +240,7 @@ def run_finalize_phase(*args, **kwargs) -> int:
             "blocked_events": len(blocked_reasons),
             "blocked_reasons": blocked_reasons,
             "claude_invocations": claude_invocations,
+            "model_invocations_by_backend": {getattr(args, "fix_engine", "claude"): claude_invocations},
             "deterministic_invocations": deterministic_invocations,
             "cost_total_usd": round(cost_tracker.cycle_total(), 6),
             "cost_warned": cost_tracker.warned(),

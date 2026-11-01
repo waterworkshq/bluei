@@ -89,6 +89,20 @@ _AST_SKIP_DIRS = {
 
 _TS_SKIP_DIRS = _AST_SKIP_DIRS | {"dist", "build", ".next", "coverage", "vendor"}
 
+# Internal rule names plugin-python emits from actual ruff diagnostics via its
+# _RUFF_RULE_MAP (E501/E722/B001/S108). Under the python discovery scope the
+# plugin is restricted to ruff-produced output: these mapped names plus
+# verbatim ``ruff-<code>`` rules (e.g. ruff-F821, which the core ruff
+# producer's catalog filter cannot emit) are kept, and its regex text-scan
+# rules (debt-todo-marker, discount-math-sign, ...) are dropped as declared
+# sandbox/out-of-scope material. A bare ``rule.startswith("ruff-")`` filter
+# would wrongly drop the mapped internal names.
+_PYTHON_SCOPE_PLUGIN_RUFF_RULES = frozenset({
+    "broad-except",
+    "trailing-whitespace",
+    "hardcoded-tmp-path",
+})
+
 
 # ---------------------------------------------------------------------------
 # Parameterised AST scan pipeline
@@ -439,7 +453,60 @@ def discover_findings(
         plugin_findings = run_plugin_discovery(
             repo_path, outcomes=outcomes, discovery_scope="python"
         )
-        findings.extend(plugin_findings)
+        # Keep only ruff-produced plugin rules: the E501/E722/B001/S108
+        # mapped internal names and verbatim ruff-<code> rules. The plugin's
+        # regex text-scan sandbox rules are out of scope here.
+        scoped_plugin_findings = [
+            f
+            for f in plugin_findings
+            if f.rule in _PYTHON_SCOPE_PLUGIN_RUFF_RULES
+            or f.rule.casefold().startswith("ruff-")
+        ]
+        dropped_plugin = len(plugin_findings) - len(scoped_plugin_findings)
+        if dropped_plugin:
+            _append_text(
+                log_file,
+                "python-discovery: dropped "
+                f"{dropped_plugin} plugin text-scan finding(s) "
+                "outside python discovery scope",
+            )
+            plugin_outcome = (
+                outcomes.get("plugin:plugin-python") if outcomes is not None else None
+            )
+            if isinstance(plugin_outcome, dict) and plugin_outcome.get("status") == "ran":
+                # Keep the recorded count truthful: it must describe the
+                # findings actually emitted in scope, not the raw plugin scan.
+                note = (
+                    f"{dropped_plugin} text-scan finding(s) dropped as "
+                    "outside python discovery scope"
+                )
+                plugin_outcome["count"] = len(scoped_plugin_findings)
+                plugin_outcome["reason"] = (
+                    f"{plugin_outcome['reason']}; {note}"
+                    if plugin_outcome.get("reason")
+                    else note
+                )
+        findings.extend(scoped_plugin_findings)
+
+        # Deduplicate by (path, line, rule.casefold()) so one diagnostic is
+        # not persisted/routed twice. Native producers (AST, core ruff) were
+        # appended first, so a key shared with the plugin keeps the native
+        # finding; plugin-only rules such as ruff-F821 have no native twin
+        # and survive untouched.
+        deduped: List[Finding] = []
+        seen_keys: Set[tuple] = set()
+        for f in findings:
+            key = (f.path, f.line, f.rule.casefold())
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            deduped.append(f)
+        if len(deduped) != len(findings):
+            _append_text(
+                log_file,
+                f"python-discovery: deduplicated {len(findings) - len(deduped)} "
+                "finding(s) by (path, line, rule)",
+            )
 
         _record_outcome(
             outcomes, "test-coverage", "skipped",
@@ -457,7 +524,7 @@ def discover_findings(
                 outcomes, detector, "skipped",
                 reason="outside python discovery scope",
             )
-        return findings
+        return deduped
 
     findings: List[Finding] = []
 

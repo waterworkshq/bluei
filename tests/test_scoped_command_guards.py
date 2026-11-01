@@ -248,6 +248,16 @@ def test_scoped_status_removes_stale_unsupported_fields(tmp_path, monkeypatch):
     assert "manual_one_cycle_command" in status
 
 
+def test_repository_opencode_status_omits_unsupported_refactor_command(tmp_path, monkeypatch):
+    args = _parse(["--fix-engine", "opencode", "--claude-cmd-template", "opencode run {prompt_file}"], monkeypatch)
+    (tmp_path / "status.json").write_text(json.dumps({"refactor_cycle_command": "stale-unsupported"}))
+    status = _write_status(args, tmp_path)
+    assert "refactor_cycle_command" not in status
+    for key in ("manual_one_cycle_command", "issue_cycle_command", "pr_cycle_command"):
+        parsed = _parse(shlex.split(status[key])[2:], monkeypatch)
+        assert parsed.fix_engine == "opencode"
+
+
 def test_default_scope_status_keeps_all_commands(tmp_path, monkeypatch):
     args = _parse([], monkeypatch)
     status = _write_status(args, tmp_path)
