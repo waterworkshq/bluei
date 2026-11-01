@@ -69,8 +69,6 @@ _SANDBOX_STRING_RULES = frozenset({
     "trailing-whitespace", "docs-legacy-reference", "docs-missing-rollback",
     "docs-quickstart-gap", "test-gap-missing-file", "test-gap-missing-case",
 })
-
-
 def responsible_detector_ran(rule: str, outcomes: Dict[str, Dict[str, Any]]) -> bool:
     """True only if a detector that can actually report ``rule`` ran.
 
@@ -451,6 +449,7 @@ def verify_fix_closed(
     log_file: Path,
     docs_index_file: Path = DEFAULT_DOCS_INDEX,
     discover_fn: Any = None,
+    discovery_scope: str = "repository",
 ) -> bool:
     """Re-scan the worktree and require the rule to be absent from the file.
 
@@ -464,16 +463,70 @@ def verify_fix_closed(
         docs_index_file: Path to the docs index used by the discovery engine.
         discover_fn: Optional discovery function. If None, lazily imports
             ``discover_findings`` from ``bluei.engine.orchestrator``.
+        discovery_scope: ``"repository"`` (default) or ``"python"``. Under the
+            python scope an out-of-scope (non-``.py``) finding is refused up
+            front — before any custom ``discover_fn`` is injected — and the
+            rescan runs the python-only discovery branch with the same
+            responsible-producer gate.
 
     Returns:
         True if the finding is gone (fix closed), False if it still fires.
     """
+    if discovery_scope not in ("repository", "python"):
+        raise ValueError(
+            f"unknown discovery_scope {discovery_scope!r}; "
+            "expected 'repository' or 'python'"
+        )
+
+    if discovery_scope == "python":
+        if str(finding.rule).casefold() == "ruff-e722":
+            _append_text(log_file, "verification: raw E722 repair is outside this bounded Python scope")
+            return False
+        # A Python path alone cannot make an unrelated rule verifiable.
+        python_producers_ran = {
+            "ast-python": {"status": "ran"},
+            "python-linter-ruff": {"status": "ran"},
+            "plugin:plugin-python": {"status": "ran"},
+        }
+        if not str(finding.path).endswith(".py") or not responsible_detector_ran(
+            finding.rule, python_producers_ran
+        ):
+            _append_text(
+                log_file,
+                "verification: refusing out-of-scope finding "
+                f"path={finding.path} rule={finding.rule}; python discovery "
+                "scope cannot verify it (path outside scope or rule has no "
+                "python producer); finding remains open",
+            )
+            return False
+
+        if discover_fn is not None:
+            # An injected rescan carries no detector outcomes, so neither the
+            # completion gate nor the responsible-producer gate can run on
+            # it — its result is not closure evidence. Fail closed instead of
+            # trusting the injected callback. (The default-producer path
+            # above keeps its full gate.) The repository scope still accepts
+            # injected callbacks for test compatibility.
+            _append_text(
+                log_file,
+                "verification: refusing injected discover_fn under python "
+                f"discovery scope (rule={finding.rule}); an ungated rescan "
+                "is not closure evidence; finding remains open",
+            )
+            return False
+
     if discover_fn is None:
         from bluei.engine.orchestrator import discover_findings as _default_discover
 
         outcomes: Dict[str, Dict[str, Any]] = {}
+        rescan_kwargs: Dict[str, Any] = (
+            {"discovery_scope": discovery_scope}
+            if discovery_scope != "repository"
+            else {}
+        )
         rescanned = _default_discover(
             worktree_path, docs_index_file=docs_index_file, outcomes=outcomes,
+            **rescan_kwargs,
         )
         if any(
             outcome.get("status") in ("failed", "unavailable")
@@ -500,7 +553,14 @@ def verify_fix_closed(
             )
             return False
     else:
-        rescanned = discover_fn(worktree_path, docs_index_file=docs_index_file)
+        if discovery_scope != "repository":
+            rescanned = discover_fn(
+                worktree_path,
+                docs_index_file=docs_index_file,
+                discovery_scope=discovery_scope,
+            )
+        else:
+            rescanned = discover_fn(worktree_path, docs_index_file=docs_index_file)
     still_firing = [
         f
         for f in rescanned

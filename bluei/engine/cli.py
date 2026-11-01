@@ -80,12 +80,14 @@ def main() -> int:
     """
     args = parse_args()
     normalize_run_phase(args)
+    if getattr(args, "no_learning", False):
+        args.pattern_store_path = None
     PER_REPO_BASELINE_CHECKS = resolve_baseline_checks(args)
 
     repo_path = Path(args.repo_path)
 
     # Phase 4: log mnemo availability
-    mnemo_ok = is_mnemo_available(repo_path)
+    mnemo_ok = not getattr(args, "no_learning", False) and is_mnemo_available(repo_path)
     if mnemo_ok:
         logger.info("mnemo available — recall and seeding enabled for this repo")
     else:
@@ -148,6 +150,7 @@ def main() -> int:
         _append_text(log_file, f"abort: {e}")
         return 2
 
+    # Selected repairs must not reconcile unrelated recovery work.
     # --- Wave 1, Item 3: Self-healing on startup ---
     try:
         locks_dir = (
@@ -155,7 +158,7 @@ def main() -> int:
             if hasattr(args, "worktree_root")
             else None
         )
-        heal_result = run_startup_self_healing(
+        heal_result = {} if getattr(args, "discovery_scope", "repository") != "repository" else run_startup_self_healing(
             repo_path=repo_path,
             log_file=log_file,
             locks_dir=locks_dir,
@@ -180,7 +183,7 @@ def main() -> int:
         batches_file = Path(
             getattr(args, "batch_state_file", str(state_file.parent / "batches.jsonl"))
         )
-        if batches_file.exists():
+        if batches_file.exists() and getattr(args, "discovery_scope", "repository") == "repository":
             batches = load_batches(batches_file)
             for record in batches:
                 bid = record.get("batch_id", "")
@@ -278,19 +281,24 @@ def main() -> int:
 
     state = load_state(state_file)
     previous_last_run_at = state.get("last_run_at")
-    open_issues, open_prs, reconcile_event = reconcile_open_workload(
-        repo_path=repo_path,
-        state=state,
-        log_file=log_file,
-        simulate_open_issues=args.simulate_open_issues,
-        simulate_open_prs=args.simulate_open_prs,
-    )
+    if getattr(args, "discovery_scope", "repository") != "repository":
+        open_issues = int(state.get("open_issues", 0))
+        open_prs = int(state.get("open_prs", 0))
+        reconcile_event = {"reason": "local scoped run; no remote reconciliation"}
+    else:
+        open_issues, open_prs, reconcile_event = reconcile_open_workload(
+            repo_path=repo_path,
+            state=state,
+            log_file=log_file,
+            simulate_open_issues=args.simulate_open_issues,
+            simulate_open_prs=args.simulate_open_prs,
+        )
     state["last_run_at"] = now_iso()
 
     # --- Construct RunContext: single source of truth for pipeline state ---
     run_issue_cycle = args.run_phase in ("issue-cycle", "orchestrated")
     run_pr_cycle = args.run_phase in ("pr-cycle", "orchestrated")
-    run_merge_cycle = args.run_phase in ("merge-cycle", "orchestrated")
+    run_merge_cycle = args.run_phase in ("merge-cycle", "orchestrated") and not getattr(args, "finding_id", None)
 
     cost_log_path = Path(state_file).parent / "cost_log.jsonl"
     governor_ledger_path = Path(state_file).parent / "governor_recommendations.jsonl"
@@ -346,6 +354,7 @@ def main() -> int:
         run_id=run_id,
         discovery=_discovery,
         pattern_store=pattern_store,
+        learning_mode="paused" if getattr(args, "no_learning", False) else "active",
         PER_REPO_BASELINE_CHECKS=PER_REPO_BASELINE_CHECKS,
         run_issue_cycle=run_issue_cycle,
         run_pr_cycle=run_pr_cycle,
@@ -378,6 +387,7 @@ def main() -> int:
         _started_status["latest_run_metrics"] = {
             "run_id": ctx.run_id,
             "run_completed": False,
+            "discovery_scope": getattr(args, "discovery_scope", "repository"),
         }
         atomic_json_write(ctx.status_file, _started_status)
         (
@@ -407,10 +417,17 @@ def main() -> int:
                 "run_id": ctx.run_id, "run_completed": False,
                 "findings_detected": len(ctx.findings),
                 "detector_outcomes": ctx.detector_outcomes,
+                "discovery_scope": getattr(args, "discovery_scope", "repository"),
             }
             atomic_json_write(ctx.status_file, status)
             print("[INCOMPLETE] Detector coverage incomplete; previous health preserved")
             return 1
+        if getattr(args, "finding_id", None) and (
+            len(ctx.eligible_findings) != 1
+            or ctx.eligible_findings[0].finding_id != args.finding_id
+        ):
+            print("[ABORT] Selected finding is absent, ambiguous, or ineligible in this fresh scan")
+            return 2
 
     # --- Contextual Fix Migration ---
     if args.migrate_context:
@@ -433,7 +450,7 @@ def main() -> int:
                 )
             print(f"Reclassified {len(changes)} findings.")
 
-    if ctx.run_issue_cycle:
+    if ctx.run_issue_cycle and not (getattr(args, "discovery_scope", "repository") == "python" and args.dry_run):
         _created, _open, _blocked = run_issue_creation_phase(ctx)
         ctx.created_issues.extend(_created)
         ctx.open_issues = _open
@@ -456,6 +473,38 @@ def main() -> int:
         ctx.state = pr_result["state"]
         ctx.issues_data = pr_result["issues_data"]
         ctx.eligible_findings = pr_result["eligible_findings"]
+        if pr_result.get("selected_error") or (
+            getattr(args, "finding_id", None) and not args.dry_run and ctx.fixes_verified != 1
+        ):
+            from bluei.engine.state import save_issues, save_state
+            error = pr_result.get("selected_error") or "Selected repair did not produce one verified fix"
+            save_issues(ctx.issues_file, ctx.issues_data)
+            save_state(ctx.state_file, ctx.state)
+            try:
+                status = json.loads(ctx.status_file.read_text())
+            except (OSError, ValueError):
+                status = {}
+            status["last_run_completed"] = False
+            status["latest_run_metrics"] = {
+                "run_id": ctx.run_id, "run_completed": False,
+                "discovery_scope": args.discovery_scope,
+                "findings_detected": len(ctx.findings), "detector_outcomes": ctx.detector_outcomes,
+                "fix_attempts": ctx.fix_attempts, "claude_invocations": ctx.claude_invocations,
+                "fixes_verified": ctx.fixes_verified,
+                "fixes_failed_verification": ctx.fixes_failed_verification,
+                "selected_error": error, "prs_created": 0,
+                "deterministic_invocations": ctx.deterministic_invocations,
+                "model_invocations_by_backend": {args.fix_engine: ctx.claude_invocations},
+                "cost_total_usd": round(ctx.cost_tracker.cycle_total(), 6),
+                "cost_warned": ctx.cost_tracker.warned(),
+                "cost_limit_reached": ctx.cost_tracker.exceeded_limit(),
+                "learning_mode": ctx.learning_mode,
+                "blocked_reasons": ctx.blocked_reasons,
+                "blocked_events": len(ctx.blocked_reasons),
+            }
+            atomic_json_write(ctx.status_file, status)
+            print(f"[INCOMPLETE] {error}")
+            return 1
     if ctx.run_merge_cycle:
         (
             ctx.merges_failed,

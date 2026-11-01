@@ -81,6 +81,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--force-push", action="store_true", default=False)
 
     # Discovery/creation policy
+    p.add_argument("--discovery-scope", choices=("repository", "python"), default="repository")
+    p.add_argument("--finding-id", help="Repair only this freshly discovered Python finding")
+    p.add_argument("--no-learning", action="store_true", default=False)
     p.add_argument("--max-issues-per-run", type=int, default=10)
     p.add_argument("--refresh-docs-index", action="store_true", default=False)
     p.add_argument("--issue-confidence-threshold", type=float, default=0.7)
@@ -148,7 +151,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--fix-engine",
-        choices=[FixEngine.DETERMINISTIC.value, FixEngine.CLAUDE.value],
+        choices=[FixEngine.DETERMINISTIC.value, FixEngine.CLAUDE.value, "opencode"],
         default=DEFAULT_FIX_ENGINE,
     )
     p.add_argument(
@@ -169,7 +172,15 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Disable auto-closing excess duplicate PRs (detection still runs)",
     )
-    p.add_argument("--claude-cmd-template", default=DEFAULT_CLAUDE_CMD_TEMPLATE)
+    p.add_argument(
+        "--claude-cmd-template",
+        default=None,
+        help=(
+            "Command template for the fix-engine backend. Defaults to the "
+            "Claude CLI template; required for --fix-engine opencode because "
+            "the default template targets the wrong backend"
+        ),
+    )
 
     # Fix scope policy
     p.add_argument("--max-files-changed", type=int, default=5)
@@ -254,6 +265,46 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = p.parse_args()
+    # Template sentinel: None means "not specified". The Claude default is
+    # applied only for the Claude backend; opencode must get an explicit
+    # template (the app path passes a matching one) so a direct opencode run
+    # can never silently send prompts to the wrong backend. An explicitly
+    # selected template is operator config and is not otherwise validated.
+    if args.claude_cmd_template is None:
+        if args.fix_engine == "opencode" and args.run_phase in {"pr-cycle", "orchestrated", "e2e"}:
+            p.error(
+                "--fix-engine opencode requires --claude-cmd-template: the "
+                "default template targets the Claude CLI backend, not opencode"
+            )
+        args.claude_cmd_template = DEFAULT_CLAUDE_CMD_TEMPLATE
+    if args.fix_engine == "opencode" and args.run_phase == "refactor-cycle":
+        # The refactor phase still hardcodes the Claude backend; an explicit
+        # operator template must not sneak opencode past that limitation.
+        p.error(
+            "--fix-engine opencode is not supported for refactor-cycle: the "
+            "refactor phase hardcodes the Claude backend; use --fix-engine claude"
+        )
+    if args.discovery_scope == "python" and (
+        args.run_phase not in {"issue-cycle", "detect-only", "orchestrated", "e2e"}
+        or args.reconcile_only or args.migrate_context or args.live_github_actions
+        or args.auto_merge_sandbox or args.allow_main_commit or args.force_push
+    ):
+        p.error("Python scope supports local discovery or selected orchestrated repair only")
+    if args.finding_id is not None:
+        if (not args.finding_id.strip() or args.discovery_scope != "python"
+                or args.run_phase not in {"orchestrated", "e2e"} or args.fix_engine not in {"claude", "opencode"}
+                or args.deterministic_only or args.allow_main_commit or args.force_push
+                or args.review_feedback or args.log_lesson or args.smoke_test):
+            p.error("--finding-id requires Python scope, orchestrated phase, and an explicit model engine")
+        args.batch_pr_enabled = False
+        args.max_prs_per_run = 1
+        args.max_issues_per_run = 1
+        args.max_fix_attempts_per_issue = 1
+        args.no_learning = True
+    elif args.discovery_scope == "python" and args.run_phase in {"orchestrated", "e2e"}:
+        p.error("Python repair requires --finding-id")
+    if args.no_learning:
+        args.pattern_store_path = None
 
     # Ensure a basic handler is configured so logger.info(...) prints to stderr
     if not logging.getLogger().handlers:

@@ -44,6 +44,18 @@ rules:
     complexity: low
     languages: [python]
 
+  ruff-F821:
+    description: "undefined name — resolve the reference or define/import the name"
+    prompt_hint: |
+      Fix the undefined name reported by ruff F821.
+      - If the name is a typo of an existing name in scope, correct the reference.
+      - If the name is defined elsewhere, add the missing import or attribute path.
+      - If the name is genuinely missing, add the smallest correct definition.
+      - Do not silence the error via globals(), exec, getattr chains, or wildcard imports.
+      - Keep behavior and public APIs unchanged.
+    complexity: medium
+    languages: [python]
+
   type-untyped-import:
     description: "untyped import or missing declaration file in TypeScript"
     prompt_hint: |

@@ -161,7 +161,9 @@ Scans the project for specks and reports what it finds without
 creating any issues, PRs, or making any changes.{RESET}
 
 {BOLD}Usage:{RESET}
-  bluei duster {CYAN}<project-name>{RESET}
+  bluei duster {CYAN}<project-name>{RESET} [--discovery-scope python]
+
+Python scope reports only Python coverage and preserves repository-wide health.
 """,
     "doctor": f"""{BOLD}bluei doctor{RESET} [{CYAN}<name>{RESET}]
 
@@ -183,6 +185,13 @@ Equivalent to running scan → clean → verify in sequence.{RESET}
 {BOLD}Options:{RESET}
   --dry-run                     Preview without making changes
   --fix-engine {CYAN}<engine>{RESET}     Fix engine: auto, deterministic, claude, opencode
+  --discovery-scope python       Limit discovery to Python; preserve repository health
+  --finding-id {CYAN}<id>{RESET}         Select one freshly discovered Python finding
+  --no-learning                 Disable pattern replay and learning
+
+Selected repair requires --discovery-scope python and an explicit model engine.
+It permits one attempt, disables learning/batching/publication/merge, and retains
+repository-wide health. Real execution requires --no-dry-run and model authorization.
 """,
     "secrets": f"""{BOLD}bluei secrets{RESET} {CYAN}<path>{RESET}
 

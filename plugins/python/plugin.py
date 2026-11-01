@@ -74,12 +74,18 @@ class Plugin(ToolWrapperPlugin):
             manifest = yaml.safe_load(f)
         super().__init__(manifest)
 
-    def parse_output(self, output: str, repo_path: Path) -> List[Finding]:
+    def parse_output(
+        self, output: str, repo_path: Path, raw_rule_ids: bool = False
+    ) -> List[Finding]:
         """Parse ruff JSON output into Findings.
 
         Args:
             output: Raw JSON string from ``ruff --output-format json``.
             repo_path: Repository root used for computing relative paths.
+            raw_rule_ids: Preserve verbatim ``ruff-<CODE>`` rules instead of
+                mapping known codes to internal rule names. Used by the
+                python discovery scope so provenance stays on the actual
+                tool diagnostic.
 
         Returns:
             List of Findings, one per ruff diagnostic with a non-empty code.
@@ -100,7 +106,11 @@ class Plugin(ToolWrapperPlugin):
             code = item.get("code", "")
             if not code:
                 continue
-            rule = self._RUFF_RULE_MAP.get(code, f"ruff-{code}")
+            rule = (
+                f"ruff-{code}"
+                if raw_rule_ids
+                else self._RUFF_RULE_MAP.get(code, f"ruff-{code}")
+            )
             loc = item.get("location", {})
             line = loc.get("row", 1)
             raw_path = item.get("filename") or item.get("path")
@@ -238,15 +248,28 @@ class Plugin(ToolWrapperPlugin):
 
         Args:
             repo_path: Repository root to scan.
-            config: Plugin configuration dict (unused by this plugin).
+            config: Plugin configuration dict. ``{"ruff_only": True}``
+                restricts discovery to the actual ruff tool run (parsed with
+                verbatim ``ruff-<CODE>`` rules): no regex text-scan findings
+                and no text-scan fallback when the tool is unavailable.
 
         Returns:
-            Merged list of Findings from tool output and text scanning.
+            Merged list of Findings from tool output and text scanning, or
+            only tool findings when ``ruff_only`` is set.
         """
+        ruff_only = bool((config or {}).get("ruff_only"))
         tool_findings = []
         output = self._run_tool(repo_path, extra_args=["."])
         if output is not None:
-            tool_findings = self.parse_output(output, repo_path)
+            tool_findings = self.parse_output(
+                output, repo_path, raw_rule_ids=ruff_only
+            )
+
+        if ruff_only:
+            # Provenance-complete mode for the python discovery scope: a
+            # clean real-tool run must emit nothing, so no text-scan
+            # fallback and no mapped internal rule names.
+            return tool_findings
 
         text_findings = self._text_scan(repo_path)
 

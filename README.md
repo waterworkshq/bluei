@@ -162,7 +162,9 @@ bluei finds across **8 language categories** using 7 built-in tools plus 3 optio
 | Markdown | markdownlint | Style: header spacing, bare URLs, hard tabs, line length |
 | All | gitleaks | Secrets: AWS keys, GitHub tokens, API keys, private keys, high-entropy strings |
 
-All detectors run on every `bluei scan`, `bluei duster`, or `bluei run`. Tools that aren't installed are skipped gracefully. Plugins can extend discovery to additional languages via `PluginLoader`.
+Repository-wide discovery is the default. Missing applicable tools or parser failures make the scan incomplete and block routing. `bluei duster <name> --discovery-scope python` explicitly scans only Python producers while retaining the full source tree; it reports Python-scoped completion without updating repository-wide health. Plugins can extend discovery to additional languages via `PluginLoader`.
+
+For one model-assisted Python attempt, use `bluei run <name> --discovery-scope python --finding-id <current-id> --fix-engine claude --no-dry-run` after authorizing source sharing and backend spending. Fresh discovery must confirm that exact finding. The selected lane disables batching, learning/replay, publication, and merge; it does not fall back to another finding or backend. See the [CLI reference](docs/reference/CLI_REFERENCE.md#23-run) for boundaries.
 
 ---
 
@@ -348,7 +350,8 @@ Key design principles:
 | Area | Status | Notes |
 |------|--------|-------|
 | Local patch preview | Available; unreleased | `fix-preview` retains one safe Ruff F401 patch/report without changing the source checkout. This is narrower than the ordinary fixing engine. |
-| Trustworthy scan-and-fix | Under review | Explicit detector outcomes, fixture-scoped assumptions, and reversible deterministic attempts. Incomplete scans cannot claim clean health or close unverified findings. No new release tag. |
+| Trustworthy scan-and-fix | Merged; unreleased | Explicit detector outcomes, fixture-scoped assumptions, and reversible deterministic attempts. Incomplete scans cannot claim clean health or close unverified findings. No new release tag. |
+| Bounded Python repair | Under review | Python-scoped discovery and one freshly selected model-assisted attempt, without repository-wide health changes, replay/learning, publication, or merge. Real model qualification remains separately gated. |
 | Substantive application qualification | Not passed | Three reproduced application runtime defects still lack validated deterministic repairs; a known deadlock was missed. Controlled arithmetic acceptance is separate evidence. Model-assisted qualification awaits explicit source-sharing and spending authorization. |
 | v0.2.0-alpha.1 "Evidence" | Delivered | Flywheel Ledger + Pattern Court Lite: deterministic-vs-LLM metrics, cascade-stage counts, honest three-way replay outcomes, savings, and Pattern Court Lite explainability |
 | v0.2.0-alpha.2 "Safe Learning" | Delivered | Governance substrate (Operator Control Plane, Golden Validation Bundles, Dry Replay, SPRT demotion, bluei learn CLI). Ships inert — evidence population in alpha.3. |

@@ -63,6 +63,12 @@ def _build_base_cycle_command(args: argparse.Namespace) -> List[str]:
         "--claude-cmd-template",
         str(args.claude_cmd_template),
     ]
+    if getattr(args, "discovery_scope", "repository") != "repository":
+        cmd.extend(["--discovery-scope", args.discovery_scope])
+    if getattr(args, "finding_id", None):
+        cmd.extend(["--finding-id", args.finding_id])
+    if getattr(args, "no_learning", False):
+        cmd.append("--no-learning")
     if getattr(args, "refresh_docs_index", False):
         cmd.append("--refresh-docs-index")
     if getattr(args, "live_github_actions", False):
@@ -110,8 +116,9 @@ def build_orchestrated_cycle_command(args: argparse.Namespace) -> str:
         "--run-phase",
         "orchestrated",
         "--no-dry-run",
-        "--auto-merge-sandbox",
     ]
+    if getattr(args, "discovery_scope", "repository") == "repository" and not getattr(args, "finding_id", None):
+        cmd.append("--auto-merge-sandbox")
     return command_list_to_shell(cmd)
 
 

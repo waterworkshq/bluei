@@ -240,6 +240,9 @@ def run_finalize_phase(*args, **kwargs) -> int:
             "blocked_events": len(blocked_reasons),
             "blocked_reasons": blocked_reasons,
             "claude_invocations": claude_invocations,
+            "model_invocations_by_backend": {
+                "opencode" if getattr(args, "fix_engine", "claude") == "opencode" else "claude": claude_invocations
+            },
             "deterministic_invocations": deterministic_invocations,
             "cost_total_usd": round(cost_tracker.cycle_total(), 6),
             "cost_warned": cost_tracker.warned(),
@@ -251,6 +254,7 @@ def run_finalize_phase(*args, **kwargs) -> int:
             # from a complete zero-finding scan.
             "run_completed": True,
             "run_id": getattr(ctx, "run_id", "") if ctx else "",
+            "discovery_scope": getattr(args, "discovery_scope", "repository"),
             "detector_outcomes": (
                 getattr(ctx, "detector_outcomes", {}) if ctx else {}
             ),
@@ -366,6 +370,9 @@ def run_finalize_phase(*args, **kwargs) -> int:
     if (
         args.run_phase in ("issue-cycle", "pr-cycle", "merge-cycle", "orchestrated")
         and not args.reconcile_only
+        # no_learning must gate the lesson WRITE (reads above stay live);
+        # selected python-scope repair sets no_learning and must not append.
+        and not getattr(args, "no_learning", False)
     ):
         broke_parts: List[str] = []
         changed_parts: List[str] = []

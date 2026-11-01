@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import fcntl
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -127,6 +127,9 @@ class RunOptions:
     dry_run: bool = True
     fix_engine: Optional[str] = None
     allow_review_push: bool = False
+    discovery_scope: str = "repository"
+    finding_id: Optional[str] = None
+    no_learning: bool = False
 
 
 @dataclass
@@ -351,7 +354,7 @@ class RunEngine:
             str(config.cooldowns.get("staleness_seconds", 7200)),
             # Fix engine
             "--fix-engine",
-            str(backend["runner_engine"]),
+            str(backend["logical_backend"] if options.finding_id is not None else backend["runner_engine"]),
         ]
 
         # Dry run
@@ -364,12 +367,19 @@ class RunEngine:
         if backend["runner_engine"] == "claude" and backend.get("template"):
             args.extend(["--claude-cmd-template", str(backend["template"])])
 
-        # GitHub flags
-        if config.github.get("live_actions", False):
+        if options.discovery_scope != "repository":
+            args.extend(["--discovery-scope", options.discovery_scope])
+        if options.finding_id is not None:
+            args.extend(["--finding-id", options.finding_id])
+        if options.no_learning or options.finding_id is not None:
+            args.append("--no-learning")
+
+        # Scoped runs never publish or merge.
+        if config.github.get("live_actions", False) and options.discovery_scope == "repository":
             args.append("--live-github-actions")
-        if config.github.get("auto_merge", False):
+        if config.github.get("auto_merge", False) and options.discovery_scope == "repository":
             args.append("--auto-merge-sandbox")
-        if config.github.get("auto_rebase", {}).get("enabled", True):
+        if config.github.get("auto_rebase", {}).get("enabled", True) and options.discovery_scope == "repository":
             args.append("--auto-rebase-enabled")
             rebase_max = config.github.get("auto_rebase", {}).get(
                 "max_prs_per_sweep", 5
@@ -380,9 +390,10 @@ class RunEngine:
         if config.baseline_checks:
             args.extend(["--baseline-checks", json.dumps(config.baseline_checks)])
 
-        # Pattern store path
-        pattern_store_path = self.state.get_fix_patterns_file(repo_name)
-        args.extend(["--pattern-store-path", str(pattern_store_path)])
+        # Selected trials neither replay nor learn patterns.
+        if not options.no_learning and options.finding_id is None:
+            pattern_store_path = self.state.get_fix_patterns_file(repo_name)
+            args.extend(["--pattern-store-path", str(pattern_store_path)])
 
         # Auto-tune overrides — read from state/auto_tune.json and apply
         tune_path = self.config.workspace / "state" / "auto_tune.json"
@@ -639,11 +650,27 @@ class RunEngine:
         """Execute a run for a repo."""
         repo_name = repo.config.name
         run_id = generate_id("run")
+        if options.phase == "e2e":
+            options = replace(options, phase="orchestrated")
+        if options.discovery_scope not in {"repository", "python"}:
+            raise ValueError("Unknown discovery scope")
+        if options.discovery_scope == "python" and options.phase not in {"issue-cycle", "orchestrated"}:
+            raise ValueError("Python scope supports discovery or selected orchestrated repair only")
+        if options.finding_id is not None and (
+            not options.finding_id.strip() or options.discovery_scope != "python"
+            or options.phase != "orchestrated" or options.fix_engine not in {"claude", "opencode"}
+        ):
+            raise ValueError("Selected repair requires Python scope and an explicit model engine")
+        if options.discovery_scope == "python" and options.phase == "orchestrated" and options.finding_id is None:
+            raise ValueError("Python repair requires a finding ID")
 
-        # Clean up stale artifacts from previous runs
-        self._cleanup_stale_artifacts()
+        # A selected trial must not prune unrelated worktrees or recovery locks.
+        if options.discovery_scope == "repository" and options.finding_id is None:
+            self._cleanup_stale_artifacts()
 
         resolved_backend = self._resolve_backend(repo, options.fix_engine)
+        if options.finding_id is not None and resolved_backend["logical_backend"] != options.fix_engine:
+            raise ValueError("Selected model backend is unavailable; no fallback is allowed")
 
         # Create run record
         run = Run(
@@ -654,6 +681,9 @@ class RunEngine:
             dry_run=options.dry_run,
             fix_engine=str(resolved_backend["logical_backend"]),
             status="running",
+            discovery_scope=options.discovery_scope,
+            health_before=repo.current_health_score,
+            health_after=repo.current_health_score,
         )
 
         # Build CLI args for sandbox-backed phases only
@@ -726,6 +756,7 @@ class RunEngine:
                                  if isinstance(record, dict)]
             scan_complete = bool(
                 scanning_phase and completed_metrics is not None
+                and completed_metrics.get("discovery_scope", "repository") == options.discovery_scope
                 and "ran" in detector_statuses
                 and not any(status in {"failed", "unavailable"} for status in detector_statuses)
             )
@@ -751,6 +782,7 @@ class RunEngine:
                     completed_metrics.get("issues_created", 0) or 0
                 )
                 run.fix_attempts = int(completed_metrics.get("fix_attempts", 0) or 0)
+                run.model_invocations_by_backend = completed_metrics.get("model_invocations_by_backend", {})
                 run.fixes_verified = int(
                     completed_metrics.get("fixes_verified", 0) or 0
                 )
@@ -782,6 +814,15 @@ class RunEngine:
                     recovered = self._new_persisted_findings(repo_name, findings_offset)
                 run.findings_detected = recovered if recovered is not None else 0
                 run.findings_recovered = recovered
+                try:
+                    failed_metrics = json.loads((self.state._get_state_dir(repo_name) / "status.json").read_text()).get("latest_run_metrics", {})
+                except (OSError, ValueError):
+                    failed_metrics = {}
+                if failed_metrics.get("run_id") == run_id:
+                    run.fix_attempts = int(failed_metrics.get("fix_attempts", 0) or 0)
+                    run.model_invocations_by_backend = failed_metrics.get("model_invocations_by_backend", {})
+                    run.fixes_verified = int(failed_metrics.get("fixes_verified", 0) or 0)
+                    run.fixes_failed = int(failed_metrics.get("fixes_failed_verification", 0) or 0)
                 self._mark_interrupted_status(
                     repo_name,
                     options.phase,
@@ -799,8 +840,8 @@ class RunEngine:
                     ),
                 )
 
-            if not scanning_phase:
-                # A completed repair/merge phase is not evidence of a new scan.
+            if not scanning_phase or options.discovery_scope != "repository":
+                # Scoped scans are not repository-wide health evidence.
                 self.registry.update(repo_name, {
                     "status": RepoStatus.READY.value,
                     "last_run_at": now_iso(),

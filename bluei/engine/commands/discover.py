@@ -82,6 +82,8 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
             log_file=log_file,
             docs_index_file=docs_index_file,
             outcomes=detector_outcomes,
+            **({"discovery_scope": args.discovery_scope}
+               if getattr(args, "discovery_scope", "repository") != "repository" else {}),
         )
     elif not cap_ok:
         detector_outcomes["discovery"] = {
@@ -106,6 +108,7 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
         atomic_json_write(ctx.status_file.parent / "discovery-current.json", {
             "run_id": ctx.run_id, "findings_detected": len(findings),
             "findings_written": written_findings, "detector_outcomes": detector_outcomes,
+            "discovery_scope": getattr(args, "discovery_scope", "repository"),
         })
     _append_text(
         log_file,
@@ -172,6 +175,28 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
                 "findings_written": written_findings, "detector_outcomes": detector_outcomes,
             })
         return (findings, written_findings, [], findings, [], blocked_reasons, cap_ok)
+
+    selected_id = getattr(args, "finding_id", None)
+    if getattr(args, "discovery_scope", "repository") == "python":
+        routed_findings = [f for f in routed_findings if f.rule.casefold() != "ruff-e722"]
+        if len(routed_findings) != len(findings):
+            _append_text(log_file, "discovery: raw E722 retained as non-actionable diagnostics")
+        if selected_id is not None and any(
+            f.finding_id == selected_id and f.rule.casefold() == "ruff-e722"
+            for f in findings
+        ):
+            blocked_reasons.append("selected raw E722 repair is unsupported in Python scope")
+            return (findings, written_findings, [], [], [], blocked_reasons, cap_ok)
+    if selected_id is not None:
+        routed_findings = [finding for finding in routed_findings if finding.finding_id == selected_id]
+        if len(routed_findings) != 1:
+            blocked_reasons.append("selected finding was not uniquely rediscovered in this run")
+            return (findings, written_findings, [], [], [], blocked_reasons, cap_ok)
+        from bluei.engine.validation import responsible_detector_ran
+        if not responsible_detector_ran(routed_findings[0].rule, detector_outcomes):
+            blocked_reasons.append("selected finding's responsible detector did not complete")
+            return (findings, written_findings, [], [], [], blocked_reasons, cap_ok)
+
     eligible_findings, suppressed_findings = filter_findings_by_cooldown(
         findings=routed_findings,
         state=state,
@@ -203,6 +228,10 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
                 log_file,
                 f"discovery-skip-summary: untracked_findings={untracked_count}",
             )
+
+    if getattr(args, "discovery_scope", "repository") == "python" and args.dry_run:
+        return (findings, written_findings, eligible_findings, suppressed_findings,
+                [], blocked_reasons, cap_ok)
 
     refactor_findings: List[Finding] = []
     remaining_findings: List[Finding] = []
