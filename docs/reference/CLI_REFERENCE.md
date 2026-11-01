@@ -989,6 +989,10 @@ ambiguous, suppressed, or ineligible IDs do not select another finding. The sele
 lane permits one model attempt, disables batching, replay/learning, GitHub publication,
 and merge, and does not process unrelated issues. `--no-learning` is also available
 for ordinary runs. F821 uses the model lane, never deterministic autofix.
+`lock-self-reentry` is also eligible through explicit selection only; ordinary
+repair keeps it diagnostic. Review the retained patch and independently validate
+application liveness, metric behavior, and synchronization. Diagnostic closure
+alone does not establish a correct concurrency repair.
 
 Selecting a backend does not grant permission to transmit source or incur charges.
 Obtain that authorization and configure backend-enforced spending limits separately;

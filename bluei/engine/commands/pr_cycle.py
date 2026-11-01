@@ -110,7 +110,13 @@ def _preview_ineligibility_reasons(
         reasons.append("raw E722 repair is outside this bounded Python scope")
     if classify_finding(finding) == RefactorClass.REFACTOR_CLASS:
         reasons.append("structural refactor finding routes to refactor review")
-    if not _model_lane_eligible(finding):
+    # Bounded exception: only the operator-selected lock-self-reentry finding
+    # (no model-lane rule of its own) may take the single model attempt.
+    _selected_lock_reentry = (
+        finding.rule == "lock-self-reentry"
+        and getattr(args, "finding_id", None) == finding.finding_id
+    )
+    if not _model_lane_eligible(finding) and not _selected_lock_reentry:
         reasons.append("selected finding is not eligible for the model lane")
     if finding.confidence < args.issue_confidence_threshold:
         reasons.append(

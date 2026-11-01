@@ -77,8 +77,13 @@ Built-in rules in `DETECTOR_CATALOG` (loaded from `bluei/engine/detector_catalog
 
 ### Python lock re-entry diagnostic
 
-`lock-self-reentry` is diagnostic only; it has no context-rule, deterministic,
-or model repair route. The Python AST producer reports the held call site when
+`lock-self-reentry` has no automatic repair route. An operator may explicitly
+select a fresh finding with `--discovery-scope python --finding-id <current-id>`
+and an authorized `claude` or `opencode` backend for one model-only attempt.
+Ordinary repair, batch, cascade, deterministic autofix, and learning stay disabled
+for this rule. The retained patch still needs application-specific liveness and
+synchronization review; disappearance of the diagnostic is not behavioral proof.
+The Python AST producer reports the held call site when
 a directly imported `threading.Lock()` or `Lock()` is assigned once in a
 module-level class initializer, a straight-line `with self.<lock>` body calls a
 no-argument method on that same instance, and the same-class callee immediately
