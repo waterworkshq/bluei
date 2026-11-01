@@ -65,7 +65,11 @@ class ASTPatternMatcher:
         ]
         for pattern in applicable:
             lock_rule = pattern.id == "lock-self-reentry"
-            nodes = find_lock_reentries(tree) if lock_rule else ast.walk(tree)
+            try:
+                nodes = find_lock_reentries(tree) if lock_rule else ast.walk(tree)
+            except (RecursionError, MemoryError):
+                self.last_parse_failures.append(str(file_path))
+                continue
             for node in nodes:
                 if lock_rule or self._matches_pattern(node, pattern, tree, parent_map, source):
                     if not lock_rule and not self._post_filter(pattern.id, node, parent_map, source):

@@ -36,8 +36,12 @@ def find_lock_reentries(tree: ast.Module) -> list[ast.Call]:
     inheritance, dynamic dispatch and conditional entry acquisitions need a
     separate binding/control-flow analysis, not guessed lock identities.
     """
+    if not any((isinstance(node, ast.Import) and any(alias.name == "threading" for alias in node.names))
+               or (isinstance(node, ast.ImportFrom) and node.module == "threading") for node in tree.body):
+        return []
+    nodes = tuple(ast.walk(tree))
     bindings: Counter[str] = Counter()
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
             bindings[node.id] += 1
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -57,27 +61,34 @@ def find_lock_reentries(tree: ast.Module) -> list[ast.Call]:
                            if alias.name == "Lock" and alias.asname is None and bindings["Lock"] == 1)
     if not imports:
         return []
-    # Explicit monkey-patching of the imported constructor invalidates its proof.
-    if any(isinstance(node, ast.Attribute) and ast.unparse(node) == "threading.Lock"
-           and isinstance(node.ctx, (ast.Store, ast.Del)) for node in ast.walk(tree)):
+    # Explicit mutation invalidates the import/receiver identity proof.
+    if any(isinstance(node, ast.Attribute) and node.attr == "Lock"
+           and isinstance(node.value, ast.Name) and node.value.id == "threading"
+           and isinstance(node.ctx, (ast.Store, ast.Del)) for node in nodes):
         return []
     if any((isinstance(node, ast.Name) and node.id in {"setattr", "delattr", "exec", "vars"})
-           or (isinstance(node, ast.Attribute) and node.attr in {"setattr", "delattr", "exec", "__dict__"})
-           for node in ast.walk(tree)):
+           or (isinstance(node, ast.Attribute) and node.attr in {
+               "setattr", "delattr", "exec", "__dict__", "__setattr__", "__delattr__"})
+           for node in nodes):
         return []
+    external_writes = {node.attr for node in nodes if isinstance(node, ast.Attribute)
+                       and isinstance(node.ctx, (ast.Store, ast.Del)) and _self_attribute(node) is None}
+    mutated_classes = set()
+    for node in nodes:
+        if isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            root = node
+            while isinstance(root, (ast.Attribute, ast.Subscript)):
+                root = root.value
+            if isinstance(root, ast.Name):
+                mutated_classes.add(root.id)
+    subclassed = {base.id for node in nodes if isinstance(node, ast.ClassDef)
+                  for base in node.bases if isinstance(base, ast.Name)}
 
     matches = []
     for cls in (node for node in tree.body if isinstance(node, ast.ClassDef)):
         if cls.bases or cls.keywords or cls.decorator_list or bindings[cls.name] != 1:
             continue
-        if any(isinstance(node, (ast.Attribute, ast.Subscript))
-               and isinstance(node.ctx, (ast.Store, ast.Del))
-               and any(isinstance(root, ast.Name) and root.id == cls.name for root in ast.walk(node))
-               for node in ast.walk(tree)):
-            continue
-        if any(isinstance(node, ast.ClassDef) and any(
-            isinstance(base, ast.Name) and base.id == cls.name for base in node.bases
-        ) for node in ast.walk(tree)):
+        if cls.name in mutated_classes or cls.name in subclassed:
             continue
         definitions = [node for node in cls.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
         if len({node.name for node in definitions}) != len(definitions):
@@ -91,7 +102,7 @@ def find_lock_reentries(tree: ast.Module) -> list[ast.Call]:
         rebound_methods = {node.id for stmt in cls.body if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
                            for node in ast.walk(stmt) if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))}
         methods = {name: method for name, method in methods.items()
-                   if writes[name] == 0 and name not in rebound_methods}
+                   if writes[name] == 0 and name not in rebound_methods and name not in external_writes}
         locks = set()
         for stmt in _entry(init):
             if not isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.Expr)):
@@ -104,8 +115,16 @@ def find_lock_reentries(tree: ast.Module) -> list[ast.Call]:
                 continue
             name = _self_attribute(target)
             value = stmt.value
-            if (name and writes[name] == 1 and isinstance(value, ast.Call)
-                    and not value.args and not value.keywords and ast.unparse(value.func) in imports):
+            constructor = None
+            if isinstance(value, ast.Call):
+                if isinstance(value.func, ast.Name) and value.func.id == "Lock":
+                    constructor = "Lock"
+                elif (isinstance(value.func, ast.Attribute) and value.func.attr == "Lock"
+                      and isinstance(value.func.value, ast.Name) and value.func.value.id == "threading"):
+                    constructor = "threading.Lock"
+            if (name and writes[name] == 1 and name not in rebound_methods
+                    and name not in external_writes and isinstance(value, ast.Call)
+                    and not value.args and not value.keywords and constructor in imports):
                 locks.add(name)
         if not locks:
             continue

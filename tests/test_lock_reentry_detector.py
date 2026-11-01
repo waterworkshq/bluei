@@ -100,6 +100,9 @@ def test_separate_classes_and_duplicate_calls_are_not_generic_call_matches():
     SOURCE + "\nMonitor.__init__.__defaults__ = (replacement,)\n",
     SOURCE + "\nMonitor.snapshot.__code__ = replacement.__code__\n",
     SOURCE + "\nMonitor.__dict__['snapshot'] = replacement\n",
+    SOURCE + "\nitem = Monitor()\nitem.guard = threading.RLock()\n",
+    SOURCE.replace("    def snapshot(self):", "    guard = descriptor()\n\n    def snapshot(self):"),
+    SOURCE.replace("    def dashboard(self):", "    def reset(self):\n        object.__setattr__(self, 'snapshot', replacement)\n\n    def dashboard(self):"),
     SOURCE.replace("        with self.guard:\n            return self.snapshot()", "        self.guard.acquire()\n        return self.snapshot()"),
     SOURCE.replace("self.guard = threading.Lock()", "return\n        self.guard = threading.Lock()"),
     SOURCE.replace("self.guard = threading.Lock()", "def later():\n            self.guard = threading.Lock()"),
@@ -134,6 +137,44 @@ def test_shipped_discovery_has_producer_evidence_but_no_repair_route(tmp_path, s
     assert outcomes["ast-python"]["status"] == "ran"
     assert responsible_detector_ran(RULE, outcomes)
     assert not _model_lane_eligible(finding)
+
+
+def test_module_walk_count_does_not_grow_with_classes(monkeypatch):
+    import ast
+    import bluei.engine.ast_engine.lock_reentry as detector
+    source = "import threading\n" + "\n".join(
+        SOURCE.replace("import threading\n", "").replace("Monitor", f"Monitor{index}")
+        for index in range(30)
+    )
+    tree = ast.parse(source)
+    original_walk = ast.walk
+    module_walks = []
+    def counted_walk(node):
+        if node is tree:
+            module_walks.append(True)
+        return original_walk(node)
+    monkeypatch.setattr(detector.ast, "walk", counted_walk)
+    assert len(detector.find_lock_reentries(tree)) == 30
+    assert len(module_walks) == 1
+
+
+def test_deep_attribute_constructor_does_not_escape_matcher():
+    source = SOURCE.replace("threading.Lock()", "other." + "deep." * 1200 + "Lock()")
+    assert matches(source) == []
+
+
+@pytest.mark.parametrize("error", [RecursionError, MemoryError])
+def test_finder_resource_failure_is_incomplete_not_clean(tmp_path, monkeypatch, error):
+    import bluei.engine.ast_engine.matcher as matcher_module
+    def fail(tree):
+        raise error("bounded test")
+    monkeypatch.setattr(matcher_module, "find_lock_reentries", fail)
+    (tmp_path / "requirements.txt").write_text("")
+    (tmp_path / "monitor.py").write_text(SOURCE)
+    outcomes = {}
+    discover_findings(tmp_path, log_file=tmp_path / "scan.log", outcomes=outcomes,
+                      discovery_scope="python")
+    assert outcomes["ast-python"]["status"] == "failed"
 
 
 def test_only_the_actual_ast_producer_can_prove_rule_completion():
