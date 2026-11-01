@@ -76,11 +76,7 @@ def find_lock_reentries(tree: ast.Module) -> list[ast.Call]:
     mutated_classes = set()
     for node in nodes:
         if isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(node.ctx, (ast.Store, ast.Del)):
-            root = node
-            while isinstance(root, (ast.Attribute, ast.Subscript)):
-                root = root.value
-            if isinstance(root, ast.Name):
-                mutated_classes.add(root.id)
+            mutated_classes.update(child.id for child in ast.walk(node) if isinstance(child, ast.Name))
     subclassed = {base.id for node in nodes if isinstance(node, ast.ClassDef)
                   for base in node.bases if isinstance(base, ast.Name)}
 

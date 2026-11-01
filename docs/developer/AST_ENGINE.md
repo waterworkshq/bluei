@@ -380,6 +380,7 @@ To add a new transform handler:
 | `catalog-query-not-normalized` | bug | `Compare` | `==` comparison without `.strip()` or `.lower()` — case/whitespace-sensitive matching | 0.93 |
 | `discount-math-sign` | bug | `BinOp` | `Add` operator inside discount/price/calc functions — likely wrong sign | 0.95 |
 | `broad-except` | lint | `ExceptHandler` | Bare `except:` or `except Exception:` — catches too broadly | 0.88 |
+| `lock-self-reentry` | bug | `Call` | Diagnostic-only direct same-instance non-reentrant lock reacquisition; module-level finder | 0.90 |
 
 ### TypeScript/JavaScript Patterns
 

@@ -101,6 +101,7 @@ def test_separate_classes_and_duplicate_calls_are_not_generic_call_matches():
     SOURCE + "\nMonitor.snapshot.__code__ = replacement.__code__\n",
     SOURCE + "\nMonitor.__dict__['snapshot'] = replacement\n",
     SOURCE + "\nitem = Monitor()\nitem.guard = threading.RLock()\n",
+    SOURCE + "\nregistry[Monitor].__getattribute__ = replacement\n",
     SOURCE.replace("    def snapshot(self):", "    guard = descriptor()\n\n    def snapshot(self):"),
     SOURCE.replace("    def dashboard(self):", "    def reset(self):\n        object.__setattr__(self, 'snapshot', replacement)\n\n    def dashboard(self):"),
     SOURCE.replace("        with self.guard:\n            return self.snapshot()", "        self.guard.acquire()\n        return self.snapshot()"),
