@@ -57,7 +57,6 @@ from bluei.engine.repo_taste_loader import load_repo_taste
 from bluei.engine.rule_family import derive_rule_family
 from bluei.engine.report import infer_language_from_path
 from bluei.engine.constants import (
-    BASELINE_VALIDATION_CHECKS,
     CLAUDE_REQUIRED_RULES,
     DEFAULT_BATCH_STATE,
 )
@@ -1049,7 +1048,7 @@ def _process_one_issue(
                         ClaudeFixRequest(
                             worktree_path=worktree_path,
                             finding=finding,
-                            baseline_checks=BASELINE_VALIDATION_CHECKS,
+                            baseline_checks=PER_REPO_BASELINE_CHECKS,
                             target_checks=target_checks,
                             claude_cmd_template=resolved_tmpl,
                             max_files_changed=args.max_files_changed,

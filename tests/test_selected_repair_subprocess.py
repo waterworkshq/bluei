@@ -37,14 +37,23 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
     repo = registry.create_from_path(target, name="selected", language="python")
     repo.config.fix_engine = "claude"
     repo.config.github["live_actions"] = True  # selected lane must suppress this
-    repo.config.baseline_checks = [[sys.executable, "-c", "import ast;ast.parse(open('app.py').read())"]]
+    check_calls = tmp_path / "check-calls.jsonl"
+    check_code = (
+        "import ast; from pathlib import Path; "
+        "ast.parse(Path('app.py').read_text()); "
+        f"with_log = Path({str(check_calls)!r}); "
+        "stream = with_log.open('a'); stream.write('checked\\n'); stream.close()"
+    )
+    repo.config.baseline_checks = [[sys.executable, "-c", check_code]]
     tools = tmp_path / "tools"
     tools.mkdir()
     calls = tmp_path / "backend-calls.jsonl"
+    captured_prompt = tmp_path / "captured-prompt.md"
     backend = tools / backend_name
     backend.write_text(
         f"#!{sys.executable}\nimport json,sys\nfrom pathlib import Path\n"
         f"with Path({str(calls)!r}).open('a') as stream: stream.write(json.dumps(sys.argv[1:])+'\\n')\n"
+        f"Path({str(captured_prompt)!r}).write_text(Path(sys.argv[1]).read_text())\n"
         f"if {backend_exit} == 0:\n    Path('app.py').write_text('def answer():\\n    return 42\\n')\n"
         f"if {new_module!r}:\n    Path('helper.py').write_text('answer = 42\\n')\n    Path('app.py').write_text('from helper import answer\\n')\n"
         f"raise SystemExit({backend_exit})\n"
@@ -79,6 +88,11 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
         assert not calls.exists()
     else:
         assert len(calls.read_text().splitlines()) == 1, output
+        from bluei.engine.utils import command_list_to_shell
+        prompt = captured_prompt.read_text()
+        assert command_list_to_shell(repo.config.baseline_checks[0]) in prompt
+        assert "lint_check.py" not in prompt and "test_price.py" not in prompt
+        assert len(check_calls.read_text().splitlines()) >= 2
         assert (result.returncode == 0) == (backend_exit == 0 and not new_module), output
         if backend_exit != 0 or new_module:
             failed = json.loads((state / "status.json").read_text())["latest_run_metrics"]

@@ -254,8 +254,12 @@ class TestSelectedFailClosed:
         assert result["fix_attempts"] == 0
         fix.assert_not_called()
 
+    @pytest.mark.parametrize("baseline_checks", [
+        {},
+        {"custom-check": ["python3", "-c", "print('configured validation')"]},
+    ])
     @pytest.mark.parametrize("engine", ["claude", "opencode"])
-    def test_failed_model_attempt_is_public_failure(self, tmp_path, engine):
+    def test_failed_model_attempt_is_public_failure(self, tmp_path, engine, baseline_checks):
         issues = [_issue()]
         ctx = _ctx(
             tmp_path,
@@ -263,6 +267,7 @@ class TestSelectedFailClosed:
             issues,
             eligible=[_fresh_finding()],
         )
+        ctx.PER_REPO_BASELINE_CHECKS = baseline_checks
         with patch("bluei.engine.commands.pr_cycle.get_branch", return_value="x"), patch(
             "bluei.engine.commands.pr_cycle.apply_claude_fix",
             return_value=(1, "model exploded", "prompt.txt"),
@@ -273,9 +278,14 @@ class TestSelectedFailClosed:
             "bluei.engine.commands.pr_cycle.remove_worktree"
         ), patch(
             "bluei.engine.commands.pr_cycle.run_named_checks", return_value={}
+        ) as checks, patch(
+            "bluei.engine.lifecycle.apply_claude_fix",
+            side_effect=AssertionError("internal model fallback reached"),
         ):
             result = run_pr_cycle_phase(ctx)
         assert fix.call_count == 1
+        assert fix.call_args.args[0].baseline_checks is baseline_checks
+        assert all(call.kwargs["checks"] is baseline_checks for call in checks.call_args_list)
         assert result["claude_invocations"] == 1
         assert result["fix_attempts"] == 1
         assert result["fixes_failed_verification"] == 1
