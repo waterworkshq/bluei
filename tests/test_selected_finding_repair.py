@@ -284,7 +284,9 @@ class TestSelectedFailClosed:
         ):
             result = run_pr_cycle_phase(ctx)
         assert fix.call_count == 1
-        assert fix.call_args.args[0].baseline_checks is baseline_checks
+        assert fix.call_args.args[0].baseline_checks == {}
+        assert fix.call_args.args[0].baseline_statuses == [None] * len(baseline_checks)
+        assert fix.call_args.args[0].allow_unchanged_baseline_failures is True
         assert all(call.kwargs["checks"] is baseline_checks for call in checks.call_args_list)
         assert result["claude_invocations"] == 1
         assert result["fix_attempts"] == 1

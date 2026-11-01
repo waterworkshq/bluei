@@ -767,6 +767,11 @@ def _process_one_issue(
             log_file=log_file,
             phase="worktree-baseline",
         )
+        validation_baseline = choose_validation_baseline(
+            repo_baseline_results=baseline_results,
+            worktree_baseline_results=worktree_baseline_results,
+            log_file=log_file,
+        )
 
         target_checks = build_target_checks(finding)
 
@@ -1048,7 +1053,12 @@ def _process_one_issue(
                         ClaudeFixRequest(
                             worktree_path=worktree_path,
                             finding=finding,
-                            baseline_checks=PER_REPO_BASELINE_CHECKS,
+                            baseline_checks={},
+                            baseline_statuses=[
+                                validation_baseline.get(name, {}).get("rc")
+                                for name in PER_REPO_BASELINE_CHECKS
+                            ],
+                            allow_unchanged_baseline_failures=args.allow_unchanged_baseline_failures,
                             target_checks=target_checks,
                             claude_cmd_template=resolved_tmpl,
                             max_files_changed=args.max_files_changed,
@@ -1354,11 +1364,7 @@ def _process_one_issue(
             repo_path=worktree_path,
             worktree_path=worktree_path,
             checks={},
-            baseline_results=choose_validation_baseline(
-                repo_baseline_results=baseline_results,
-                worktree_baseline_results=worktree_baseline_results,
-                log_file=log_file,
-            ),
+            baseline_results=validation_baseline,
             post_fix_results=post_fix_results,
             target_results=target_results,
             allow_unchanged_baseline_failures=args.allow_unchanged_baseline_failures,

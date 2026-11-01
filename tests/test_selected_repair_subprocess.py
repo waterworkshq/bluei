@@ -11,12 +11,12 @@ from bluei.app.config import ConfigManager
 from bluei.app.registry import RepoRegistry
 
 
-@pytest.mark.parametrize("backend_name,backend_exit,missing_id,new_module", [
-    ("claude", 0, False, False), ("claude", 9, False, False),
-    ("claude", 0, True, False), ("opencode", 0, False, False), ("claude", 0, False, True),
-    ("opencode-e2e", 0, False, False),
+@pytest.mark.parametrize("backend_name,backend_exit,missing_id,new_module,baseline_exit", [
+    ("claude", 0, False, False, 0), ("claude", 9, False, False, 0),
+    ("claude", 0, True, False, 0), ("opencode", 0, False, False, 0), ("claude", 0, False, True, 0),
+    ("opencode-e2e", 0, False, False, 0), ("claude", 0, False, False, 1),
 ])
-def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit, missing_id, new_module):
+def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit, missing_id, new_module, baseline_exit):
     e2e = backend_name.endswith("-e2e")
     backend_name = backend_name.removesuffix("-e2e")
     root = Path(__file__).resolve().parents[1]
@@ -42,9 +42,11 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
         "import ast; from pathlib import Path; "
         "ast.parse(Path('app.py').read_text()); "
         f"with_log = Path({str(check_calls)!r}); "
-        "stream = with_log.open('a'); stream.write('checked\\n'); stream.close()"
+        "stream = with_log.open('a'); stream.write('checked\\n'); stream.close(); "
+        f"raise SystemExit({baseline_exit})"
     )
-    repo.config.baseline_checks = [[sys.executable, "-c", check_code]]
+    secret = "inline-credential-must-not-reach-model"
+    repo.config.baseline_checks = [[sys.executable, "-c", check_code, "--password", secret]]
     tools = tmp_path / "tools"
     tools.mkdir()
     calls = tmp_path / "backend-calls.jsonl"
@@ -90,8 +92,14 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
         assert len(calls.read_text().splitlines()) == 1, output
         from bluei.engine.utils import command_list_to_shell
         prompt = captured_prompt.read_text()
-        assert command_list_to_shell(repo.config.baseline_checks[0]) in prompt
+        assert command_list_to_shell(repo.config.baseline_checks[0]) not in prompt
+        assert secret not in prompt and str(check_calls) not in prompt
         assert "lint_check.py" not in prompt and "test_price.py" not in prompt
+        assert "Baseline check 1" in prompt
+        assert ("pre-fix: failed" if baseline_exit else "pre-fix: passed") in prompt
+        assert "engine reruns the private configured commands" in prompt
+        assert "unchanged failures" in prompt
+        assert "fail (non-zero exit) if they do not pass" not in prompt
         assert len(check_calls.read_text().splitlines()) >= 2
         assert (result.returncode == 0) == (backend_exit == 0 and not new_module), output
         if backend_exit != 0 or new_module:

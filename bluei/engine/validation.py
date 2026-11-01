@@ -285,12 +285,19 @@ def run_validation_gate(
     else:
         target_results = {}
 
-    # Evaluate regressions: a check that passed at baseline but failed post-fix is a regression
-    for name, baseline in result["baseline_results"].items():
-        post = result["post_results"].get(name, {"rc": 1, "fingerprint": "missing"})
+    # A pre-existing failure is tolerated only when policy allows it and its
+    # exit code and nonempty failure fingerprint are unchanged.
+    for name in dict.fromkeys([*result["baseline_results"], *result["post_results"]]):
+        baseline = result["baseline_results"].get(name, {})
+        post = result["post_results"].get(name, {})
         baseline_rc = int(baseline.get("rc", 1))
         post_rc = int(post.get("rc", 1))
-        if baseline_rc == 0 and post_rc != 0:
+        unchanged_failure = (
+            allow_unchanged_baseline_failures and baseline_rc != 0
+            and baseline_rc == post_rc and baseline.get("fingerprint")
+            and baseline["fingerprint"] == post.get("fingerprint")
+        )
+        if not post or (post_rc != 0 and not unchanged_failure):
             result["regressions"].append(name)
 
     target_failures = [n for n, r in target_results.items() if int(r.get("rc", 1)) != 0]

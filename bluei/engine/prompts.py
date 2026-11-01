@@ -300,9 +300,13 @@ def render_claude_fix_prompt(
     failure_clusters: Optional[str] = None,
     authoritative_guidelines: Optional[str] = None,
     repo_taste: Optional[str] = None,
+    baseline_statuses: Optional[List[Optional[int]]] = None,
+    allow_unchanged_baseline_failures: bool = True,
 ) -> str:
+    # Private engine checks use the generic baseline-relative validation policy.
+    # Specialized prompts retain their existing all-checks-pass contract.
     # Use specialized prompt for max-lines refactoring
-    if finding.rule == 'xo-max-lines':
+    if baseline_statuses is None and finding.rule == 'xo-max-lines':
         return render_maxlines_refactor_prompt(
             finding=finding,
             baseline_checks=baseline_checks,
@@ -312,7 +316,7 @@ def render_claude_fix_prompt(
         )
 
     # Use specialized prompt for complexity refactoring
-    if finding.rule == 'xo-complexity':
+    if baseline_statuses is None and finding.rule == 'xo-complexity':
         return render_complexity_refactor_prompt(
             finding=finding,
             baseline_checks=baseline_checks,
@@ -322,7 +326,7 @@ def render_claude_fix_prompt(
         )
 
     # Use specialized prompt for test coverage
-    if finding.rule in ('test-coverage-branch', 'test-coverage-function'):
+    if baseline_statuses is None and finding.rule in ('test-coverage-branch', 'test-coverage-function'):
         return render_test_coverage_prompt(
             finding=finding,
             baseline_checks=baseline_checks,
@@ -332,7 +336,7 @@ def render_claude_fix_prompt(
         )
 
     # Use specialized prompt for type safety
-    if finding.rule in ('type-missing-return', 'type-missing-param'):
+    if baseline_statuses is None and finding.rule in ('type-missing-return', 'type-missing-param'):
         return render_type_safety_prompt(
             finding=finding,
             baseline_checks=baseline_checks,
@@ -341,7 +345,14 @@ def render_claude_fix_prompt(
             max_loc_diff=max_loc_diff,
         )
 
-    baseline_lines = '\n'.join(f'- `{name}`: `{command_list_to_shell(cmd)}`' for name, cmd in baseline_checks.items())
+    if baseline_statuses is None:
+        baseline_lines = '\n'.join(f'- `{name}`: `{command_list_to_shell(cmd)}`' for name, cmd in baseline_checks.items())
+    else:
+        baseline_lines = '\n'.join(
+            f'- Baseline check {index}: pre-fix: '
+            + ('passed' if rc == 0 else 'unavailable' if rc is None else 'failed')
+            for index, rc in enumerate(baseline_statuses, 1)
+        )
     if not baseline_lines:
         baseline_lines = '- (none)'
 
@@ -397,9 +408,25 @@ def render_claude_fix_prompt(
     ])
 
     # Section 4: Validation command context
+    if baseline_statuses is None:
+        validation_policy = 'Run relevant checks from repo root and fail (non-zero exit) if they do not pass.'
+    else:
+        validation_policy = (
+            'The engine reruns the private configured commands after your edit; '
+            'command arguments, check names and output are intentionally withheld. '
+            'Do not reconstruct or execute those private commands. '
+            'Checks that passed before must still pass. '
+        )
+        validation_policy += (
+            'Pre-existing unchanged failures are allowed only with the same exit code and failure fingerprint; '
+            'new or changed failures are rejected. Do not abort merely because an existing check already failed. '
+            if allow_unchanged_baseline_failures else
+            'Strict baseline policy: all baseline checks must pass after the edit, including pre-existing failures. '
+        )
+        validation_policy += 'Run any rule-target checks shown below; they must pass. Keep edits scoped to this finding.'
     sections.extend([
         '## Validation command context',
-        'Run relevant checks from repo root and fail (non-zero exit) if they do not pass.',
+        validation_policy,
         '',
         '### Baseline checks (always relevant)',
         baseline_lines,

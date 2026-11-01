@@ -197,6 +197,25 @@ class TestRenderClaudeFixPromptSpecializedRouting:
 
 
 class TestRenderClaudeFixPromptSections:
+    @pytest.mark.parametrize("rule", ["ruff-F821", "xo-max-lines", "xo-complexity", "test-coverage-branch", "type-missing-param"])
+    @pytest.mark.parametrize("allowed", [True, False])
+    def test_private_baseline_context_hides_commands_and_preserves_policy(self, rule, allowed):
+        finding = _make_engine_finding(rule=rule)
+        result = render_claude_fix_prompt(
+            finding, {"secret-check-name": ["pytest", "--password", "inline-secret"]},
+            {"target": ["python3", "target.py"]}, 1, 50,
+            baseline_statuses=[0, 1, None], allow_unchanged_baseline_failures=allowed,
+        )
+        assert "inline-secret" not in result and "secret-check-name" not in result
+        assert "--password" not in result and "lint_check.py" not in result
+        assert "Baseline check 1: pre-fix: passed" in result
+        assert "Baseline check 2: pre-fix: failed" in result
+        assert "Baseline check 3: pre-fix: unavailable" in result
+        assert "python3 target.py" in result
+        assert "fail (non-zero exit) if they do not pass" not in result
+        assert ("unchanged failures" in result) is allowed
+        assert ("Strict baseline policy" in result) is not allowed
+
     def test_finding_metadata(self):
         f = _make_engine_finding(
             rule="xo-unused-var", path="src/main.py", line=42, confidence=0.75
