@@ -698,6 +698,23 @@ class TestDiffStats:
 
 
 class TestRunValidationGate:
+    @pytest.mark.parametrize("allowed,baseline,post,expected", [
+        (True, {"rc": 1, "fingerprint": "same"}, {"rc": 1, "fingerprint": "same"}, True),
+        (False, {"rc": 1, "fingerprint": "same"}, {"rc": 1, "fingerprint": "same"}, False),
+        (True, {"rc": 1, "fingerprint": "old"}, {"rc": 1, "fingerprint": "new"}, False),
+        (True, {"rc": 1, "fingerprint": "same"}, {"rc": 2, "fingerprint": "same"}, False),
+        (True, {"rc": 1}, {"rc": 1}, False),
+        (True, {"rc": 0, "fingerprint": ""}, {"rc": 1, "fingerprint": "new"}, False),
+        (False, {"rc": 1, "fingerprint": "old"}, {"rc": 0, "fingerprint": ""}, True),
+    ])
+    def test_baseline_failure_policy(self, tmp_path, allowed, baseline, post, expected):
+        result = run_validation_gate(
+            tmp_path, tmp_path, {}, baseline_results={"configured": baseline},
+            post_fix_results={"configured": post}, target_results={},
+            allow_unchanged_baseline_failures=allowed, log_file=tmp_path / "log.txt",
+        )
+        assert result["passed"] is expected
+
     def test_none_checks_passes(self, tmp_path):
         log = tmp_path / "log.txt"
         log.write_text("")

@@ -57,7 +57,6 @@ from bluei.engine.repo_taste_loader import load_repo_taste
 from bluei.engine.rule_family import derive_rule_family
 from bluei.engine.report import infer_language_from_path
 from bluei.engine.constants import (
-    BASELINE_VALIDATION_CHECKS,
     CLAUDE_REQUIRED_RULES,
     DEFAULT_BATCH_STATE,
 )
@@ -768,6 +767,11 @@ def _process_one_issue(
             log_file=log_file,
             phase="worktree-baseline",
         )
+        validation_baseline = choose_validation_baseline(
+            repo_baseline_results=baseline_results,
+            worktree_baseline_results=worktree_baseline_results,
+            log_file=log_file,
+        )
 
         target_checks = build_target_checks(finding)
 
@@ -1049,7 +1053,11 @@ def _process_one_issue(
                         ClaudeFixRequest(
                             worktree_path=worktree_path,
                             finding=finding,
-                            baseline_checks=BASELINE_VALIDATION_CHECKS,
+                            baseline_checks={},
+                            baseline_statuses=[
+                                record.get("rc") for record in validation_baseline.values()
+                            ],
+                            allow_unchanged_baseline_failures=args.allow_unchanged_baseline_failures,
                             target_checks=target_checks,
                             claude_cmd_template=resolved_tmpl,
                             max_files_changed=args.max_files_changed,
@@ -1355,11 +1363,7 @@ def _process_one_issue(
             repo_path=worktree_path,
             worktree_path=worktree_path,
             checks={},
-            baseline_results=choose_validation_baseline(
-                repo_baseline_results=baseline_results,
-                worktree_baseline_results=worktree_baseline_results,
-                log_file=log_file,
-            ),
+            baseline_results=validation_baseline,
             post_fix_results=post_fix_results,
             target_results=target_results,
             allow_unchanged_baseline_failures=args.allow_unchanged_baseline_failures,

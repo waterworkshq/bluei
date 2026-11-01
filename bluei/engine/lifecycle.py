@@ -273,6 +273,8 @@ class ClaudeFixRequest:
     detected_frameworks: Optional[List[str]] = None
     authoritative_guidelines: Optional[str] = None
     repo_taste: Optional[str] = None
+    baseline_statuses: Optional[List[Optional[int]]] = None
+    allow_unchanged_baseline_failures: bool = True
 
 
 def apply_claude_fix(req: ClaudeFixRequest) -> Tuple[int, str, str]:
@@ -297,7 +299,7 @@ def apply_claude_fix(req: ClaudeFixRequest) -> Tuple[int, str, str]:
     prompt_path = req.worktree_path / QA_FIX_PROMPT_FILENAME
     prompt_text = render_claude_fix_prompt(
         finding=req.finding,
-        baseline_checks=req.baseline_checks,
+        baseline_checks={} if req.baseline_statuses is not None else req.baseline_checks,
         target_checks=req.target_checks,
         max_files_changed=req.max_files_changed,
         max_loc_diff=req.max_loc_diff,
@@ -309,6 +311,9 @@ def apply_claude_fix(req: ClaudeFixRequest) -> Tuple[int, str, str]:
         failure_clusters=failure_clusters,
         authoritative_guidelines=req.authoritative_guidelines,
         repo_taste=req.repo_taste,
+        **({"baseline_statuses": req.baseline_statuses,
+            "allow_unchanged_baseline_failures": req.allow_unchanged_baseline_failures}
+           if req.baseline_statuses is not None else {}),
     )
     prompt_path.write_text(prompt_text, encoding="utf-8")
 
