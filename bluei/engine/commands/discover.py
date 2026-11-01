@@ -10,6 +10,8 @@ from bluei.engine.state import (
     count_actionable_issues,
     filter_findings_by_cooldown,
     guard_open_issues,
+    canonical_markdown_rule,
+    _load_markdown_identities,
 )
 
 DiscoverResult = Tuple[
@@ -115,11 +117,40 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
         blocked_reasons.append("discovery incomplete; findings retained but not routed")
         return (findings, written_findings, [], [], [], blocked_reasons, cap_ok)
 
+    aliases: Dict[str, set[str]] = {}
+    if any(canonical_markdown_rule(finding.rule) for finding in findings):
+        _load_markdown_identities(findings_file, aliases=aliases)
+    routed_findings = []
+    for finding in findings:
+        ids = aliases.get(finding.finding_id, {finding.finding_id})
+        if len(ids) < 2:
+            routed_findings.append(finding)
+            continue
+        matches = [issue for issue in issues_data.get("issues", []) if issue.get("finding_id") in ids]
+        linked_ids = {issue["finding_id"] for issue in matches}
+        for record in state.get("created", []):
+            if record.get("github_pr_number") is not None or record.get("github_pr_url"):
+                linked_ids.update(ids.intersection(record.get("linked_finding_ids", [])))
+        if len(ids) > 1 and (len(matches) > 1 or len(linked_ids) > 1):
+            reason = f"Markdown alias conflict for {finding.finding_id}; manual resolution required"
+            blocked_reasons.append(reason)
+            _append_text(log_file, reason)
+            detector_outcomes["markdown-identity"] = {
+                "status": "failed", "count": 0, "reason": reason,
+            }
+            suppressed_findings.append(finding)
+            continue
+        if len(ids) > 1 and linked_ids:
+            finding.finding_id = next(iter(linked_ids))
+        routed_findings.append(finding)
+    if detector_outcomes.get("markdown-identity", {}).get("status") == "failed":
+        return (findings, written_findings, [], findings, [], blocked_reasons, cap_ok)
     eligible_findings, suppressed_findings = filter_findings_by_cooldown(
-        findings=findings,
+        findings=routed_findings,
         state=state,
         cooldown_seconds=args.finding_cooldown_seconds,
         log_file=log_file,
+        **({"aliases": aliases} if aliases else {}),
     )
     if suppressed_findings:
         _append_text(

@@ -137,7 +137,9 @@ def canonical_markdown_rule(rule: str) -> Optional[str]:
     return None
 
 
-def _load_markdown_identities(path: Path) -> Dict[Tuple[str, str, Any, str, str], str]:
+def _load_markdown_identities(
+    path: Path, aliases: Optional[Dict[str, set[str]]] = None,
+) -> Dict[Tuple[str, str, Any, str, str], str]:
     """Map Markdown diagnostic identity -> earliest persisted finding_id.
 
     Only records whose finding_id equals the hash recomputed from their own
@@ -174,7 +176,11 @@ def _load_markdown_identities(path: Path) -> Dict[Tuple[str, str, Any, str, str]
                     rule,
                     str(obj.get("snippet") or "").strip(),
                 )
-                identities.setdefault(identity, fid)
+                first_id = identities.setdefault(identity, fid)
+                if aliases is not None:
+                    group = aliases.setdefault(first_id, {first_id})
+                    group.add(fid)
+                    aliases[fid] = group
             except Exception:
                 continue
     return identities
@@ -374,6 +380,7 @@ def filter_findings_by_cooldown(
     state: Dict[str, Any],
     cooldown_seconds: int,
     log_file: Path,
+    aliases: Optional[Dict[str, set[str]]] = None,
 ) -> tuple[List[Finding], List[Finding]]:
     allowed: List[Finding] = []
     suppressed: List[Finding] = []
@@ -381,11 +388,18 @@ def filter_findings_by_cooldown(
     now = datetime.now(timezone.utc)
 
     for finding in findings:
-        entry = activity.get(finding.finding_id, {})
+        ids = (aliases or {}).get(finding.finding_id, {finding.finding_id})
+        blocked = []
+        for fid in ids:
+            entry = activity.get(fid, {})
+            elapsed = age_seconds(entry.get("last_action_at"), reference=now)
+            cooldown = get_effective_cooldown(fid, state, cooldown_seconds)
+            if elapsed is not None and elapsed < cooldown:
+                blocked.append((cooldown - elapsed, fid))
+        fid = max(blocked)[1] if blocked else finding.finding_id
+        entry = activity.get(fid, {})
         last_action_at = entry.get("last_action_at")
-        effective_cooldown = get_effective_cooldown(
-            finding.finding_id, state, cooldown_seconds
-        )
+        effective_cooldown = get_effective_cooldown(fid, state, cooldown_seconds)
         elapsed = age_seconds(last_action_at, reference=now)
         if elapsed is not None and elapsed < effective_cooldown:
             remaining = effective_cooldown - elapsed

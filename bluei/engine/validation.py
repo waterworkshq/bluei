@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from bluei.engine.constants import DEFAULT_DOCS_INDEX, DETECTOR_CATALOG
 from bluei.engine.models import Finding
-from bluei.engine.state import _append_text
+from bluei.engine.state import _append_text, canonical_markdown_rule
 from bluei.engine.utils import run_capture
 
 
@@ -507,7 +507,8 @@ def verify_fix_closed(
         if (
             f.finding_id == finding.finding_id
             or (
-                f.rule == finding.rule
+                (canonical_markdown_rule(f.rule) or f.rule)
+                == (canonical_markdown_rule(finding.rule) or finding.rule)
                 and f.path == finding.path
             )
         )
