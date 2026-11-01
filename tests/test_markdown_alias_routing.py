@@ -163,6 +163,17 @@ def test_live_recurrence_reopens_same_github_issue_before_local_status(tmp_path,
     assert issue["status"] == ("open" if result == 0 else "resolved_verified")
 
 
+def test_open_matching_pr_is_preferred_over_earlier_closed_match(tmp_path):
+    from bluei.engine.gh import find_existing_github_pr, finding_dedupe_marker
+    from unittest.mock import patch
+    finding = _finding("md-MD009")
+    marker = finding_dedupe_marker(finding.finding_id)
+    with patch("bluei.engine.gh.gh_json", return_value=[
+        {"number": 1, "state": "MERGED", "body": marker}, {"number": 2, "state": "OPEN", "body": marker},
+    ]):
+        assert find_existing_github_pr("acme/app", finding.finding_id, tmp_path)["number"] == 2
+
+
 def test_merged_pr_is_not_reused_for_recurrent_finding(tmp_path):
     from bluei.engine.gh import create_or_update_github_pr
     from unittest.mock import patch

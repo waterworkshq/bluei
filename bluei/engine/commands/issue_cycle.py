@@ -85,10 +85,12 @@ def run_issue_creation_phase(*args, **kwargs) -> IssueCreationResult:
     from bluei.engine.state import canonical_markdown_rule
     reopened = 0
     recurrence_candidates = []
+    by_id = {issue.get("finding_id"): issue for issue in issues_data.get("issues", [])}
     if not args.dry_run and args.max_issues_per_run > 0:
         recurrence_candidates = create_issues_for_findings(
             issues_data={"issues": []}, findings=[finding for finding in eligible_findings
-                                                   if canonical_markdown_rule(finding.rule)],
+                if canonical_markdown_rule(finding.rule) and by_id.get(finding.finding_id, {}).get("status")
+                in {"resolved_verified", "resolved_merged", "closed"}],
             confidence_threshold=args.issue_confidence_threshold,
             max_issues_per_run=len(eligible_findings),
             cycle_signals_path=AGENT_ROOT / "state" / "cycle_signals.json",
@@ -96,7 +98,6 @@ def run_issue_creation_phase(*args, **kwargs) -> IssueCreationResult:
     permitted_ids = {record["finding_id"] for record in recurrence_candidates
                      if record.get("issue_id") != "SUPPRESSED"}
     if not args.dry_run and args.max_issues_per_run > 0:
-        by_id = {issue.get("finding_id"): issue for issue in issues_data.get("issues", [])}
         for finding in eligible_findings:
             if reopened >= args.max_issues_per_run:
                 break

@@ -74,11 +74,9 @@ def find_existing_github_pr(
     )
     if not isinstance(payload, list):
         return None
-    for pr in payload:
-        body = str(pr.get("body") or "")
-        if marker in body:
-            return pr
-    return None
+    matches = [pr for pr in payload if marker in str(pr.get("body") or "")]
+    return next((pr for pr in matches if str(pr.get("state", "")).upper() == "OPEN"),
+                matches[0] if matches else None)
 
 
 def find_batch_pr_by_rule(
