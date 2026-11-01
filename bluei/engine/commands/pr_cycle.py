@@ -107,6 +107,8 @@ def _preview_ineligibility_reasons(
             reasons.append(
                 f"issue status {issue.get('status')} is not actionable"
             )
+    if finding.rule.casefold() == "ruff-e722":
+        reasons.append("raw E722 repair is outside this bounded Python scope")
     if classify_finding(finding) == RefactorClass.REFACTOR_CLASS:
         reasons.append("structural refactor finding routes to refactor review")
     if not _model_lane_eligible(finding):

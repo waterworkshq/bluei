@@ -479,6 +479,9 @@ def verify_fix_closed(
         )
 
     if discovery_scope == "python":
+        if str(finding.rule).casefold() == "ruff-e722":
+            _append_text(log_file, "verification: raw E722 repair is outside this bounded Python scope")
+            return False
         # A Python path alone cannot make an unrelated rule verifiable.
         python_producers_ran = {
             "ast-python": {"status": "ran"},
@@ -564,7 +567,7 @@ def verify_fix_closed(
         if (
             f.finding_id == finding.finding_id
             or (
-                (f.rule == finding.rule or {f.rule.casefold(), finding.rule.casefold()} == {"broad-except", "ruff-e722"})
+                f.rule == finding.rule
                 and f.path == finding.path
             )
         )

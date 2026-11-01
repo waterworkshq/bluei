@@ -181,8 +181,6 @@ _CONTEXT_RULES_CACHE: Optional[dict[str, ContextRule]] = None
 
 def get_context_rule(rule: str) -> Optional[ContextRule]:
     """Get context rule for a rule name, or None if not found."""
-    if rule.casefold() == "ruff-e722":
-        rule = "broad-except"
     global _CONTEXT_RULES_CACHE
     if _CONTEXT_RULES_CACHE is None:
         _CONTEXT_RULES_CACHE = _load_context_rules()
@@ -231,8 +229,6 @@ def classify_finding(
         ``RefactorClass`` enum value.
     """
     rule = getattr(finding, "rule", "") or ""
-    if rule.casefold() == "ruff-e722":
-        rule = "broad-except"
 
     # Explicit REFACTOR_CLASS rules always take this path.
     if rule in REFACTOR_CLASS_RULES:
