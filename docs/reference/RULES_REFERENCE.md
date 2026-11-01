@@ -56,7 +56,7 @@ Every finding passes through `classify_finding()` (in `reforge.py`) which determ
 
 ## Detection Rules
 
-All 43 rules in `DETECTOR_CATALOG` (defined in `constants.py`).
+Built-in rules in `DETECTOR_CATALOG` (loaded from `bluei/engine/detector_catalog.yaml`).
 
 ### Bug Rules
 
@@ -68,6 +68,7 @@ All 43 rules in `DETECTOR_CATALOG` (defined in `constants.py`).
 | `notifications-email-no-trim` | python | 0.89 | yes | Email normalization missing `.strip()` before `.lower()` |
 | `notifications-type-guard-missing` | python | 0.87 | yes | Missing `isinstance` type guard in normalize function |
 | `inventory-invalid-quantity` | python | 0.84 | yes | Missing quantity validation guard in inventory check |
+| `lock-self-reentry` | python | 0.90 | no | Potential self-deadlock: a held non-reentrant lock is reacquired by a direct same-instance method call |
 | `ruff-b904` | python | 0.80 | no | Ruff: raise without from inside except (B904) |
 | `go-unchecked-error` | go | 0.75 | no | Missing error check on function return |
 | `go-goroutine-unsafe` | go | 0.65 | no | Goroutine without panic recovery or error handling |
@@ -213,6 +214,26 @@ context rules with `default_strategy: "skip"`.
 ---
 
 ### Python Rules
+
+#### `lock-self-reentry`
+**Default:** diagnostic only; no deterministic or model repair route.
+
+The Python AST producer reports the held call site when a directly imported
+`threading.Lock()` or `Lock()` is assigned once in a module-level class initializer,
+a straight-line `with self.<lock>` body calls a no-argument method on that same
+instance, and the same-class callee immediately acquires the identical lock.
+The callee may use `with` or a blocking zero-argument `.acquire()`.
+
+Coverage is deliberately conservative: no `RLock`, aliases, factories, decorated
+or inherited classes/methods, known rebinding/monkey-patching, generators/async
+methods, arguments, conditional entry acquisition, or calls after intervening
+operations. Files referencing visible mutation helpers (`setattr`, `delattr`,
+`exec`, `vars`, or `__dict__`) are conservatively skipped. Arbitrary runtime
+monkey-patching, including rebinding through aliases or `eval` inside the scanned
+file, is not modeled. Caller-side bare `.acquire()` is not tracked. The analysis is intra-file and one call deep, not a cross-thread
+lock-order or whole-program proof. Unsupported shapes are not reported; silence
+is not evidence that locking is safe. Findings require human review, not an
+automatic replacement with `RLock`.
 
 #### `ruff-c408`
 **Default:** `deterministic` (use dict literal)

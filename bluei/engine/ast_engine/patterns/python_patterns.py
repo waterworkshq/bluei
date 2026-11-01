@@ -124,4 +124,11 @@ PYTHON_PATTERNS: List[ASTPattern] = [
         confidence=0.88,
         category="lint",
     ),
+    ASTPattern(
+        id="lock-self-reentry",
+        language="python",
+        node_type="Call",
+        confidence=0.9,
+        category="bug",
+    ),
 ]

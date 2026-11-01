@@ -60,7 +60,7 @@ _CORE_RUFF_RULES = frozenset(
 # about the index scan), so they stay conservatively unknown/open.
 _AST_PYTHON_RULES = frozenset({
     "broad-except", "catalog-query-not-normalized", "discount-math-sign",
-    "hardcoded-tmp-path", "hardcoded-tmp-path-string",
+    "hardcoded-tmp-path", "hardcoded-tmp-path-string", "lock-self-reentry",
     "notifications-email-no-trim", "notifications-type-guard-missing",
     "perf-list-membership-loop", "perf-pop-front-loop",
 })

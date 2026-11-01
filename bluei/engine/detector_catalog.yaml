@@ -33,6 +33,11 @@
   confidence: 0.88
   autofix: false
   language: python
+- rule: lock-self-reentry
+  category: bug
+  confidence: 0.9
+  autofix: false
+  language: python
 - rule: hardcoded-tmp-path
   category: lint
   confidence: 0.81
