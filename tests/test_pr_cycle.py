@@ -442,6 +442,97 @@ class TestEmptyQueue:
         assert any("no eligible" in m for m in log_msgs)
 
 
+class TestAbortCounterAccumulation:
+    @patch("bluei.engine.commands.pr_cycle.get_branch", return_value="main")
+    @patch("bluei.engine.commands.pr_cycle._append_text")
+    @patch("bluei.engine.commands.pr_cycle.finding_from_issue_record")
+    @patch(
+        "bluei.engine.commands.pr_cycle.classify_finding",
+        return_value=RefactorClass.SIMPLE_FIX,
+    )
+    @patch(
+        "bluei.engine.commands.pr_cycle.check_finding_escalation_before_fix",
+        return_value=False,
+    )
+    @patch("bluei.engine.commands.pr_cycle.count_failed_fix_attempts", return_value=0)
+    @patch("bluei.engine.commands.pr_cycle._get_llm_fixable_rules", return_value={})
+    def test_breakloop_snapshot_keeps_earlier_counts(
+        self,
+        mock_llm,
+        mock_count,
+        mock_escalate,
+        mock_classify,
+        mock_ffir,
+        mock_log,
+        mock_branch,
+        tmp_path,
+    ):
+        from bluei.engine.commands.pr_cycle import (
+            _BreakLoop,
+            CounterDeltas,
+            _IssueCounters,
+        )
+
+        f1 = _finding(finding_id="f001")
+        f2 = _finding(finding_id="f002")
+        issues_data = {
+            "issues": [
+                _issue(issue_id="i1", finding_id="f001"),
+                _issue(issue_id="i2", finding_id="f002"),
+            ]
+        }
+        mock_ffir.side_effect = [f1, f2]
+
+        def fake_process(ctx, idx, issue, finding, baseline_results):
+            if idx == 1:
+                return CounterDeltas(fix_attempts=1, claude_invocations=1)
+            # Later candidate aborts like the real helper: seed from ctx,
+            # apply this attempt's increments, then signal break.
+            counters = _IssueCounters.from_ctx(ctx)
+            counters.fix_attempts += 1
+            counters.claude_invocations += 1
+            counters.fixes_failed_verification += 1
+            counters.blocked_reasons.append("needs-human-scope-limit-exceeded")
+            raise _BreakLoop(counters.to_deltas())
+
+        with patch(
+            "bluei.engine.commands.pr_cycle._process_one_issue",
+            side_effect=fake_process,
+        ):
+            result = run_pr_cycle_phase(
+                repo_path=tmp_path,
+                findings_file=tmp_path / "findings.jsonl",
+                log_file=tmp_path / "run.log",
+                worktree_root=tmp_path / "worktrees",
+                gh_repo_slug="acme/widget",
+                review_state_file=tmp_path / "review_state.json",
+                docs_index_file=tmp_path / "docs.json",
+                lessons_file=tmp_path / "lessons.md",
+                args=_args(),
+                state={},
+                issues_data=issues_data,
+                eligible_findings=[],
+                findings=[],
+                PER_REPO_BASELINE_CHECKS={},
+                cost_tracker=MagicMock(exceeded_limit=MagicMock(return_value=False)),
+                pattern_store=None,
+                created_prs=0,
+                open_prs=0,
+                fix_attempts=0,
+                fixes_verified=0,
+                fixes_failed_verification=0,
+                issues_escalated_max_retries=0,
+                claude_invocations=0,
+                deterministic_invocations=0,
+                blocked_reasons=[],
+            )
+
+        assert result["fix_attempts"] == 2
+        assert result["claude_invocations"] == 2
+        assert result["fixes_failed_verification"] == 1
+        assert "needs-human-scope-limit-exceeded" in result["blocked_reasons"]
+
+
 class TestBatchRouting:
     @patch("bluei.engine.commands.pr_cycle.get_branch", return_value="main")
     @patch("bluei.engine.commands.pr_cycle._append_text")

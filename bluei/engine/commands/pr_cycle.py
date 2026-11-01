@@ -1876,6 +1876,16 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
         if not ok:
             blocked_reasons.append(reason)
             break
+        # Sync ctx counters from current locals so _process_one_issue's
+        # from_ctx seeding and abort snapshots see cumulative counts.
+        ctx.created_prs = created_prs
+        ctx.open_prs = open_prs
+        ctx.fix_attempts = fix_attempts
+        ctx.fixes_verified = fixes_verified
+        ctx.fixes_failed_verification = fixes_failed_verification
+        ctx.claude_invocations = claude_invocations
+        ctx.deterministic_invocations = deterministic_invocations
+        ctx.blocked_reasons = list(blocked_reasons)
         _should_break = False
         try:
             _delta = _process_one_issue(

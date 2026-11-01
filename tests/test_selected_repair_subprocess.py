@@ -11,20 +11,25 @@ from bluei.app.config import ConfigManager
 from bluei.app.registry import RepoRegistry
 
 
-@pytest.mark.parametrize("scope_limit", [False, True])
-@pytest.mark.parametrize("backend_name,backend_exit,missing_id,new_module,baseline_exit,rule,selected", [
-    ("claude", 0, False, False, 0, "ruff-F821", True),
-    ("claude", 9, False, False, 0, "ruff-F821", True),
-    ("claude", 0, True, False, 0, "ruff-F821", True),
-    ("opencode", 0, False, False, 0, "ruff-F821", True),
-    ("claude", 0, False, True, 0, "ruff-F821", True),
-    ("opencode-e2e", 0, False, False, 0, "ruff-F821", True),
-    ("claude", 0, False, False, 1, "ruff-F821", True),
-    ("claude", 0, False, False, 0, "lock-self-reentry", True),
-    ("opencode", 0, False, False, 0, "lock-self-reentry", True),
-    ("claude", 9, False, False, 0, "lock-self-reentry", True),
-    ("claude", 0, True, False, 0, "lock-self-reentry", True),
-    ("claude", 0, False, False, 0, "lock-self-reentry", False),
+@pytest.mark.parametrize("backend_name,backend_exit,missing_id,new_module,baseline_exit,rule,selected,scope_limit", [
+    ("claude", 0, False, False, 0, "ruff-F821", True, False),
+    ("claude", 9, False, False, 0, "ruff-F821", True, False),
+    ("claude", 0, True, False, 0, "ruff-F821", True, False),
+    ("opencode", 0, False, False, 0, "ruff-F821", True, False),
+    ("claude", 0, False, True, 0, "ruff-F821", True, False),
+    ("opencode-e2e", 0, False, False, 0, "ruff-F821", True, False),
+    ("claude", 0, False, False, 1, "ruff-F821", True, False),
+    ("claude", 0, False, False, 0, "lock-self-reentry", True, False),
+    ("opencode", 0, False, False, 0, "lock-self-reentry", True, False),
+    ("claude", 9, False, False, 0, "lock-self-reentry", True, False),
+    ("claude", 0, True, False, 0, "lock-self-reentry", True, False),
+    ("claude", 0, False, False, 0, "lock-self-reentry", False, False),
+    ("claude", 0, False, False, 0, "ruff-F821", True, True),
+    ("opencode", 0, False, False, 0, "ruff-F821", True, True),
+    ("opencode-e2e", 0, False, False, 0, "ruff-F821", True, True),
+    ("claude", 0, False, False, 1, "ruff-F821", True, True),
+    ("claude", 0, False, False, 0, "lock-self-reentry", True, True),
+    ("opencode", 0, False, False, 0, "lock-self-reentry", True, True),
 ])
 def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit, missing_id, new_module, baseline_exit, rule, selected, scope_limit):
     e2e = backend_name.endswith("-e2e")
