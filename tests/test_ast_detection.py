@@ -607,7 +607,8 @@ class TestTransformReplacePath:
 class TestPatternRegistry:
     def test_get_patterns(self):
         patterns = get_patterns()
-        assert len(patterns) == 9
+        assert len(patterns) == 10
+        assert any(pattern.id == "lock-self-reentry" for pattern in patterns)
 
     def test_get_transforms(self):
         transforms = get_transforms()

@@ -20,6 +20,7 @@ from .context import (
     is_in_except_handler,
     is_in_return_statement,
 )
+from .lock_reentry import find_lock_reentries
 from .models import ASTMatch, ASTPattern
 
 
@@ -63,9 +64,15 @@ class ASTPatternMatcher:
             if p.language == language and self._in_scope(p, file_path)
         ]
         for pattern in applicable:
-            for node in ast.walk(tree):
-                if self._matches_pattern(node, pattern, tree, parent_map, source):
-                    if not self._post_filter(pattern.id, node, parent_map, source):
+            lock_rule = pattern.id == "lock-self-reentry"
+            try:
+                nodes = find_lock_reentries(tree) if lock_rule else ast.walk(tree)
+            except (RecursionError, MemoryError):
+                self.last_parse_failures.append(str(file_path))
+                continue
+            for node in nodes:
+                if lock_rule or self._matches_pattern(node, pattern, tree, parent_map, source):
+                    if not lock_rule and not self._post_filter(pattern.id, node, parent_map, source):
                         continue
                     source_text = get_source_segment(source, node)
                     line = getattr(node, "lineno", 0)

@@ -4,7 +4,7 @@
 
 ## Overview
 
-The AST Engine is a 14-file subpackage at `bluei/engine/ast_engine/` that provides cross-language AST-aware issue detection and deterministic code transformation. It fits into the fix pipeline as both a **discovery component** (finds issues during cycle scanning) and a **repair component** (applies transformations as a tier-2 cascade stage).
+The AST Engine is a subpackage at `bluei/engine/ast_engine/` that provides cross-language AST-aware issue detection and deterministic code transformation. It fits into the fix pipeline as both a **discovery component** (finds issues during cycle scanning) and a **repair component** (applies transformations as a tier-2 cascade stage).
 
 Unlike regex-based recipes or LLM-driven fixes, the AST Engine operates on structured syntax trees — it knows the difference between a function call, a string constant, and an operator — enabling high-confidence matches with very low false-positive rates.
 
@@ -19,14 +19,15 @@ Unlike regex-based recipes or LLM-driven fixes, the AST Engine operates on struc
 bluei/engine/ast_engine/
 ├── __init__.py              # Factory functions (get_python_matcher, get_ts_matcher, etc.)
 ├── models.py                # Data classes: ASTPattern, ASTMatch, ASTTransform, ASTTransformResult
-├── matcher.py               # ASTPatternMatcher — walks Python AST, checks constraint dicts
+├── matcher.py               # ASTPatternMatcher — constraint walk plus module-level lock finder
+├── lock_reentry.py          # Diagnostic-only direct self-lock re-entry analysis
 ├── context.py               # Python AST context queries (parent map, scope, loops)
 ├── transformer.py           # ASTTransformer — mutates nodes, unparses, validates output
 ├── ts_parser.py             # TreeSitterAdapter + TSNode — uniform tree-sitter wrapper
 ├── ts_matcher.py            # TSPatternMatcher — tree-sitter matcher for TS/Go/Rust
 ├── patterns/
 │   ├── __init__.py
-│   ├── python_patterns.py   # 9 Python AST patterns
+│   ├── python_patterns.py   # 10 Python AST rules (one module-level finder)
 │   ├── ts_patterns.py      # 6 TypeScript/JavaScript patterns
 │   ├── go_patterns.py      # 3 Go patterns
 │   └── rust_patterns.py    # 3 Rust patterns
@@ -83,7 +84,7 @@ bluei/engine/ast_engine/
 2. Scan function imports `get_python_matcher()` from `__init__.py`
 3. `__init__.py` creates an `ASTPatternMatcher` with patterns from `patterns/python_patterns.py`
 4. For each `.py` file, `matcher.find_matches(source, path, "python")` is called
-5. `ASTPatternMatcher` parses source with `ast.parse()`, walks all nodes, checks each pattern's constraints
+5. `ASTPatternMatcher` parses source with `ast.parse()`, checks ordinary pattern constraints, and invokes the lock re-entry module finder when registered
 6. Constraints that need scope context delegate to `context.py` functions (e.g., `find_enclosing_function`, `is_in_return_statement`)
 7. Post-filters (hardcoded in `_post_filter`) apply additional checks that are impractical as generic constraints
 8. Results are returned as `ASTMatch` objects and converted to `Finding` objects by the orchestrator
@@ -108,7 +109,7 @@ bluei/engine/ast_engine/
 
 | Language | File Extensions | Parser | Matcher Class | Detection | Transformation |
 |----------|----------------|--------|---------------|-----------|----------------|
-| Python | `.py` | stdlib `ast` | `ASTPatternMatcher` | ✅ 9 patterns | ✅ 8 transforms |
+| Python | `.py` | stdlib `ast` | `ASTPatternMatcher` | ✅ 10 rules | ✅ 8 transforms |
 | TypeScript | `.ts`, `.tsx` | tree-sitter (`tree_sitter_typescript`) | `TSPatternMatcher` | ✅ 6 patterns | ❌ |
 | JavaScript | `.js`, `.jsx` | tree-sitter (`tree_sitter_javascript`) | `TSPatternMatcher` | ✅ (shared with TS) | ❌ |
 | Go | `.go` | tree-sitter (`tree_sitter_go`) | `TSPatternMatcher` | ✅ 3 patterns | ❌ |
@@ -151,6 +152,16 @@ class ASTPattern:
 6. Check all `negation_constraints` — if any matches, the node is excluded
 7. Apply `_post_filter()` for pattern-specific logic that doesn't fit the constraint model (e.g., "only flag `pop(0)` not `pop(1)`", "only flag in a loop body")
 8. Build context dict (enclosing function name, in-loop flag) for the match
+
+`lock-self-reentry` is the explicit exception to the per-node constraint walk.
+Its pattern registration supplies scope/confidence/category metadata; its
+`node_type` and constraint fields do not drive the analysis. The matcher invokes
+`find_lock_reentries(tree)` once per applicable module and wraps returned call
+sites as ordinary `ASTMatch` objects. The helper checks direct lock/import and
+same-class call relationships without AST unparsing or per-class full-module
+walks. Resource failures are recorded in `last_parse_failures`, making the Python
+producer incomplete rather than advertising a clean scan. No transform exists
+for this diagnostic. See the rule reference for its intentionally narrow scope.
 
 **Non-Python (`TSPatternMatcher`):**
 
@@ -369,6 +380,7 @@ To add a new transform handler:
 | `catalog-query-not-normalized` | bug | `Compare` | `==` comparison without `.strip()` or `.lower()` — case/whitespace-sensitive matching | 0.93 |
 | `discount-math-sign` | bug | `BinOp` | `Add` operator inside discount/price/calc functions — likely wrong sign | 0.95 |
 | `broad-except` | lint | `ExceptHandler` | Bare `except:` or `except Exception:` — catches too broadly | 0.88 |
+| `lock-self-reentry` | bug | `Call` | Diagnostic-only direct same-instance non-reentrant lock reacquisition; module-level finder | 0.90 |
 
 ### TypeScript/JavaScript Patterns
 
