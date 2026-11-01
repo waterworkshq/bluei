@@ -107,11 +107,53 @@ def test_recurrent_markdown_issue_reopens_without_rewriting_links(tmp_path):
     from bluei.engine.commands.issue_cycle import run_issue_creation_phase
     finding = _finding("md-MD009")
     issue = {"issue_id": "old", "finding_id": finding.finding_id, "status": "resolved_verified", "github": {"issue_number": 5}}
-    ctx = RunContext(args=SimpleNamespace(dry_run=False, max_issues_per_run=0), eligible_findings=[finding],
+    ctx = RunContext(args=SimpleNamespace(dry_run=False, max_issues_per_run=1, open_issues_cap=20,
+                                         issue_confidence_threshold=0.7, live_github_actions=False), eligible_findings=[finding],
                      issues_data={"issues": [issue]}, log_file=tmp_path / "run.log")
-    run_issue_creation_phase(ctx)
+    result = run_issue_creation_phase(ctx)
+    assert result[1] == 1
     assert issue["status"] == "open" and issue["github"] == {"issue_number": 5}
     assert len(ctx.issues_data["issues"]) == 1
+
+
+@pytest.mark.parametrize("limit,cap,confidence", [(0, 20, 0.9), (1, 0, 0.9), (1, 20, 0.1)])
+def test_recurrence_respects_budget_cap_and_confidence(tmp_path, limit, cap, confidence):
+    from bluei.engine.commands.issue_cycle import run_issue_creation_phase
+    finding = _finding("md-MD009")
+    finding.confidence = confidence
+    issue = {"issue_id": "old", "finding_id": finding.finding_id, "status": "resolved_verified"}
+    ctx = RunContext(args=SimpleNamespace(dry_run=False, max_issues_per_run=limit, open_issues_cap=cap,
+                                         issue_confidence_threshold=0.7, live_github_actions=False),
+                     eligible_findings=[finding], issues_data={"issues": [issue]}, log_file=tmp_path / "run.log")
+    assert run_issue_creation_phase(ctx)[1] == 0
+    assert issue["status"] == "resolved_verified"
+
+
+def test_merged_recurrence_preserves_previous_pr_in_history(tmp_path):
+    from bluei.engine.commands.issue_cycle import run_issue_creation_phase
+    finding = _finding("md-MD009")
+    issue = {"issue_id": "old", "finding_id": finding.finding_id, "status": "resolved_merged", "github": {"pr_number": 7, "issue_number": 5}}
+    ctx = RunContext(args=SimpleNamespace(dry_run=False, max_issues_per_run=1, open_issues_cap=20,
+                                         issue_confidence_threshold=0.7, live_github_actions=False),
+                     eligible_findings=[finding], issues_data={"issues": [issue]}, log_file=tmp_path / "run.log")
+    assert run_issue_creation_phase(ctx)[1] == 1
+    assert issue["status"] == "open" and issue["github"] == {"issue_number": 5}
+    assert any(item.get("github", {}).get("pr_number") == 7 for item in issue["history"])
+
+
+def test_live_recurrence_reopens_same_github_issue_before_local_status(tmp_path):
+    from bluei.engine.commands.issue_cycle import run_issue_creation_phase
+    from unittest.mock import patch
+    finding = _finding("md-MD009")
+    issue = {"issue_id": "old", "finding_id": finding.finding_id, "status": "resolved_verified", "github": {"issue_number": 5}}
+    ctx = RunContext(args=SimpleNamespace(dry_run=False, max_issues_per_run=1, open_issues_cap=20,
+                                         issue_confidence_threshold=0.7, live_github_actions=True, repo_path=str(tmp_path)),
+                     gh_repo_slug="acme/app", eligible_findings=[finding], issues_data={"issues": [issue]},
+                     log_file=tmp_path / "run.log")
+    with patch("bluei.engine.utils.run_capture", return_value=(0, "")) as command:
+        assert run_issue_creation_phase(ctx)[1] == 1
+    command.assert_called_once_with(["gh", "issue", "reopen", "5", "--repo", "acme/app"], cwd=tmp_path)
+    assert issue["status"] == "open"
 
 
 def test_verify_only_ignores_routing_conflict(tmp_path, monkeypatch):

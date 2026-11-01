@@ -83,19 +83,51 @@ def run_issue_creation_phase(*args, **kwargs) -> IssueCreationResult:
         )
 
     from bluei.engine.state import canonical_markdown_rule
-    if not args.dry_run:
+    reopened = 0
+    if not args.dry_run and args.max_issues_per_run > 0:
+        by_id = {issue.get("finding_id"): issue for issue in issues_data.get("issues", [])}
         for finding in eligible_findings:
-            if not canonical_markdown_rule(finding.rule):
+            if reopened >= args.max_issues_per_run:
+                break
+            existing = by_id.get(finding.finding_id)
+            if not canonical_markdown_rule(finding.rule) or not existing:
                 continue
-            existing = find_issue_for_finding(issues_data, finding.finding_id)
-            if existing and existing.get("status") in {"resolved_verified", "resolved_merged", "closed"}:
-                github = existing.get("github") or {}
-                if not (github.get("pr_number") or github.get("pr_url")):
-                    set_issue_status(existing, "open", "Markdown finding recurred after verification")
+            github = existing.get("github") or {}
+            if existing.get("status") not in {"resolved_verified", "resolved_merged", "closed"} or (
+                (github.get("pr_number") or github.get("pr_url"))
+                and existing.get("status") != "resolved_merged"
+            ):
+                continue
+            ok, reason = guard_open_issues(count_actionable_issues(issues_data), args.open_issues_cap)
+            if not ok:
+                blocked_reasons.append(reason)
+                break
+            permitted = create_issues_for_findings(
+                issues_data={"issues": []}, findings=[finding],
+                confidence_threshold=args.issue_confidence_threshold, max_issues_per_run=1,
+                cycle_signals_path=AGENT_ROOT / "state" / "cycle_signals.json",
+            )
+            if not permitted or permitted[0].get("issue_id") == "SUPPRESSED":
+                continue
+            if args.live_github_actions and github.get("issue_number") is not None:
+                from bluei.engine.utils import run_capture
+                rc, _ = run_capture([
+                    "gh", "issue", "reopen", str(github["issue_number"]), "--repo", gh_repo_slug,
+                ], cwd=Path(args.repo_path))
+                if rc != 0:
+                    blocked_reasons.append("recurrent Markdown GitHub issue could not be reopened")
+                    continue
+            if existing.get("status") == "resolved_merged":
+                previous_pr = {key: github.pop(key) for key in ("pr_number", "pr_url", "branch") if key in github}
+                if previous_pr:
+                    existing.setdefault("history", []).append({"event": "previous_merged_pr", "github": previous_pr})
+            set_issue_status(existing, "open", "Markdown finding recurred after verification")
+            reopened += 1
+            open_issues += 1
 
     actionable_issue_count = count_actionable_issues(issues_data)
 
-    for _ in range(args.max_issues_per_run):
+    for _ in range(args.max_issues_per_run - reopened):
         ok, reason = guard_open_issues(actionable_issue_count, args.open_issues_cap)
         _append_text(log_file, reason)
         if not ok:
