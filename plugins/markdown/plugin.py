@@ -101,7 +101,7 @@ class Plugin(ToolWrapperPlugin):
                 # Malformed rule (e.g. ruleNames: [42] or [""]): drop the
                 # diagnostic rather than manufacture a rule via str() coercion.
                 continue
-            rule_name = canonical_rule(selected_rule)
+            rule_name = canonical_rule(selected_rule.strip())
             line = item.get("lineNumber", 1)
             description = item.get("ruleDescription", item.get("message", ""))
             file_path = item.get("fileName", "")

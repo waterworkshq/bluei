@@ -128,7 +128,7 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
         fid = issue.get("finding_id")
         all_issues_by_id.setdefault(fid, []).append(issue)
         github = issue.get("github") or {}
-        has_pr = github.get("pr_number") or github.get("pr_url")
+        has_pr = (github.get("pr_number") or github.get("pr_url")) if isinstance(github, dict) else True
         if issue.get("status") not in {"resolved_verified", "resolved_merged", "closed"} or (
             has_pr and issue.get("status") != "resolved_merged"
         ):

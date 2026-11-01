@@ -93,6 +93,14 @@ def test_filename_keyed_shape_still_completes(tmp_path, monkeypatch):
     assert [f.rule for f in findings] == ["md-MD009"]
 
 
+def test_native_rule_ids_trim_padding_before_canonicalization(tmp_path):
+    findings = Plugin().parse_output(json.dumps([{
+        "fileName": "README.md", "lineNumber": 3, "ruleNames": ["  MD009  "],
+        "ruleDescription": "Trailing spaces",
+    }]), tmp_path)
+    assert [finding.rule for finding in findings] == ["md-MD009"]
+
+
 def test_native_rule_ids_are_canonical_md_prefixed(tmp_path):
     """Native MD009 and fallback md-MD009 share one ID — no false closure."""
     plugin = Plugin()

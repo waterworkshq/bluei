@@ -93,6 +93,9 @@ def run_issue_creation_phase(*args, **kwargs) -> IssueCreationResult:
             if not canonical_markdown_rule(finding.rule) or not existing:
                 continue
             github = existing.get("github") or {}
+            if not isinstance(github, dict):
+                blocked_reasons.append("recurrent Markdown issue has malformed GitHub metadata")
+                continue
             if existing.get("status") not in {"resolved_verified", "resolved_merged", "closed"} or (
                 (github.get("pr_number") or github.get("pr_url"))
                 and existing.get("status") != "resolved_merged"
