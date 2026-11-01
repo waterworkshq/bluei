@@ -141,7 +141,8 @@ def test_merged_recurrence_preserves_previous_pr_in_history(tmp_path):
     assert any(item.get("github", {}).get("pr_number") == 7 for item in issue["history"])
 
 
-def test_live_recurrence_reopens_same_github_issue_before_local_status(tmp_path):
+@pytest.mark.parametrize("result", [0, 1, "timeout"])
+def test_live_recurrence_reopens_same_github_issue_before_local_status(tmp_path, result):
     from bluei.engine.commands.issue_cycle import run_issue_creation_phase
     from unittest.mock import patch
     finding = _finding("md-MD009")
@@ -150,10 +151,44 @@ def test_live_recurrence_reopens_same_github_issue_before_local_status(tmp_path)
                                          issue_confidence_threshold=0.7, live_github_actions=True, repo_path=str(tmp_path)),
                      gh_repo_slug="acme/app", eligible_findings=[finding], issues_data={"issues": [issue]},
                      log_file=tmp_path / "run.log")
-    with patch("bluei.engine.utils.run_capture", return_value=(0, "")) as command:
-        assert run_issue_creation_phase(ctx)[1] == 1
+    def reopen(*args, **kwargs):
+        assert issue["status"] == "resolved_verified"
+        if result == "timeout":
+            import subprocess
+            raise subprocess.TimeoutExpired("gh", 30)
+        return result, ""
+    with patch("bluei.engine.utils.run_capture", side_effect=reopen) as command:
+        assert run_issue_creation_phase(ctx)[1] == (1 if result == 0 else 0)
     command.assert_called_once_with(["gh", "issue", "reopen", "5", "--repo", "acme/app"], cwd=tmp_path)
-    assert issue["status"] == "open"
+    assert issue["status"] == ("open" if result == 0 else "resolved_verified")
+
+
+def test_merged_pr_is_not_reused_for_recurrent_finding(tmp_path):
+    from bluei.engine.gh import create_or_update_github_pr
+    from unittest.mock import patch
+    with patch("bluei.engine.gh.find_existing_github_pr", return_value={"number": 7, "state": "MERGED"}):
+        result = create_or_update_github_pr("acme/app", _finding("md-MD009"), "new-branch", 5,
+                                          True, tmp_path / "run.log", tmp_path)
+    assert result["created"] is True
+
+
+@pytest.mark.parametrize("metadata", [[], "", "invalid", 0])
+def test_malformed_metadata_never_reopens_or_enters_pr_queue(tmp_path, metadata):
+    from bluei.engine.commands.issue_cycle import run_issue_creation_phase
+    from bluei.engine.commands.pr_cycle import _select_candidates
+    finding = _finding("md-MD009")
+    issue = {"issue_id": "old", "finding_id": finding.finding_id, "status": "resolved_verified",
+             "rule": finding.rule, "path": finding.path, "line": finding.line, "snippet": finding.snippet,
+             "confidence": 0.9, "safe_to_autofix": False, "github": metadata}
+    args = SimpleNamespace(dry_run=False, max_issues_per_run=1, open_issues_cap=20,
+                           issue_confidence_threshold=0.7, live_github_actions=False)
+    ctx = RunContext(args=args, eligible_findings=[finding], issues_data={"issues": [issue]},
+                     log_file=tmp_path / "run.log")
+    assert run_issue_creation_phase(ctx)[1] == 0
+    assert issue["status"] == "resolved_verified" and issue["github"] == metadata
+    assert _select_candidates(repo_path=tmp_path, findings_file=tmp_path / "findings.jsonl",
+                              log_file=tmp_path / "run.log", gh_repo_slug="acme/app", args=args,
+                              issues_data={"issues": [issue]}) == ([], 0)
 
 
 def test_verify_only_ignores_routing_conflict(tmp_path, monkeypatch):

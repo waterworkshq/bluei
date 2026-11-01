@@ -84,6 +84,17 @@ def run_issue_creation_phase(*args, **kwargs) -> IssueCreationResult:
 
     from bluei.engine.state import canonical_markdown_rule
     reopened = 0
+    recurrence_candidates = []
+    if not args.dry_run and args.max_issues_per_run > 0:
+        recurrence_candidates = create_issues_for_findings(
+            issues_data={"issues": []}, findings=[finding for finding in eligible_findings
+                                                   if canonical_markdown_rule(finding.rule)],
+            confidence_threshold=args.issue_confidence_threshold,
+            max_issues_per_run=len(eligible_findings),
+            cycle_signals_path=AGENT_ROOT / "state" / "cycle_signals.json",
+        )
+    permitted_ids = {record["finding_id"] for record in recurrence_candidates
+                     if record.get("issue_id") != "SUPPRESSED"}
     if not args.dry_run and args.max_issues_per_run > 0:
         by_id = {issue.get("finding_id"): issue for issue in issues_data.get("issues", [])}
         for finding in eligible_findings:
@@ -92,7 +103,8 @@ def run_issue_creation_phase(*args, **kwargs) -> IssueCreationResult:
             existing = by_id.get(finding.finding_id)
             if not canonical_markdown_rule(finding.rule) or not existing:
                 continue
-            github = existing.get("github") or {}
+            github = existing.get("github")
+            github = {} if github is None else github
             if not isinstance(github, dict):
                 blocked_reasons.append("recurrent Markdown issue has malformed GitHub metadata")
                 continue
@@ -101,22 +113,24 @@ def run_issue_creation_phase(*args, **kwargs) -> IssueCreationResult:
                 and existing.get("status") != "resolved_merged"
             ):
                 continue
-            ok, reason = guard_open_issues(count_actionable_issues(issues_data), args.open_issues_cap)
+            actionable = count_actionable_issues({"issues": [
+                issue for issue in issues_data.get("issues", []) if issue.get("status") != "closed"
+            ]})
+            ok, reason = guard_open_issues(actionable, args.open_issues_cap)
             if not ok:
                 blocked_reasons.append(reason)
                 break
-            permitted = create_issues_for_findings(
-                issues_data={"issues": []}, findings=[finding],
-                confidence_threshold=args.issue_confidence_threshold, max_issues_per_run=1,
-                cycle_signals_path=AGENT_ROOT / "state" / "cycle_signals.json",
-            )
-            if not permitted or permitted[0].get("issue_id") == "SUPPRESSED":
+            if finding.finding_id not in permitted_ids:
                 continue
             if args.live_github_actions and github.get("issue_number") is not None:
                 from bluei.engine.utils import run_capture
-                rc, _ = run_capture([
-                    "gh", "issue", "reopen", str(github["issue_number"]), "--repo", gh_repo_slug,
-                ], cwd=Path(args.repo_path))
+                import subprocess
+                try:
+                    rc, _ = run_capture([
+                        "gh", "issue", "reopen", str(github["issue_number"]), "--repo", gh_repo_slug,
+                    ], cwd=Path(args.repo_path))
+                except (OSError, subprocess.SubprocessError):
+                    rc = 1
                 if rc != 0:
                     blocked_reasons.append("recurrent Markdown GitHub issue could not be reopened")
                     continue
@@ -128,7 +142,9 @@ def run_issue_creation_phase(*args, **kwargs) -> IssueCreationResult:
             reopened += 1
             open_issues += 1
 
-    actionable_issue_count = count_actionable_issues(issues_data)
+    actionable_issue_count = count_actionable_issues({"issues": [
+        issue for issue in issues_data.get("issues", []) if issue.get("status") != "closed"
+    ]})
 
     for _ in range(args.max_issues_per_run - reopened):
         ok, reason = guard_open_issues(actionable_issue_count, args.open_issues_cap)

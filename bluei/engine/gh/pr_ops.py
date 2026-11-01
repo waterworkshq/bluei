@@ -268,7 +268,7 @@ def create_or_update_github_pr(
 
     marker = _facade.finding_dedupe_marker(finding.finding_id)
     existing = _facade.find_existing_github_pr(repo_slug, finding.finding_id, cwd=cwd)
-    if existing:
+    if existing and str(existing.get("state", "OPEN")).upper() == "OPEN":
         number = int(existing["number"])
         url = str(existing.get("url") or "")
         _append_text(
@@ -348,7 +348,7 @@ def create_or_update_github_pr(
         existing_after_create = _facade.find_existing_github_pr(
             repo_slug, finding.finding_id, cwd=cwd
         )
-        if existing_after_create:
+        if existing_after_create and str(existing_after_create.get("state", "OPEN")).upper() == "OPEN":
             number = int(existing_after_create["number"])
             url = str(existing_after_create.get("url") or url)
     _append_text(
