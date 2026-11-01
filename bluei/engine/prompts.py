@@ -422,6 +422,7 @@ def render_claude_fix_prompt(
             'new or changed failures are rejected. Do not abort merely because an existing check already failed. '
             if allow_unchanged_baseline_failures else
             'Strict baseline policy: all baseline checks must pass after the edit, including pre-existing failures. '
+            'If unrelated failures prevent acceptance, report the blocker and stop; do not expand the repair scope. '
         )
         validation_policy += 'Run any rule-target checks shown below; they must pass. Keep edits scoped to this finding.'
     sections.extend([

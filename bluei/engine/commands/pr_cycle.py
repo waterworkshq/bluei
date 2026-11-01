@@ -1055,8 +1055,7 @@ def _process_one_issue(
                             finding=finding,
                             baseline_checks={},
                             baseline_statuses=[
-                                validation_baseline.get(name, {}).get("rc")
-                                for name in PER_REPO_BASELINE_CHECKS
+                                record.get("rc") for record in validation_baseline.values()
                             ],
                             allow_unchanged_baseline_failures=args.allow_unchanged_baseline_failures,
                             target_checks=target_checks,

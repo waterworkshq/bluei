@@ -215,6 +215,7 @@ class TestRenderClaudeFixPromptSections:
         assert "fail (non-zero exit) if they do not pass" not in result
         assert ("unchanged failures" in result) is allowed
         assert ("Strict baseline policy" in result) is not allowed
+        assert ("report the blocker and stop" in result) is not allowed
 
     def test_finding_metadata(self):
         f = _make_engine_finding(

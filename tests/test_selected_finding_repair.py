@@ -268,6 +268,7 @@ class TestSelectedFailClosed:
             eligible=[_fresh_finding()],
         )
         ctx.PER_REPO_BASELINE_CHECKS = baseline_checks
+        baseline_results = {name: {"rc": index} for index, name in enumerate(baseline_checks)}
         with patch("bluei.engine.commands.pr_cycle.get_branch", return_value="x"), patch(
             "bluei.engine.commands.pr_cycle.apply_claude_fix",
             return_value=(1, "model exploded", "prompt.txt"),
@@ -277,7 +278,7 @@ class TestSelectedFailClosed:
         ), patch("bluei.engine.commands.pr_cycle.hydrate_worktree"), patch(
             "bluei.engine.commands.pr_cycle.remove_worktree"
         ), patch(
-            "bluei.engine.commands.pr_cycle.run_named_checks", return_value={}
+            "bluei.engine.commands.pr_cycle.run_named_checks", return_value=baseline_results
         ) as checks, patch(
             "bluei.engine.lifecycle.apply_claude_fix",
             side_effect=AssertionError("internal model fallback reached"),
@@ -285,7 +286,7 @@ class TestSelectedFailClosed:
             result = run_pr_cycle_phase(ctx)
         assert fix.call_count == 1
         assert fix.call_args.args[0].baseline_checks == {}
-        assert fix.call_args.args[0].baseline_statuses == [None] * len(baseline_checks)
+        assert fix.call_args.args[0].baseline_statuses == [record["rc"] for record in baseline_results.values()]
         assert fix.call_args.args[0].allow_unchanged_baseline_failures is True
         assert all(call.kwargs["checks"] is baseline_checks for call in checks.call_args_list)
         assert result["claude_invocations"] == 1
