@@ -564,7 +564,7 @@ def verify_fix_closed(
         if (
             f.finding_id == finding.finding_id
             or (
-                f.rule == finding.rule
+                (f.rule == finding.rule or {f.rule.casefold(), finding.rule.casefold()} == {"broad-except", "ruff-e722"})
                 and f.path == finding.path
             )
         )

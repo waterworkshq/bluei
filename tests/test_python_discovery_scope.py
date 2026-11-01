@@ -545,12 +545,21 @@ def test_python_scope_identical_f821_ids_are_deduplicated(tmp_path):
 
 
 @needs_ruff
-def test_python_scope_bare_except_keeps_contextual_ast_identity(tmp_path):
+def test_python_scope_bare_except_keeps_ruff_producer_and_context_policy(tmp_path):
     (tmp_path / "setup.py").write_text("")
     (tmp_path / "app.py").write_text("try:\n    work()\nexcept:\n    pass\n")
     findings = discover_findings(tmp_path, log_file=tmp_path / "scan.log", outcomes={}, discovery_scope="python")
-    assert len([finding for finding in findings if finding.rule == "broad-except"]) == 1
-    assert not any(finding.rule.casefold() == "ruff-e722" for finding in findings)
+    from dataclasses import replace
+    from bluei.engine.reforge import classify_finding
+    bare = [finding for finding in findings if finding.rule.casefold() == "ruff-e722"]
+    assert len(bare) == 1 and not any(finding.rule == "broad-except" for finding in findings)
+    assert classify_finding(bare[0]) == classify_finding(replace(bare[0], rule="broad-except"))
+
+
+def test_raw_e722_does_not_close_while_equivalent_ast_rule_fires(tmp_path, make_finding):
+    raw = make_finding(finding_id="old-ruff", path="app.py", rule="ruff-E722")
+    ast = make_finding(finding_id="new-ast", path="app.py", rule="broad-except")
+    assert not verify_fix_closed(tmp_path, raw, tmp_path / "run.log", discover_fn=lambda *a, **kw: [ast])
 
 
 @needs_ruff

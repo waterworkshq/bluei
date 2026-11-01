@@ -229,6 +229,8 @@ def classify_finding(
         ``RefactorClass`` enum value.
     """
     rule = getattr(finding, "rule", "") or ""
+    if rule.casefold() == "ruff-e722":
+        rule = "broad-except"
 
     # Explicit REFACTOR_CLASS rules always take this path.
     if rule in REFACTOR_CLASS_RULES:

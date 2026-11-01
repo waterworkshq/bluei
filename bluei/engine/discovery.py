@@ -467,16 +467,13 @@ def discover_findings(
                 f"{dropped_core_dups} plugin finding(s) duplicating native "
                 "ruff catalog rules",
             )
-        ast_bare_excepts = {(finding.path, finding.line) for finding in findings if finding.rule == "broad-except"}
+        ruff_bare_excepts = {(finding.path, finding.line) for finding in scoped_plugin_findings
+                             if finding.rule.casefold() == "ruff-e722"}
+        findings = [finding for finding in findings if not (
+            finding.rule == "broad-except" and (finding.path, finding.line) in ruff_bare_excepts
+        )]
         seen_ids = {finding.finding_id for finding in findings}
         for finding in scoped_plugin_findings:
-            if finding.rule.casefold() == "ruff-e722":
-                if (finding.path, finding.line) in ast_bare_excepts:
-                    continue
-                finding.rule = "broad-except"
-                finding.finding_id = stable_finding_id(
-                    finding.repo, finding.path, finding.line, finding.rule, finding.snippet,
-                )
             if finding.finding_id not in seen_ids:
                 findings.append(finding)
                 seen_ids.add(finding.finding_id)
