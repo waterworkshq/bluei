@@ -535,6 +535,25 @@ def test_python_scope_clean_tool_run_emits_no_regex_findings(tmp_path):
 
 
 @needs_ruff
+def test_python_scope_identical_f821_ids_are_deduplicated(tmp_path):
+    (tmp_path / "setup.py").write_text("")
+    (tmp_path / "app.py").write_text("value = ghost + ghost + other\n")
+    findings = discover_findings(tmp_path, log_file=tmp_path / "scan.log", outcomes={}, discovery_scope="python")
+    undefined = [finding for finding in findings if finding.rule == "ruff-F821"]
+    assert len(undefined) == 2
+    assert {finding.snippet for finding in undefined} == {"Undefined name `ghost`", "Undefined name `other`"}
+
+
+@needs_ruff
+def test_python_scope_bare_except_keeps_contextual_ast_identity(tmp_path):
+    (tmp_path / "setup.py").write_text("")
+    (tmp_path / "app.py").write_text("try:\n    work()\nexcept:\n    pass\n")
+    findings = discover_findings(tmp_path, log_file=tmp_path / "scan.log", outcomes={}, discovery_scope="python")
+    assert len([finding for finding in findings if finding.rule == "broad-except"]) == 1
+    assert not any(finding.rule.casefold() == "ruff-e722" for finding in findings)
+
+
+@needs_ruff
 def test_python_scope_e501_native_not_duplicated_by_plugin(tmp_path):
     (tmp_path / "setup.py").write_text("")
     (tmp_path / "app.py").write_text("x = '" + "a" * 100 + "'\n")
