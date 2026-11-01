@@ -120,17 +120,30 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
     aliases: Dict[str, set[str]] = {}
     if any(canonical_markdown_rule(finding.rule) for finding in findings):
         _load_markdown_identities(findings_file, aliases=aliases)
+    if args.run_phase == "verify-only":
+        return (findings, written_findings, [], [], [], blocked_reasons, cap_ok)
+    issues_by_id: Dict[str, List[Dict[str, Any]]] = {}
+    all_issues_by_id: Dict[str, List[Dict[str, Any]]] = {}
+    for issue in issues_data.get("issues", []) if aliases else []:
+        fid = issue.get("finding_id")
+        all_issues_by_id.setdefault(fid, []).append(issue)
+        if issue.get("status") not in {"resolved_verified", "resolved_merged", "closed"}:
+            issues_by_id.setdefault(fid, []).append(issue)
+    pr_ids = set()
+    for record in state.get("created", []) if aliases else []:
+        if record.get("github_pr_number") is not None or record.get("github_pr_url"):
+            for fid in record.get("linked_finding_ids", []):
+                history = all_issues_by_id.get(fid, [])
+                if not history or fid in issues_by_id:
+                    pr_ids.add(fid)
     routed_findings = []
     for finding in findings:
         ids = aliases.get(finding.finding_id, {finding.finding_id})
         if len(ids) < 2:
             routed_findings.append(finding)
             continue
-        matches = [issue for issue in issues_data.get("issues", []) if issue.get("finding_id") in ids]
-        linked_ids = {issue["finding_id"] for issue in matches}
-        for record in state.get("created", []):
-            if record.get("github_pr_number") is not None or record.get("github_pr_url"):
-                linked_ids.update(ids.intersection(record.get("linked_finding_ids", [])))
+        matches = [issue for fid in ids for issue in issues_by_id.get(fid, [])]
+        linked_ids = {issue["finding_id"] for issue in matches} | ids.intersection(pr_ids)
         if len(ids) > 1 and (len(matches) > 1 or len(linked_ids) > 1):
             reason = f"Markdown alias conflict for {finding.finding_id}; manual resolution required"
             blocked_reasons.append(reason)

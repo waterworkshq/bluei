@@ -19,7 +19,7 @@ def _finding(rule):
                    confidence=0.9, quick_win=False, safe_to_autofix=False)
 
 
-def _run(tmp_path, monkeypatch, state, issues):
+def _run(tmp_path, monkeypatch, state, issues, phase="issue-cycle"):
     from bluei.engine import orchestrator
     legacy, current = _finding("MD009"), _finding("md-MD009")
     history = tmp_path / "findings.jsonl"
@@ -32,7 +32,7 @@ def _run(tmp_path, monkeypatch, state, issues):
         return [finding]
 
     monkeypatch.setattr(orchestrator, "discover_findings", discover)
-    args = SimpleNamespace(run_phase="issue-cycle", open_issues_cap=20,
+    args = SimpleNamespace(run_phase=phase, open_issues_cap=20,
                            finding_cooldown_seconds=3600, live_github_actions=False,
                            issue_confidence_threshold=0.7)
     ctx = RunContext(args=args, repo_path=tmp_path, log_file=tmp_path / "run.log",
@@ -76,6 +76,27 @@ def test_two_linked_aliases_require_manual_resolution_without_mutation(tmp_path,
     result = _run(tmp_path, monkeypatch, state, issues)
     assert not result[2] and len(result[3]) == 1
     assert any("alias" in reason and "manual" in reason for reason in result[5])
+    assert issues == before
+
+
+def test_resolved_alias_history_does_not_block_current_discovery(tmp_path, monkeypatch):
+    ids = [_finding(rule).finding_id for rule in ("MD009", "md-MD009")]
+    issues = {"issues": [{"finding_id": fid, "status": "resolved_merged", "github": {"pr_number": n}}
+                          for n, fid in enumerate(ids, 1)]}
+    state = {"created": [{"type": "pr", "linked_finding_ids": [fid], "github_pr_number": n}
+                          for n, fid in enumerate(ids, 1)]}
+    before = copy.deepcopy((issues, state))
+    result = _run(tmp_path, monkeypatch, state, issues)
+    assert len(result[2]) == 1 and not result[5]
+    assert issues == before[0] and state["created"] == before[1]["created"]
+
+
+def test_verify_only_ignores_routing_conflict(tmp_path, monkeypatch):
+    issues = {"issues": [{"finding_id": _finding(rule).finding_id, "status": "open"}
+                          for rule in ("MD009", "md-MD009")]}
+    before = copy.deepcopy(issues)
+    result = _run(tmp_path, monkeypatch, {}, issues, phase="verify-only")
+    assert len(result[0]) == 1 and not result[5]
     assert issues == before
 
 
