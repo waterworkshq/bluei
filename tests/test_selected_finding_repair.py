@@ -424,6 +424,7 @@ class TestSelectedSingleModelAttempt:
 
 @pytest.mark.parametrize("issue_updates", [
     {"github": {"pr_number": 17}},
+    {"github": "invalid persisted metadata"},
     {"history": [{"event": "open"}, {"event": "fix_failed_verification"}]},
 ])
 def test_selected_dry_run_existing_links_or_attempts_reject_without_mutation(tmp_path, issue_updates):

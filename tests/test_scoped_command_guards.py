@@ -138,6 +138,17 @@ def test_no_learning_skips_append_lesson(tmp_path):
         spy.assert_not_called()
 
 
+def test_deterministic_model_fallback_is_reported_under_claude(tmp_path):
+    kwargs = _finalize_kwargs(tmp_path)
+    kwargs["args"].fix_engine = "deterministic"
+    kwargs["claude_invocations"] = 1
+    with patch("bluei.engine.commands.finalize.update_status_artifact") as status, patch(
+        "bluei.engine.commands.finalize.save_state"
+    ), patch("bluei.engine.commands.finalize.save_issues"):
+        run_finalize_phase(**kwargs)
+    assert status.call_args.kwargs["run_metrics"]["model_invocations_by_backend"] == {"claude": 1}
+
+
 def test_learning_enabled_appends_lesson(tmp_path):
     kwargs = _finalize_kwargs(tmp_path)
     kwargs["args"].no_learning = False  # explicit: learning writes the lesson

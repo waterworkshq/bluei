@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import fcntl
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -650,6 +650,8 @@ class RunEngine:
         """Execute a run for a repo."""
         repo_name = repo.config.name
         run_id = generate_id("run")
+        if options.phase == "e2e":
+            options = replace(options, phase="orchestrated")
         if options.discovery_scope not in {"repository", "python"}:
             raise ValueError("Unknown discovery scope")
         if options.discovery_scope == "python" and options.phase not in {"issue-cycle", "orchestrated"}:

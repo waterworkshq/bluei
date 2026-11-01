@@ -301,6 +301,8 @@ def _cmd_run(name: str, passthrough: list[str]):
         return 1
 
     phase = _parse_option(passthrough, "--phase") or "orchestrated"
+    if phase == "e2e":
+        phase = "orchestrated"
     dry_run = _has_flag(passthrough, "--dry-run") or not _has_flag(
         passthrough, "--no-dry-run"
     )

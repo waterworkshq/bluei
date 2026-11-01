@@ -14,8 +14,11 @@ from bluei.app.registry import RepoRegistry
 @pytest.mark.parametrize("backend_name,backend_exit,missing_id,new_module", [
     ("claude", 0, False, False), ("claude", 9, False, False),
     ("claude", 0, True, False), ("opencode", 0, False, False), ("claude", 0, False, True),
+    ("opencode-e2e", 0, False, False),
 ])
 def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit, missing_id, new_module):
+    e2e = backend_name.endswith("-e2e")
+    backend_name = backend_name.removesuffix("-e2e")
     root = Path(__file__).resolve().parents[1]
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -67,7 +70,8 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
     (state / "issues.json").write_text(json.dumps({"issues": [unrelated]}))
     before = (target / "app.py").read_bytes()
     result = subprocess.run([*command, "run", "selected", "--discovery-scope", "python",
-                             "--finding-id", finding_id, "--fix-engine", backend_name, "--no-dry-run"],
+                             "--finding-id", finding_id, "--fix-engine", backend_name, "--no-dry-run",
+                             *(["--phase", "e2e"] if e2e else [])],
                             env=env, cwd=root, capture_output=True, text=True, timeout=45)
     output = result.stdout + result.stderr
     if missing_id:

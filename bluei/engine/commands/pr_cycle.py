@@ -94,7 +94,11 @@ def _preview_ineligibility_reasons(
     """
     reasons: List[str] = []
     if issue is not None:
-        github = issue.get("github") or {}
+        github = issue.get("github")
+        if github is not None and not isinstance(github, dict):
+            reasons.append("issue has malformed GitHub metadata")
+            github = {}
+        github = github or {}
         if github.get("pr_number") or github.get("pr_url"):
             reasons.append("issue already has a linked PR")
         if issue.get("status") in ("resolved_merged",) or issue.get(
