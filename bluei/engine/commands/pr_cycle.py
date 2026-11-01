@@ -713,8 +713,8 @@ def _process_one_issue(
     the new values as a ``CounterDeltas`` snapshot. The orchestrator's locals
     are then updated from the return value.
 
-    Raises ``_BreakLoop`` to signal that the orchestrator should stop iterating
-    (replaces the original ``break`` statements).
+    Raises ``_BreakLoop`` with the final ``CounterDeltas`` so counters from an
+    aborted attempt still reach the orchestrator's metrics.
     """
     repo_path = ctx.repo_path
     findings_file = ctx.findings_file
@@ -1346,7 +1346,7 @@ def _process_one_issue(
                     cwd=repo_path,
                 )
             # Signal orchestrator to break out of the loop (preserves original break).
-            raise _BreakLoop()
+            raise _BreakLoop(counters.to_deltas())
 
         post_fix_results = run_named_checks(
             repo_path=worktree_path,
@@ -1395,7 +1395,7 @@ def _process_one_issue(
                     f"Validation gate failed after autofix ({validation_reason}); keeping issue open for manual intervention.",
                     cwd=repo_path,
                 )
-            raise _BreakLoop()
+            raise _BreakLoop(counters.to_deltas())
 
         vfc_result = verify_fix_closed(
             worktree_path,
@@ -1504,7 +1504,7 @@ def _process_one_issue(
         counters.blocked_reasons.extend(finalize_result.blocked_reasons_additions)
         run_status = finalize_result.run_status
         if finalize_result.should_break:
-            raise _BreakLoop()
+            raise _BreakLoop(counters.to_deltas())
 
     finally:
         remove_worktree(
@@ -1876,6 +1876,7 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
         if not ok:
             blocked_reasons.append(reason)
             break
+        _should_break = False
         try:
             _delta = _process_one_issue(
                 ctx,
@@ -1884,15 +1885,19 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
                 finding,
                 baseline_results,
             )
-            created_prs = _delta.created_prs
-            open_prs = _delta.open_prs
-            fix_attempts = _delta.fix_attempts
-            fixes_verified = _delta.fixes_verified
-            fixes_failed_verification = _delta.fixes_failed_verification
-            claude_invocations = _delta.claude_invocations
-            deterministic_invocations = _delta.deterministic_invocations
-            blocked_reasons = _delta.blocked_reasons
-        except _BreakLoop:
+        except _BreakLoop as _exc:
+            # Carry the aborted attempt's counters into the run metrics.
+            _delta = _exc.args[0]
+            _should_break = True
+        created_prs = _delta.created_prs
+        open_prs = _delta.open_prs
+        fix_attempts = _delta.fix_attempts
+        fixes_verified = _delta.fixes_verified
+        fixes_failed_verification = _delta.fixes_failed_verification
+        claude_invocations = _delta.claude_invocations
+        deterministic_invocations = _delta.deterministic_invocations
+        blocked_reasons = _delta.blocked_reasons
+        if _should_break:
             break
     # end for
 

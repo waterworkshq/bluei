@@ -11,6 +11,7 @@ from bluei.app.config import ConfigManager
 from bluei.app.registry import RepoRegistry
 
 
+@pytest.mark.parametrize("scope_limit", [False, True])
 @pytest.mark.parametrize("backend_name,backend_exit,missing_id,new_module,baseline_exit,rule,selected", [
     ("claude", 0, False, False, 0, "ruff-F821", True),
     ("claude", 9, False, False, 0, "ruff-F821", True),
@@ -25,7 +26,7 @@ from bluei.app.registry import RepoRegistry
     ("claude", 0, True, False, 0, "lock-self-reentry", True),
     ("claude", 0, False, False, 0, "lock-self-reentry", False),
 ])
-def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit, missing_id, new_module, baseline_exit, rule, selected):
+def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit, missing_id, new_module, baseline_exit, rule, selected, scope_limit):
     e2e = backend_name.endswith("-e2e")
     backend_name = backend_name.removesuffix("-e2e")
     root = Path(__file__).resolve().parents[1]
@@ -57,6 +58,8 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
     repo = registry.create_from_path(target, name="selected", language="python")
     repo.config.fix_engine = "claude"
     repo.config.github["live_actions"] = selected  # selected lane must suppress this
+    if scope_limit:
+        repo.config.limits["max_loc_diff"] = 1
     check_calls = tmp_path / "check-calls.jsonl"
     check_code = (
         "import ast; from pathlib import Path; "
@@ -130,8 +133,8 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
         assert "unchanged failures" in prompt
         assert "fail (non-zero exit) if they do not pass" not in prompt
         assert len(check_calls.read_text().splitlines()) >= 2
-        assert (result.returncode == 0) == (backend_exit == 0 and not new_module), output
-        if backend_exit != 0 or new_module:
+        assert (result.returncode == 0) == (backend_exit == 0 and not new_module and not scope_limit), output
+        if backend_exit != 0 or new_module or scope_limit:
             failed = json.loads((state / "status.json").read_text())["latest_run_metrics"]
             assert failed["run_completed"] is False
             assert failed["fix_attempts"] == failed["claude_invocations"] == 1
@@ -155,7 +158,7 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
         assert stored.current_health_score == 73 and stored.current_findings_count == 8
         assert not (state / "health_history.jsonl").exists()
     assert not (state / "fix_patterns.jsonl").exists()
-    if selected and backend_exit == 0 and not missing_id and not new_module:
+    if selected and backend_exit == 0 and not missing_id and not new_module and not scope_limit:
         assert "Python scope complete" in output
         patches = list(state.rglob("*.patch"))
         assert len(patches) == 1
