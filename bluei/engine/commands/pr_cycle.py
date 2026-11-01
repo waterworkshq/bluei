@@ -74,6 +74,51 @@ from bluei.engine.worktree import (
 )
 
 
+def _model_lane_eligible(finding: Finding) -> bool:
+    """Shared model-lane predicate; keep in sync with selection eligibility."""
+    if finding.safe_to_autofix:
+        return True
+    return (
+        finding.rule in _get_llm_fixable_rules()
+        or classify_finding(finding) == RefactorClass.CONTEXTUAL_FIX
+    )
+
+
+def _preview_ineligibility_reasons(
+    issue: Any, finding: Finding, args: Any
+) -> List[str]:
+    """Non-mutating preview of the ``_select_candidates`` eligibility gates.
+
+    Preview must reject on the same predicates selection would, without
+    escalating or rewriting issue status/history.
+    """
+    reasons: List[str] = []
+    if issue is not None:
+        github = issue.get("github") or {}
+        if github.get("pr_number") or github.get("pr_url"):
+            reasons.append("issue already has a linked PR")
+        if issue.get("status") in ("resolved_merged",) or issue.get(
+            "status"
+        ) in NON_ACTIONABLE_ISSUE_STATUSES:
+            reasons.append(
+                f"issue status {issue.get('status')} is not actionable"
+            )
+    if classify_finding(finding) == RefactorClass.REFACTOR_CLASS:
+        reasons.append("structural refactor finding routes to refactor review")
+    if not _model_lane_eligible(finding):
+        reasons.append("selected preview finding is not model-lane eligible")
+    if finding.confidence < args.issue_confidence_threshold:
+        reasons.append(
+            f"finding confidence {finding.confidence} is below the "
+            f"issue-confidence-threshold {args.issue_confidence_threshold}"
+        )
+    if issue is not None and count_failed_fix_attempts(issue) >= (
+        args.max_fix_attempts_per_issue
+    ):
+        reasons.append("max fix attempts already exceeded for this issue")
+    return reasons
+
+
 def _select_candidates(
     *,
     repo_path: Path,
@@ -147,25 +192,19 @@ def _select_candidates(
             )
             continue
 
-        if not finding.safe_to_autofix:
-            llm_rules = _get_llm_fixable_rules()
-            if finding.rule in llm_rules:
-                pass
-            elif classify_finding(finding) == RefactorClass.CONTEXTUAL_FIX:
-                pass
-            else:
-                if issue.get("status") != IssueStatus.NEEDS_HUMAN_NOT_FIXABLE.value:
-                    set_issue_status(
-                        issue,
-                        IssueStatus.NEEDS_HUMAN_NOT_FIXABLE.value,
-                        f"rule {finding.rule} is not autofixable and not LLM-fixable",
-                    )
-                    _append_text(
-                        log_file,
-                        f"skip: issue={issue.get('issue_id')} rule={finding.rule} "
-                        f"not autofixable and not in LLM_FIXABLE_RULES",
-                    )
-                continue
+        if not _model_lane_eligible(finding):
+            if issue.get("status") != IssueStatus.NEEDS_HUMAN_NOT_FIXABLE.value:
+                set_issue_status(
+                    issue,
+                    IssueStatus.NEEDS_HUMAN_NOT_FIXABLE.value,
+                    f"rule {finding.rule} is not autofixable and not LLM-fixable",
+                )
+                _append_text(
+                    log_file,
+                    f"skip: issue={issue.get('issue_id')} rule={finding.rule} "
+                    f"not autofixable and not in LLM_FIXABLE_RULES",
+                )
+            continue
         if finding.confidence < args.issue_confidence_threshold:
             continue
 
@@ -1651,9 +1690,11 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
             ]
             if not _matching and args.dry_run:
                 _selected_fresh_finding = _fresh[0]
-                if not (_selected_fresh_finding.safe_to_autofix
-                        or _selected_fresh_finding.rule in _get_llm_fixable_rules()):
-                    selected_error = "selected preview finding is not model-lane eligible"
+                _reasons = _preview_ineligibility_reasons(
+                    None, _selected_fresh_finding, args
+                )
+                if _reasons:
+                    selected_error = "; ".join(_reasons)
                 _walk_issues_data = {"issues": []}
             elif len(_matching) != 1:
                 selected_error = (
@@ -1664,6 +1705,12 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
                 _walk_issues_data = dict(issues_data)
                 _walk_issues_data["issues"] = _matching
                 _selected_fresh_finding = _fresh[0]
+                if args.dry_run:
+                    _reasons = _preview_ineligibility_reasons(
+                        _matching[0], _selected_fresh_finding, args
+                    )
+                    if _reasons:
+                        selected_error = "; ".join(_reasons)
 
     queue_candidates, _escalated = _select_candidates(
         repo_path=repo_path,

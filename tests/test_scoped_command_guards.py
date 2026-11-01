@@ -263,3 +263,26 @@ def test_default_scope_status_keeps_all_commands(tmp_path, monkeypatch):
         "docs_index_refresh_command",
     ):
         assert key in status, key
+
+
+# ── opencode is rejected for refactor-cycle (phase hardcodes Claude) ──
+
+
+def test_opencode_refactor_cycle_rejected_even_with_template(monkeypatch, capsys):
+    with pytest.raises(SystemExit):
+        _parse(
+            [
+                "--fix-engine", "opencode",
+                "--run-phase", "refactor-cycle",
+                "--claude-cmd-template", "opencode run {prompt}",
+            ],
+            monkeypatch,
+        )
+    err = capsys.readouterr().err
+    assert "not supported for refactor-cycle" in err
+
+
+def test_default_engine_refactor_cycle_still_accepted(monkeypatch):
+    args = _parse(["--run-phase", "refactor-cycle"], monkeypatch)
+    assert args.run_phase == "refactor-cycle"
+    assert args.fix_engine != "opencode"

@@ -388,3 +388,77 @@ class TestSelectedSingleModelAttempt:
         assert result["selected_error"] == ""
         assert result["claude_invocations"] == 1
         assert result["fixes_verified"] == 1
+
+
+# ── PR13 review: preview must validate selection eligibility ──
+
+
+@pytest.mark.parametrize("issue_updates", [
+    {"github": {"pr_number": 17}},
+    {"history": [{"event": "open"}, {"event": "fix_failed_verification"}]},
+])
+def test_selected_dry_run_existing_links_or_attempts_reject_without_mutation(tmp_path, issue_updates):
+    import copy
+    issue = _issue(**issue_updates)
+    before = copy.deepcopy(issue)
+    ctx = _ctx(tmp_path, _selected_args(tmp_path, dry_run=True), [issue], eligible=[_fresh_finding()])
+    with patch("bluei.engine.commands.pr_cycle.apply_claude_fix") as model, patch(
+        "bluei.engine.commands.pr_cycle.create_worktree"
+    ) as worktree:
+        result = run_pr_cycle_phase(ctx)
+    assert result["selected_error"] and issue == before
+    assert result["fix_attempts"] == 0
+    model.assert_not_called()
+    worktree.assert_not_called()
+
+
+def test_selected_dry_run_existing_issue_below_confidence_rejects(tmp_path):
+    issue = _issue()
+    before = dict(issue)
+    ctx = _ctx(
+        tmp_path,
+        _selected_args(tmp_path, dry_run=True),
+        [issue],
+        eligible=[_fresh_finding(confidence=0.4)],
+    )
+    with patch("bluei.engine.commands.pr_cycle.apply_claude_fix") as fix, patch(
+        "bluei.engine.commands.pr_cycle.create_worktree"
+    ) as worktree:
+        result = run_pr_cycle_phase(ctx)
+    assert result["selected_error"] and "confidence" in result["selected_error"]
+    assert result["selected_error"] in result["blocked_reasons"]
+    assert result["fix_attempts"] == 0
+    fix.assert_not_called()
+    worktree.assert_not_called()
+    assert issue == before
+
+
+def test_selected_dry_run_existing_issue_non_actionable_rejects_untouched(tmp_path):
+    issue = _issue(status="resolved_merged")
+    before = dict(issue)
+    ctx = _ctx(
+        tmp_path,
+        _selected_args(tmp_path, dry_run=True),
+        [issue],
+        eligible=[_fresh_finding()],
+    )
+    with patch("bluei.engine.commands.pr_cycle.apply_claude_fix") as fix:
+        result = run_pr_cycle_phase(ctx)
+    assert result["selected_error"] and "resolved_merged" in result["selected_error"]
+    assert result["fix_attempts"] == 0
+    fix.assert_not_called()
+    assert issue == before
+
+
+def test_selected_dry_run_new_finding_below_confidence_rejects(tmp_path):
+    ctx = _ctx(
+        tmp_path,
+        _selected_args(tmp_path, dry_run=True),
+        [],
+        eligible=[_fresh_finding(confidence=0.4)],
+    )
+    with patch("bluei.engine.commands.pr_cycle.apply_claude_fix") as fix:
+        result = run_pr_cycle_phase(ctx)
+    assert result["selected_error"] and "confidence" in result["selected_error"]
+    assert result["fix_attempts"] == 0
+    fix.assert_not_called()

@@ -277,6 +277,13 @@ def parse_args() -> argparse.Namespace:
                 "default template targets the Claude CLI backend, not opencode"
             )
         args.claude_cmd_template = DEFAULT_CLAUDE_CMD_TEMPLATE
+    if args.fix_engine == "opencode" and args.run_phase == "refactor-cycle":
+        # The refactor phase still hardcodes the Claude backend; an explicit
+        # operator template must not sneak opencode past that limitation.
+        p.error(
+            "--fix-engine opencode is not supported for refactor-cycle: the "
+            "refactor phase hardcodes the Claude backend; use --fix-engine claude"
+        )
     if args.discovery_scope == "python" and (
         args.run_phase not in {"issue-cycle", "detect-only", "orchestrated"}
         or args.reconcile_only or args.migrate_context or args.live_github_actions
