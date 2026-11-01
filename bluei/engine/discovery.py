@@ -467,11 +467,15 @@ def discover_findings(
                 f"{dropped_core_dups} plugin finding(s) duplicating native "
                 "ruff catalog rules",
             )
-        # Existing broad-except AST identity owns its context/suppression policy;
-        # this bounded scope does not introduce a second E722 repair identity.
+        # Keep AST identity where it exists without hiding Ruff-only diagnostics.
+        ast_except_locations = {
+            (finding.path, finding.line)
+            for finding in findings if finding.rule == "broad-except"
+        }
         seen_ids = {finding.finding_id for finding in findings}
         for finding in scoped_plugin_findings:
-            if finding.rule.casefold() == "ruff-e722":
+            if (finding.rule.casefold() == "ruff-e722"
+                    and (finding.path, finding.line) in ast_except_locations):
                 continue
             if finding.finding_id not in seen_ids:
                 findings.append(finding)

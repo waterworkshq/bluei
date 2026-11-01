@@ -559,6 +559,32 @@ def test_python_scope_bare_except_keeps_existing_ast_identity(tmp_path):
     assert bare[0].finding_id == next(finding.finding_id for finding in expected if finding.rule == "broad-except")
 
 
+@needs_ruff
+def test_python_scope_preserves_unmatched_ruff_e722_from_ast_skipped_file(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.ruff]\nexclude = []\n[tool.ruff.lint]\nselect = ["E722"]\n'
+    )
+    (tmp_path / "app.py").write_text("value = 1\n")
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / ".venv" / "extra.py").write_text(
+        "try:\n    work()\nexcept:\n    pass\n"
+    )
+    outcomes = {}
+    findings = discover_findings(
+        tmp_path, log_file=tmp_path / "scan.log", outcomes=outcomes,
+        discovery_scope="python",
+    )
+    assert outcomes["ast-python"]["status"] == "ran"
+    assert outcomes["plugin:plugin-python"]["tool_outcome"] == "tool-ran"
+    assert not any(f.rule == "broad-except" for f in findings)
+    raw = [f for f in findings if f.rule == "ruff-E722"]
+    assert len(raw) == 1
+    assert (raw[0].path, raw[0].line) == (".venv/extra.py", 3)
+    assert raw[0].finding_id == stable_finding_id(
+        str(tmp_path), raw[0].path, raw[0].line, "ruff-E722", raw[0].snippet
+    )
+
+
 def test_legacy_raw_e722_is_not_closed_by_omitted_scope(tmp_path, make_finding):
     raw = make_finding(finding_id="old-ruff", path="app.py", rule="ruff-E722")
     assert not verify_fix_closed(tmp_path, raw, tmp_path / "run.log", discovery_scope="python")
