@@ -197,7 +197,7 @@ class StateManager:
             else:
                 # Truncated snippet: full identity unverifiable — dedup on
                 # finding_id only so distinct diagnostics never merge.
-                key = ("id", fid)
+                key = ("id", fid) if fid else ("record", len(projected))
             if key in seen_md_keys:
                 continue
             seen_md_keys.add(key)

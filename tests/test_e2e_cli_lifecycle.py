@@ -156,9 +156,16 @@ def _assert_truthful_completion(result):
     if result.run.scan_complete:
         assert result.success
         assert result.run.findings_recovered is None
+        # The fixture repo intentionally contains violations: a completed
+        # scan reporting zero findings is a silent drop, not a clean repo.
+        assert result.run.findings_detected > 0
+        # A completed scan keeps its status — it must not be weakened
+        # (skipped/incomplete) while still claiming completion.
+        assert result.run.status == "completed"
     else:
         assert not result.success
         assert result.run.findings_recovered is not None
+        assert result.run.status != "completed"
 
 
 class TestInit:

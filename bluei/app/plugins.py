@@ -59,13 +59,18 @@ def _validate_markdownlint_output(parsed: Any) -> None:
     """Reject malformed markdownlint payloads so dropped diagnostics cannot read as clean.
 
     Every diagnostic — flat array entry or filename-keyed dict record — must be
-    an object with a non-empty file target and a 1-based integer lineNumber.
+    an object with a non-empty file target, a 1-based integer lineNumber, and a
+    selected rule that is a non-empty string. For dict records the validated
+    target is the filename key itself: the parser overwrites ``fileName`` with
+    the key, so a valid entry field cannot redeem an empty key. Unlike the
+    legacy MD000 fallback in ``parse_output``, native output is expected to
+    carry its own rule code — no default is accepted here.
     """
     if isinstance(parsed, dict):
         if not all(isinstance(records, list) for records in parsed.values()):
             raise ValueError("expected filename-keyed JSON lists")
         pairs = [
-            (entry, entry.get("fileName", filename) if isinstance(entry, dict) else None)
+            (entry, filename)
             for filename, records in parsed.items()
             for entry in records
         ]
@@ -78,6 +83,15 @@ def _validate_markdownlint_output(parsed: Any) -> None:
         raise ValueError("expected JSON array")
     for entry, target in pairs:
         line = entry.get("lineNumber") if isinstance(entry, dict) else None
+        rule_names = (
+            entry.get("ruleNames", entry.get("rule", []))
+            if isinstance(entry, dict)
+            else None
+        )
+        if isinstance(rule_names, list) and rule_names:
+            selected_rule = rule_names[0]
+        else:
+            selected_rule = entry.get("rule") if isinstance(entry, dict) else None
         if (
             not isinstance(entry, dict)
             or not isinstance(target, str)
@@ -85,6 +99,8 @@ def _validate_markdownlint_output(parsed: Any) -> None:
             or not isinstance(line, int)
             or isinstance(line, bool)
             or line < 1
+            or not isinstance(selected_rule, str)
+            or not selected_rule.strip()
         ):
             raise ValueError("malformed markdownlint diagnostic")
 

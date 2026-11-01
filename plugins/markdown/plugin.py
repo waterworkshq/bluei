@@ -92,10 +92,16 @@ class Plugin(ToolWrapperPlugin):
                 continue
             rule_names = item.get("ruleNames", item.get("rule", []))
             if isinstance(rule_names, list) and rule_names:
-                rule_name = str(rule_names[0])
+                selected_rule = rule_names[0]
             else:
-                rule_name = str(item.get("rule", "MD000"))
-            rule_name = canonical_rule(rule_name)
+                # Legacy direct-parse default when the entry carries no rule.
+                # The strict wrapper rejects these; only direct callers keep it.
+                selected_rule = item.get("rule", "MD000")
+            if not isinstance(selected_rule, str) or not selected_rule.strip():
+                # Malformed rule (e.g. ruleNames: [42] or [""]): drop the
+                # diagnostic rather than manufacture a rule via str() coercion.
+                continue
+            rule_name = canonical_rule(selected_rule)
             line = item.get("lineNumber", 1)
             description = item.get("ruleDescription", item.get("message", ""))
             file_path = item.get("fileName", "")

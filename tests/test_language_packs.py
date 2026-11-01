@@ -30,7 +30,7 @@ def test_run_plugin_discovery_loads_shell_docker_and_markdown_packs(tmp_path) ->
     assert "shell-SC2086" in rules
     assert "docker-DL3006" in rules
     assert "docker-DL3002" in rules
-    assert rules & {"MD009", "md-MD009"}
+    assert "md-MD009" in rules  # canonical md- prefix only — bare MD009 is a regression
 
 
 def test_discover_findings_merges_language_pack_findings(tmp_path) -> None:

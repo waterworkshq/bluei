@@ -48,6 +48,13 @@ def test_markdownlint_native_streams(tmp_path, monkeypatch, stdout, stderr, code
     json.dumps([{"fileName": "", "lineNumber": 2}]),
     json.dumps({"README.md": [None]}),  # dict-shaped null diagnostic
     json.dumps({"": [{"lineNumber": 2, "ruleNames": ["MD009"]}]}),
+    # entry carries a valid fileName but the dict key is empty — the parser
+    # uses the key, so the validator must judge the key, not the entry field
+    json.dumps({"": [{"fileName": "README.md", "lineNumber": 2, "ruleNames": ["MD009"]}]}),
+    # malformed selected rule must read as tool-error, never tool-ran
+    json.dumps([{"fileName": "README.md", "lineNumber": 2, "ruleNames": [42]}]),
+    json.dumps([{"fileName": "README.md", "lineNumber": 2, "ruleNames": [""]}]),
+    json.dumps([{"fileName": "README.md", "lineNumber": 2, "rule": 7}]),
 ])
 def test_malformed_diagnostics_never_read_as_clean(tmp_path, monkeypatch, payload):
     tools = tmp_path / "tools"
@@ -96,3 +103,27 @@ def test_native_rule_ids_are_canonical_md_prefixed(tmp_path):
     )
     assert findings[0].rule == "md-MD009"
     assert findings[0].rule in plugin.rules  # health manifest prefix contract
+
+
+@pytest.mark.parametrize("item", [
+    {"fileName": "README.md", "lineNumber": 2, "ruleNames": [42], "ruleDescription": "x"},
+    {"fileName": "README.md", "lineNumber": 2, "ruleNames": [""], "ruleDescription": "x"},
+    {"fileName": "README.md", "lineNumber": 2, "ruleNames": [], "rule": 7, "ruleDescription": "x"},
+    {"fileName": "README.md", "lineNumber": 2, "rule": 7, "ruleDescription": "x"},
+])
+def test_direct_parse_drops_malformed_rule_instead_of_str_coercing(tmp_path, item):
+    """Direct parse_output must not manufacture rules via str() coercion."""
+    plugin = Plugin()
+    assert plugin.parse_output(json.dumps([item]), tmp_path) == []
+
+
+def test_direct_parse_keeps_legacy_empty_rule_names_md000_fallback(tmp_path):
+    """Legacy direct parses with no rule info default to MD000 (strict wrapper
+    rejects these; only the MD000 default keeps old callers working)."""
+    plugin = Plugin()
+    findings = plugin.parse_output(
+        json.dumps([{"fileName": "a.md", "lineNumber": 1,
+                     "ruleNames": [], "ruleDescription": "x"}]),
+        tmp_path,
+    )
+    assert [f.rule for f in findings] == ["md-MD000"]

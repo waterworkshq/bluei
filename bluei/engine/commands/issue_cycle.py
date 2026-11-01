@@ -82,6 +82,17 @@ def run_issue_creation_phase(*args, **kwargs) -> IssueCreationResult:
             routed_item.get("reason", "planning"),
         )
 
+    from bluei.engine.state import canonical_markdown_rule
+    if not args.dry_run:
+        for finding in eligible_findings:
+            if not canonical_markdown_rule(finding.rule):
+                continue
+            existing = find_issue_for_finding(issues_data, finding.finding_id)
+            if existing and existing.get("status") in {"resolved_verified", "resolved_merged", "closed"}:
+                github = existing.get("github") or {}
+                if not (github.get("pr_number") or github.get("pr_url")):
+                    set_issue_status(existing, "open", "Markdown finding recurred after verification")
+
     actionable_issue_count = count_actionable_issues(issues_data)
 
     for _ in range(args.max_issues_per_run):

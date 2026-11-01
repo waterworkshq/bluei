@@ -127,7 +127,11 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
     for issue in issues_data.get("issues", []) if aliases else []:
         fid = issue.get("finding_id")
         all_issues_by_id.setdefault(fid, []).append(issue)
-        if issue.get("status") not in {"resolved_verified", "resolved_merged", "closed"}:
+        github = issue.get("github") or {}
+        has_pr = github.get("pr_number") or github.get("pr_url")
+        if issue.get("status") not in {"resolved_verified", "resolved_merged", "closed"} or (
+            has_pr and issue.get("status") != "resolved_merged"
+        ):
             issues_by_id.setdefault(fid, []).append(issue)
     pr_ids = set()
     for record in state.get("created", []) if aliases else []:
@@ -155,8 +159,17 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
             continue
         if len(ids) > 1 and linked_ids:
             finding.finding_id = next(iter(linked_ids))
+        elif not matches:
+            terminal = [issue for fid in ids for issue in all_issues_by_id.get(fid, [])]
+            if terminal:
+                finding.finding_id = terminal[0]["finding_id"]
         routed_findings.append(finding)
     if detector_outcomes.get("markdown-identity", {}).get("status") == "failed":
+        if ctx is not None and ctx.run_id:
+            atomic_json_write(ctx.status_file.parent / "discovery-current.json", {
+                "run_id": ctx.run_id, "findings_detected": len(findings),
+                "findings_written": written_findings, "detector_outcomes": detector_outcomes,
+            })
         return (findings, written_findings, [], findings, [], blocked_reasons, cap_ok)
     eligible_findings, suppressed_findings = filter_findings_by_cooldown(
         findings=routed_findings,

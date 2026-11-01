@@ -105,6 +105,15 @@ def test_mixed_aliases_adopt_earliest_before_seen(tmp_path):
     assert [f.finding_id for f in suppressed] == [_legacy_id(3)]
 
 
+def test_empty_markdown_ids_do_not_collapse_distinct_records(tmp_path):
+    state = StateManager(tmp_path / "repos")
+    records = [_legacy_record(line) for line in (3, 4)]
+    for record in records:
+        record["finding_id"] = ""
+    _write_jsonl(state.get_findings_file("demo"), records)
+    assert [finding.line for finding in state.load_findings("demo")] == [3, 4]
+
+
 def test_truncated_snippets_never_merge(tmp_path):
     state = StateManager(tmp_path / "repos")
     findings_file = state.get_findings_file("demo")

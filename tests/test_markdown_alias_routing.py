@@ -41,6 +41,9 @@ def _run(tmp_path, monkeypatch, state, issues, phase="issue-cycle"):
                      run_id="fresh", run_issue_cycle=True, run_pr_cycle=False)
     result = run_discover_phase(ctx)
     assert history.read_bytes() == before
+    if any("manual resolution" in reason for reason in result[5]):
+        current = json.loads((tmp_path / "discovery-current.json").read_text())
+        assert current["detector_outcomes"]["markdown-identity"]["status"] == "failed"
     return result
 
 
@@ -55,7 +58,7 @@ def test_either_alias_cooldown_suppresses_rediscovery(tmp_path, monkeypatch, act
 
 
 @pytest.mark.parametrize("issue_rule", ["MD009", "md-MD009"])
-def test_reuses_only_existing_issue_and_its_pr_link(tmp_path, monkeypatch, issue_rule):
+def test_reuses_existing_issue_id_without_rewriting_pr_link(tmp_path, monkeypatch, issue_rule):
     linked_id = _finding(issue_rule).finding_id
     issue = {"issue_id": "existing", "finding_id": linked_id, "status": "open",
              "github": {"issue_number": 11, "pr_number": 12, "pr_url": "https://example.test/12"}}
@@ -89,6 +92,26 @@ def test_resolved_alias_history_does_not_block_current_discovery(tmp_path, monke
     result = _run(tmp_path, monkeypatch, state, issues)
     assert len(result[2]) == 1 and not result[5]
     assert issues == before[0] and state["created"] == before[1]["created"]
+
+
+def test_resolved_verified_with_pr_is_not_treated_as_closed_pr(tmp_path, monkeypatch):
+    canonical = _finding("md-MD009").finding_id
+    issues = {"issues": [{"finding_id": canonical, "status": "resolved_verified", "github": {"pr_number": 11}}]}
+    before = copy.deepcopy(issues)
+    result = _run(tmp_path, monkeypatch, {}, issues)
+    assert [finding.finding_id for finding in result[2]] == [canonical]
+    assert issues == before
+
+
+def test_recurrent_markdown_issue_reopens_without_rewriting_links(tmp_path):
+    from bluei.engine.commands.issue_cycle import run_issue_creation_phase
+    finding = _finding("md-MD009")
+    issue = {"issue_id": "old", "finding_id": finding.finding_id, "status": "resolved_verified", "github": {"issue_number": 5}}
+    ctx = RunContext(args=SimpleNamespace(dry_run=False, max_issues_per_run=0), eligible_findings=[finding],
+                     issues_data={"issues": [issue]}, log_file=tmp_path / "run.log")
+    run_issue_creation_phase(ctx)
+    assert issue["status"] == "open" and issue["github"] == {"issue_number": 5}
+    assert len(ctx.issues_data["issues"]) == 1
 
 
 def test_verify_only_ignores_routing_conflict(tmp_path, monkeypatch):
