@@ -181,6 +181,8 @@ _CONTEXT_RULES_CACHE: Optional[dict[str, ContextRule]] = None
 
 def get_context_rule(rule: str) -> Optional[ContextRule]:
     """Get context rule for a rule name, or None if not found."""
+    if rule.casefold() == "ruff-e722":
+        rule = "broad-except"
     global _CONTEXT_RULES_CACHE
     if _CONTEXT_RULES_CACHE is None:
         _CONTEXT_RULES_CACHE = _load_context_rules()

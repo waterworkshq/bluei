@@ -550,7 +550,8 @@ def test_python_scope_bare_except_keeps_ruff_producer_and_context_policy(tmp_pat
     (tmp_path / "app.py").write_text("try:\n    work()\nexcept:\n    pass\n")
     findings = discover_findings(tmp_path, log_file=tmp_path / "scan.log", outcomes={}, discovery_scope="python")
     from dataclasses import replace
-    from bluei.engine.reforge import classify_finding
+    from bluei.engine.reforge import classify_finding, get_context_rule
+    assert get_context_rule("ruff-E722") is get_context_rule("broad-except")
     bare = [finding for finding in findings if finding.rule.casefold() == "ruff-e722"]
     assert len(bare) == 1 and not any(finding.rule == "broad-except" for finding in findings)
     assert classify_finding(bare[0]) == classify_finding(replace(bare[0], rule="broad-except"))
