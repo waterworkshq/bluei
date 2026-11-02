@@ -11,12 +11,27 @@ from bluei.app.config import ConfigManager
 from bluei.app.registry import RepoRegistry
 
 
-@pytest.mark.parametrize("backend_name,backend_exit,missing_id,new_module,baseline_exit", [
-    ("claude", 0, False, False, 0), ("claude", 9, False, False, 0),
-    ("claude", 0, True, False, 0), ("opencode", 0, False, False, 0), ("claude", 0, False, True, 0),
-    ("opencode-e2e", 0, False, False, 0), ("claude", 0, False, False, 1),
+@pytest.mark.parametrize("backend_name,backend_exit,missing_id,new_module,baseline_exit,rule,selected,scope_limit", [
+    ("claude", 0, False, False, 0, "ruff-F821", True, False),
+    ("claude", 9, False, False, 0, "ruff-F821", True, False),
+    ("claude", 0, True, False, 0, "ruff-F821", True, False),
+    ("opencode", 0, False, False, 0, "ruff-F821", True, False),
+    ("claude", 0, False, True, 0, "ruff-F821", True, False),
+    ("opencode-e2e", 0, False, False, 0, "ruff-F821", True, False),
+    ("claude", 0, False, False, 1, "ruff-F821", True, False),
+    ("claude", 0, False, False, 0, "lock-self-reentry", True, False),
+    ("opencode", 0, False, False, 0, "lock-self-reentry", True, False),
+    ("claude", 9, False, False, 0, "lock-self-reentry", True, False),
+    ("claude", 0, True, False, 0, "lock-self-reentry", True, False),
+    ("claude", 0, False, False, 0, "lock-self-reentry", False, False),
+    ("claude", 0, False, False, 0, "ruff-F821", True, True),
+    ("opencode", 0, False, False, 0, "ruff-F821", True, True),
+    ("opencode-e2e", 0, False, False, 0, "ruff-F821", True, True),
+    ("claude", 0, False, False, 1, "ruff-F821", True, True),
+    ("claude", 0, False, False, 0, "lock-self-reentry", True, True),
+    ("opencode", 0, False, False, 0, "lock-self-reentry", True, True),
 ])
-def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit, missing_id, new_module, baseline_exit):
+def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit, missing_id, new_module, baseline_exit, rule, selected, scope_limit):
     e2e = backend_name.endswith("-e2e")
     backend_name = backend_name.removesuffix("-e2e")
     root = Path(__file__).resolve().parents[1]
@@ -27,8 +42,19 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
     target = tmp_path / "target"
     target.mkdir()
     (target / "requirements.txt").write_text("")
-    (target / "app.py").write_text("def answer():\n    return missing_name\n")
-    (target / "unrelated.tsx").write_text("const = ;\n")
+    source = "def answer():\n    return missing_name\n"
+    fixed_source = "def answer():\n    return 42\n"
+    if rule == "lock-self-reentry":
+        source = (
+            "import threading\n\nclass Monitor:\n"
+            "    def __init__(self):\n        self.guard = threading.Lock()\n"
+            "    def dashboard(self):\n        with self.guard:\n            return self.snapshot()\n"
+            "    def snapshot(self):\n        with self.guard:\n            return 42\n"
+        )
+        fixed_source = source.replace("threading.Lock()", "threading.RLock()")
+    (target / "app.py").write_text(source)
+    if selected:
+        (target / "unrelated.tsx").write_text("const = ;\n")
     for args in [["init", "-q"], ["add", "."],
                  ["-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "-qm", "fixture"]]:
         subprocess.run(["git", "-C", str(target), *args], check=True, capture_output=True)
@@ -36,7 +62,9 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
     registry = RepoRegistry(manager)
     repo = registry.create_from_path(target, name="selected", language="python")
     repo.config.fix_engine = "claude"
-    repo.config.github["live_actions"] = True  # selected lane must suppress this
+    repo.config.github["live_actions"] = selected  # selected lane must suppress this
+    if scope_limit:
+        repo.config.limits["max_loc_diff"] = 1
     check_calls = tmp_path / "check-calls.jsonl"
     check_code = (
         "import ast; from pathlib import Path; "
@@ -56,7 +84,7 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
         f"#!{sys.executable}\nimport json,sys\nfrom pathlib import Path\n"
         f"with Path({str(calls)!r}).open('a') as stream: stream.write(json.dumps(sys.argv[1:])+'\\n')\n"
         f"Path({str(captured_prompt)!r}).write_text(Path(sys.argv[1]).read_text())\n"
-        f"if {backend_exit} == 0:\n    Path('app.py').write_text('def answer():\\n    return 42\\n')\n"
+        f"if {backend_exit} == 0:\n    Path('app.py').write_text({fixed_source!r})\n"
         f"if {new_module!r}:\n    Path('helper.py').write_text('answer = 42\\n')\n    Path('app.py').write_text('from helper import answer\\n')\n"
         f"raise SystemExit({backend_exit})\n"
     )
@@ -72,23 +100,32 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
     assert scan.returncode == 0, scan.stdout + scan.stderr
     state = manager.repos_dir / "selected/state"
     findings = [json.loads(line) for line in (state / "findings.jsonl").read_text().splitlines()]
-    finding = next(item for item in findings if item["rule"] == "ruff-F821" and item["path"] == "app.py")
+    matching = [item for item in findings if item["rule"] == rule and item["path"] == "app.py"]
+    assert len(matching) == 1
+    finding = matching[0]
+    if rule == "lock-self-reentry":
+        assert not finding["safe_to_autofix"]
     finding_id = "missing-id" if missing_id else finding["finding_id"]
     # An existing unrelated issue must not be processed or changed.
     unrelated = {"issue_id": "unrelated", "finding_id": "not-selected", "status": "open",
                  "rule": "ruff-F821", "path": "other.py", "line": 1, "confidence": 0.9,
                  "safe_to_autofix": False, "snippet": "another_missing_name"}
-    (state / "issues.json").write_text(json.dumps({"issues": [unrelated]}))
+    (state / "issues.json").write_text(json.dumps({"issues": [unrelated] if selected else []}))
     before = (target / "app.py").read_bytes()
-    result = subprocess.run([*command, "run", "selected", "--discovery-scope", "python",
-                             "--finding-id", finding_id, "--fix-engine", backend_name, "--no-dry-run",
+    result = subprocess.run([*command, "run", "selected", "--discovery-scope", "python" if selected else "repository",
+                             *(["--finding-id", finding_id] if selected else []),
+                             "--fix-engine", backend_name, "--no-dry-run", "--no-learning",
                              *(["--phase", "e2e"] if e2e else [])],
                             env=env, cwd=root, capture_output=True, text=True, timeout=45)
     output = result.stdout + result.stderr
-    if missing_id:
-        assert result.returncode != 0, output
+    if missing_id or not selected:
+        if missing_id:
+            assert result.returncode != 0, output
+        else:
+            assert result.returncode == 0, output
         assert not calls.exists()
     else:
+        assert calls.exists(), output
         assert len(calls.read_text().splitlines()) == 1, output
         from bluei.engine.utils import command_list_to_shell
         prompt = captured_prompt.read_text()
@@ -101,8 +138,8 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
         assert "unchanged failures" in prompt
         assert "fail (non-zero exit) if they do not pass" not in prompt
         assert len(check_calls.read_text().splitlines()) >= 2
-        assert (result.returncode == 0) == (backend_exit == 0 and not new_module), output
-        if backend_exit != 0 or new_module:
+        assert (result.returncode == 0) == (backend_exit == 0 and not new_module and not scope_limit), output
+        if backend_exit != 0 or new_module or scope_limit:
             failed = json.loads((state / "status.json").read_text())["latest_run_metrics"]
             assert failed["run_completed"] is False
             assert failed["fix_attempts"] == failed["claude_invocations"] == 1
@@ -112,18 +149,25 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
             assert failed["blocked_reasons"] and not failed["cost_limit_reached"]
             assert not list(state.glob("*.patch"))
     issues = json.loads((state / "issues.json").read_text())["issues"]
-    assert next(issue for issue in issues if issue["issue_id"] == "unrelated") == unrelated
+    if selected:
+        assert next(issue for issue in issues if issue["issue_id"] == "unrelated") == unrelated
+    else:
+        lock_issue = next(issue for issue in issues if issue.get("finding_id") == finding_id)
+        assert lock_issue["status"] == "needs-human-not-fixable"
+        latest = json.loads((state / "status.json").read_text())["latest_run_metrics"]
+        assert latest["fix_attempts"] == latest["claude_invocations"] == latest["prs_created"] == 0
     assert (target / "app.py").read_bytes() == before
     assert not subprocess.check_output(["git", "-C", str(target), "status", "--porcelain"])
     stored = registry.find_by_name("selected")
-    assert stored.current_health_score == 73 and stored.current_findings_count == 8
-    assert not (state / "health_history.jsonl").exists()
+    if selected:
+        assert stored.current_health_score == 73 and stored.current_findings_count == 8
+        assert not (state / "health_history.jsonl").exists()
     assert not (state / "fix_patterns.jsonl").exists()
-    if backend_exit == 0 and not missing_id and not new_module:
+    if selected and backend_exit == 0 and not missing_id and not new_module and not scope_limit:
         assert "Python scope complete" in output
         patches = list(state.rglob("*.patch"))
         assert len(patches) == 1
-        assert "return 42" in patches[0].read_text()
+        assert ("threading.RLock()" if rule == "lock-self-reentry" else "return 42") in patches[0].read_text()
         latest = json.loads((state / "status.json").read_text())["latest_run_metrics"]
         assert latest["claude_invocations"] == 1 and latest["prs_created"] == 0
         assert latest["model_invocations_by_backend"] == {backend_name: 1}

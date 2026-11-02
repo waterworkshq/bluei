@@ -299,14 +299,20 @@ class TestSelectedFailClosed:
 
 
 class TestSelectedSingleModelAttempt:
-    def _run_success(self, tmp_path, engine="claude"):
-        issues = [_issue(), _issue(finding_id="other-9", issue_id="i-unrel")]
+    def _run_success(
+        self, tmp_path, engine="claude", finding=None, issue=None,
+        detector_key="plugin:plugin-python",
+    ):
+        finding = _fresh_finding() if finding is None else finding
+        issue = _issue() if issue is None else issue
+        issues = [issue, _issue(finding_id="other-9", issue_id="i-unrel")]
         ctx = _ctx(
             tmp_path,
             _selected_args(tmp_path, fix_engine=engine),
             issues,
-            eligible=[_fresh_finding()],
+            eligible=[finding],
         )
+        ctx.detector_outcomes = {detector_key: {"status": "ran", "count": 1}}
         patches = [
             patch("bluei.engine.commands.pr_cycle.get_branch", return_value="feature"),
             patch(
@@ -505,3 +511,160 @@ def test_selected_dry_run_new_finding_below_confidence_rejects(tmp_path):
     assert result["selected_error"] and "confidence" in result["selected_error"]
     assert result["fix_attempts"] == 0
     fix.assert_not_called()
+
+
+# ── Selected lock-self-reentry repair: exact-ID model-lane exception ──
+
+LOCK_RULE = "lock-self-reentry"
+
+
+def _lock_finding(**overrides):
+    return _fresh_finding(rule=LOCK_RULE, **overrides)
+
+
+def _lock_ctx(tmp_path, args_overrides=None, issues=None, eligible=None):
+    ctx = _ctx(
+        tmp_path,
+        _selected_args(tmp_path, **(args_overrides or {})),
+        [] if issues is None else issues,
+        eligible=[_lock_finding()] if eligible is None else eligible,
+    )
+    # lock-self-reentry is produced by the ast-python detector only.
+    ctx.detector_outcomes = {"ast-python": {"status": "ran", "count": 1}}
+    return ctx
+
+
+class TestSelectedLockReentryException:
+    def test_lock_dry_run_exact_rule_passes_preview(self, tmp_path):
+        ctx = _lock_ctx(tmp_path, {"dry_run": True})
+        with patch("bluei.engine.commands.pr_cycle.apply_claude_fix") as fix, patch(
+            "bluei.engine.commands.pr_cycle.create_worktree",
+            side_effect=AssertionError("repair boundary reached"),
+        ), patch(
+            "bluei.engine.lifecycle.apply_claude_fix",
+            side_effect=AssertionError("internal model fallback reached"),
+        ):
+            result = run_pr_cycle_phase(ctx)
+        assert result["selected_error"] == ""
+        assert result["fix_attempts"] == 0 and result["claude_invocations"] == 0
+        fix.assert_not_called()
+
+    def test_lock_repair_dispatches_single_model_attempt(self, tmp_path):
+        ctx, result, issues, fix, verify, *_ = TestSelectedSingleModelAttempt()._run_success(
+            tmp_path,
+            finding=_lock_finding(),
+            issue=_issue(rule=LOCK_RULE),
+            detector_key="ast-python",
+        )
+        assert result["selected_error"] == ""
+        assert fix.call_count == 1
+        assert fix.call_args[0][0].finding.rule == LOCK_RULE
+        assert result["claude_invocations"] == 1 and result["fixes_verified"] == 1
+        assert verify.call_count == 1
+
+    @pytest.mark.parametrize("args_overrides", [
+        {"finding_id": "py-lock-9999"},
+        {"finding_id": None},
+    ])
+    def test_lock_without_exact_selection_stays_out_of_model_lane(self, tmp_path, args_overrides):
+        issue = _issue(rule=LOCK_RULE)
+        ctx = _lock_ctx(tmp_path, args_overrides, [issue])
+        with patch("bluei.engine.commands.pr_cycle.get_branch", return_value="feature"), patch(
+            "bluei.engine.commands.pr_cycle.apply_claude_fix"
+        ) as fix, patch(
+            "bluei.engine.lifecycle.apply_claude_fix",
+            side_effect=AssertionError("internal model fallback reached"),
+        ):
+            result = run_pr_cycle_phase(ctx)
+        fix.assert_not_called()
+        assert result["fix_attempts"] == 0 and result["claude_invocations"] == 0
+        if args_overrides["finding_id"] is None:
+            # Normal cycle: the lock rule still has no model lane.
+            assert issue["status"] == "needs-human-not-fixable"
+        else:
+            assert "not a single fresh eligible" in result["selected_error"]
+            assert issue["status"] == "open"
+
+    def test_unknown_rule_selection_stays_blocked(self, tmp_path):
+        ctx = _lock_ctx(
+            tmp_path,
+            {},
+            [],
+            eligible=[_fresh_finding(rule="mystery-unknown-rule")],
+        )
+        with patch("bluei.engine.commands.pr_cycle.apply_claude_fix") as fix, patch(
+            "bluei.engine.lifecycle.apply_claude_fix",
+            side_effect=AssertionError("internal model fallback reached"),
+        ):
+            result = run_pr_cycle_phase(ctx)
+        assert "not a single fresh eligible" in result["selected_error"]
+        assert result["fix_attempts"] == 0
+        fix.assert_not_called()
+
+    def test_lock_duplicate_issue_records_fail_closed(self, tmp_path):
+        dupes = [_issue(rule=LOCK_RULE), _issue(rule=LOCK_RULE, issue_id="i-dup-2")]
+        ctx = _lock_ctx(tmp_path, {}, dupes)
+        with patch("bluei.engine.commands.pr_cycle.apply_claude_fix") as fix, patch(
+            "bluei.engine.lifecycle.apply_claude_fix",
+            side_effect=AssertionError("internal model fallback reached"),
+        ):
+            result = run_pr_cycle_phase(ctx)
+        assert "exactly one issue" in result["selected_error"]
+        assert result["fix_attempts"] == 0
+        fix.assert_not_called()
+        assert all(issue["status"] == "open" for issue in dupes)
+
+    def test_lock_stale_low_confidence_fresh_finding_rejects(self, tmp_path):
+        import copy
+        issue = _issue(rule=LOCK_RULE)
+        before = copy.deepcopy(issue)
+        ctx = _lock_ctx(tmp_path, {}, [issue], eligible=[_lock_finding(confidence=0.4)])
+        with patch("bluei.engine.commands.pr_cycle.apply_claude_fix") as fix, patch(
+            "bluei.engine.commands.pr_cycle.create_worktree",
+            side_effect=AssertionError("repair boundary reached"),
+        ), patch(
+            "bluei.engine.lifecycle.apply_claude_fix",
+            side_effect=AssertionError("internal model fallback reached"),
+        ):
+            result = run_pr_cycle_phase(ctx)
+        assert "confidence" in result["selected_error"]
+        assert result["fix_attempts"] == 0
+        fix.assert_not_called()
+        assert issue == before
+
+    @pytest.mark.parametrize("status", ["failed", "skipped"])
+    def test_lock_incomplete_ast_producer_blocks_repair(self, tmp_path, status):
+        issues = [_issue(rule=LOCK_RULE)]
+        before = [dict(issue) for issue in issues]
+        ctx = _lock_ctx(tmp_path, {}, issues)
+        ctx.detector_outcomes = {"ast-python": {"status": status}}
+        with patch("bluei.engine.commands.pr_cycle.apply_claude_fix") as fix, patch(
+            "bluei.engine.commands.pr_cycle.create_worktree",
+            side_effect=AssertionError("repair boundary reached"),
+        ), patch(
+            "bluei.engine.lifecycle.apply_claude_fix",
+            side_effect=AssertionError("internal model fallback reached"),
+        ):
+            result = run_pr_cycle_phase(ctx)
+        assert "not a single fresh eligible" in result["selected_error"]
+        assert result["fix_attempts"] == 0
+        fix.assert_not_called()
+        assert issues == before
+
+    def test_lock_wrong_producer_blocks_repair(self, tmp_path):
+        issues = [_issue(rule=LOCK_RULE)]
+        before = [dict(issue) for issue in issues]
+        ctx = _lock_ctx(tmp_path, {}, issues)
+        ctx.detector_outcomes = {"plugin:plugin-python": {"status": "ran", "count": 1}}
+        with patch("bluei.engine.commands.pr_cycle.apply_claude_fix") as fix, patch(
+            "bluei.engine.commands.pr_cycle.create_worktree",
+            side_effect=AssertionError("repair boundary reached"),
+        ), patch(
+            "bluei.engine.lifecycle.apply_claude_fix",
+            side_effect=AssertionError("internal model fallback reached"),
+        ):
+            result = run_pr_cycle_phase(ctx)
+        assert "not a single fresh eligible" in result["selected_error"]
+        assert result["fix_attempts"] == 0
+        fix.assert_not_called()
+        assert issues == before
