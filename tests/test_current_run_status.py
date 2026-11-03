@@ -26,12 +26,12 @@ def test_current_projection_replaces_prior_interruption(tmp_path, completed):
     )
     result = json.loads(status.read_text())
     assert result["latest_run_metrics"]["run_id"] == "current"
-    if completed is None:
+    if completed is True:
+        assert "run_interruption" not in result
+        assert result["last_run_completed"] is True
+    else:
         assert result["run_interruption"] == prior
         assert result["last_run_completed"] is False
-    else:
-        assert "run_interruption" not in result
-        assert result["last_run_completed"] is completed
 
 
 @pytest.mark.parametrize("live,dry,expected", [

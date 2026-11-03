@@ -469,7 +469,8 @@ def update_status_artifact(
     status["latest_run_metrics"] = latest_run_metrics
     if "run_completed" in latest_run_metrics:
         status["last_run_completed"] = latest_run_metrics["run_completed"]
-        status.pop("run_interruption", None)
+        if latest_run_metrics["run_completed"] is True:
+            status.pop("run_interruption", None)
 
     status_file.parent.mkdir(parents=True, exist_ok=True)
     atomic_json_write(status_file, status)
