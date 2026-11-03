@@ -61,8 +61,9 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
     manager = ConfigManager(workspace)
     registry = RepoRegistry(manager)
     repo = registry.create_from_path(target, name="selected", language="python")
-    repo.config.fix_engine = "claude"
+    repo.config.fix_engine = "deterministic"  # prior discovery must not leak into repair status
     repo.config.github["live_actions"] = selected  # selected lane must suppress this
+    repo.config.cooldowns["finding_seconds"] = 0
     if scope_limit:
         repo.config.limits["max_loc_diff"] = 1
     check_calls = tmp_path / "check-calls.jsonl"
@@ -140,7 +141,24 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
         assert len(check_calls.read_text().splitlines()) >= 2
         assert (result.returncode == 0) == (backend_exit == 0 and not new_module and not scope_limit), output
         if backend_exit != 0 or new_module or scope_limit:
-            failed = json.loads((state / "status.json").read_text())["latest_run_metrics"]
+            failed_status = json.loads((state / "status.json").read_text())
+            failed = failed_status["latest_run_metrics"]
+            assert failed_status["run_mode"] == "ACTIVE-SIM-ORCHESTRATED"
+            assert failed_status["last_run_completed"] is False
+            assert failed_status["fix_configuration"]["fix_engine"] == backend_name
+            assert str(backend) in failed_status["fix_configuration"]["claude_cmd_template"]
+            counts = failed_status["current_counts"]
+            assert counts["issue_records_total"] == 2
+            assert counts["open_issues"] == 1
+            assert counts["by_status"]["fix_failed_verification"] == 1
+            error = failed_status["run_interruption"]["error"]
+            assert error == failed["failure_reason"]
+            assert "mnemo unavailable" not in error
+            expected_reason = (
+                "needs-human-scope-limit-exceeded" if scope_limit and backend_exit == 0 and not new_module
+                else "claude-command-failed" if backend_exit else "patch retention failed"
+            )
+            assert expected_reason in error
             assert failed["run_completed"] is False
             assert failed["fix_attempts"] == failed["claude_invocations"] == 1
             assert failed["fixes_failed_verification"] == 1
@@ -148,6 +166,17 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
             assert failed["cost_total_usd"] > 0 and failed["learning_mode"] == "paused"
             assert failed["blocked_reasons"] and not failed["cost_limit_reached"]
             assert not list(state.glob("*.patch"))
+            if scope_limit and rule == "lock-self-reentry" and backend_name == "claude":
+                retry = subprocess.run([*command, "run", "selected", "--discovery-scope", "python",
+                                        "--finding-id", finding_id, "--fix-engine", backend_name,
+                                        "--no-dry-run", "--no-learning"],
+                                       env=env, cwd=root, capture_output=True, text=True, timeout=45)
+                assert retry.returncode != 0
+                assert len(calls.read_text().splitlines()) == 1
+                retry_metrics = json.loads((state / "status.json").read_text())["latest_run_metrics"]
+                assert retry_metrics["fix_attempts"] == 0
+                assert "max fix attempts" in retry_metrics["failure_reason"]
+                assert "scope-limit" not in retry_metrics["failure_reason"]
     issues = json.loads((state / "issues.json").read_text())["issues"]
     if selected:
         assert next(issue for issue in issues if issue["issue_id"] == "unrelated") == unrelated

@@ -11,7 +11,7 @@ from bluei.engine.models import is_needs_human_status, now_iso
 from bluei.engine.state import _append_text, save_issues, save_state
 from bluei.engine.state_io import atomic_json_write
 from bluei.engine.utils import append_lesson
-from bluei.engine.commands.helpers import update_status_artifact
+from bluei.engine.commands.helpers import run_mode_label, update_status_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -208,11 +208,7 @@ def run_finalize_phase(*args, **kwargs) -> int:
     state["last_run_at"] = now_iso()
     save_state(state_file, state)
 
-    if args.live_github_actions:
-        mode = "DRY-RUN-LIVE" if args.dry_run else "ACTIVE-LIVE"
-    else:
-        mode = "DRY-RUN" if args.dry_run else "ACTIVE-SIM"
-    run_mode = f"{mode}-{args.run_phase.upper()}"
+    run_mode = run_mode_label(args)
     update_status_artifact(
         status_file=status_file,
         state=state,

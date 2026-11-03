@@ -476,34 +476,51 @@ def main() -> int:
         if pr_result.get("selected_error") or (
             getattr(args, "finding_id", None) and not args.dry_run and ctx.fixes_verified != 1
         ):
+            from bluei.engine.commands.helpers import run_mode_label, update_status_artifact
             from bluei.engine.state import save_issues, save_state
             error = pr_result.get("selected_error") or "Selected repair did not produce one verified fix"
+            detail = next((
+                issue.get("status_detail", "") for issue in ctx.issues_data.get("issues", [])
+                if ctx.fix_attempts and issue.get("finding_id") == args.finding_id
+            ), "")
+            # Do not copy arbitrary issue detail, command arguments, or check output.
+            if isinstance(detail, str) and detail.startswith("patch retention failed"):
+                detail = "patch retention failed"
+            elif isinstance(detail, str) and detail.startswith("needs-human-validation-failed:"):
+                detail = "needs-human-validation-failed"
+            elif not isinstance(detail, str) or detail not in {
+                "needs-human-scope-limit-exceeded",
+                "fix-failed-verification:claude-command-failed",
+            }:
+                detail = ""
+            failure_reason = f"{detail}: {error}" if detail else error
             save_issues(ctx.issues_file, ctx.issues_data)
             save_state(ctx.state_file, ctx.state)
-            try:
-                status = json.loads(ctx.status_file.read_text())
-            except (OSError, ValueError):
-                status = {}
-            status["last_run_completed"] = False
-            status["latest_run_metrics"] = {
-                "run_id": ctx.run_id, "run_completed": False,
-                "discovery_scope": args.discovery_scope,
-                "findings_detected": len(ctx.findings), "detector_outcomes": ctx.detector_outcomes,
-                "fix_attempts": ctx.fix_attempts, "claude_invocations": ctx.claude_invocations,
-                "fixes_verified": ctx.fixes_verified,
-                "fixes_failed_verification": ctx.fixes_failed_verification,
-                "selected_error": error, "prs_created": 0,
-                "deterministic_invocations": ctx.deterministic_invocations,
-                "model_invocations_by_backend": {args.fix_engine: ctx.claude_invocations},
-                "cost_total_usd": round(ctx.cost_tracker.cycle_total(), 6),
-                "cost_warned": ctx.cost_tracker.warned(),
-                "cost_limit_reached": ctx.cost_tracker.exceeded_limit(),
-                "learning_mode": ctx.learning_mode,
-                "blocked_reasons": ctx.blocked_reasons,
-                "blocked_events": len(ctx.blocked_reasons),
-            }
-            atomic_json_write(ctx.status_file, status)
-            print(f"[INCOMPLETE] {error}")
+            update_status_artifact(
+                status_file=ctx.status_file, state=ctx.state,
+                issues_file=ctx.issues_file, findings_file=ctx.findings_file,
+                args=args, run_mode=run_mode_label(args),
+                reconcile_event=ctx.reconcile_event,
+                previous_last_run_at=ctx.previous_last_run_at,
+                run_metrics={
+                    "run_id": ctx.run_id, "run_completed": False,
+                    "discovery_scope": args.discovery_scope,
+                    "findings_detected": len(ctx.findings), "detector_outcomes": ctx.detector_outcomes,
+                    "fix_attempts": ctx.fix_attempts, "claude_invocations": ctx.claude_invocations,
+                    "fixes_verified": ctx.fixes_verified,
+                    "fixes_failed_verification": ctx.fixes_failed_verification,
+                    "selected_error": error, "failure_reason": failure_reason, "prs_created": 0,
+                    "deterministic_invocations": ctx.deterministic_invocations,
+                    "model_invocations_by_backend": {args.fix_engine: ctx.claude_invocations},
+                    "cost_total_usd": round(ctx.cost_tracker.cycle_total(), 6),
+                    "cost_warned": ctx.cost_tracker.warned(),
+                    "cost_limit_reached": ctx.cost_tracker.exceeded_limit(),
+                    "learning_mode": ctx.learning_mode,
+                    "blocked_reasons": ctx.blocked_reasons,
+                    "blocked_events": len(ctx.blocked_reasons),
+                },
+            )
+            print(f"[INCOMPLETE] {failure_reason}")
             return 1
     if ctx.run_merge_cycle:
         (

@@ -34,6 +34,7 @@ from bluei.engine.orchestrator import (
     build_verification_only_command,
     set_issue_status,
 )
+from bluei.engine.state_io import atomic_json_write
 from bluei.engine.state import (
     NON_ACTIONABLE_ISSUE_STATUSES,
     _append_text,
@@ -302,6 +303,14 @@ _STATUS_CYCLE_COMMAND_KEYS = (
 )
 
 
+def run_mode_label(args: argparse.Namespace) -> str:
+    if args.live_github_actions:
+        mode = "DRY-RUN-LIVE" if args.dry_run else "ACTIVE-LIVE"
+    else:
+        mode = "DRY-RUN" if args.dry_run else "ACTIVE-SIM"
+    return f"{mode}-{args.run_phase.upper()}"
+
+
 def update_status_artifact(
     status_file: Path,
     state: Dict[str, Any],
@@ -458,6 +467,9 @@ def update_status_artifact(
     latest_run_metrics["refactor_queue_completed"] = refactor_queue["completed"]
     latest_run_metrics["refactor_queue_aborted"] = refactor_queue["aborted"]
     status["latest_run_metrics"] = latest_run_metrics
+    if "run_completed" in latest_run_metrics:
+        status["last_run_completed"] = latest_run_metrics["run_completed"]
+        status.pop("run_interruption", None)
 
     status_file.parent.mkdir(parents=True, exist_ok=True)
-    status_file.write_text(json.dumps(status, indent=2, sort_keys=True) + "\n")
+    atomic_json_write(status_file, status)
