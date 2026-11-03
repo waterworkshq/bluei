@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Pytest-native tests for Run Engine."""
 
+import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from bluei.app.models import RepoConfig, Run
 from bluei.app.config import ConfigManager
@@ -159,3 +161,85 @@ def test_state_manager_get_fix_patterns_file_creates_parent(tmp_path):
     assert not result.parent.exists()
     result.parent.mkdir(parents=True, exist_ok=True)
     assert result.parent.exists()
+
+
+def _write_failed_status(runner_env, metrics):
+    path = runner_env['state']._get_state_dir('test-repo') / 'status.json'
+    path.write_text(json.dumps({'latest_run_metrics': metrics}), encoding='utf-8')
+    return path
+
+
+def _run_failed_engine(runner_env, test_repo, stderr):
+    proc = MagicMock(returncode=1, stdout='', stderr=stderr)
+    with patch('bluei.app.runner.subprocess.run', return_value=proc):
+        return runner_env['runner'].run(
+            test_repo, RunOptions(phase='issue-cycle', dry_run=False)
+        )
+
+
+@pytest.mark.parametrize(
+    'reason_field, raw_reason',
+    [
+        ('failure_reason', '  baseline \n checks failed  '),
+        ('selected_error', ' selected repair did not verify '),
+        ('failure_reason', 'code ' * 200),
+    ],
+)
+def test_failed_run_prefers_current_run_structured_reason(
+    runner_env, test_repo, monkeypatch, reason_field, raw_reason
+):
+    monkeypatch.setattr('bluei.app.runner.generate_id', lambda _prefix: 'run-current')
+    status = _write_failed_status(runner_env, {
+        'run_id': 'run-current',
+        'run_completed': False,
+        reason_field: raw_reason,
+    })
+    result = _run_failed_engine(runner_env, test_repo, 'raw engine stderr')
+    expected = ' '.join(raw_reason.split())[:500]
+    assert result.success is False
+    assert result.run.error == expected
+    assert result.error == expected
+    assert json.loads(status.read_text())['run_interruption']['error'] == expected
+
+
+def test_failed_run_ignores_stale_run_structured_reason(
+    runner_env, test_repo, monkeypatch
+):
+    monkeypatch.setattr('bluei.app.runner.generate_id', lambda _prefix: 'run-current')
+    status = _write_failed_status(runner_env, {
+        'run_id': 'stale-run',
+        'run_completed': False,
+        'failure_reason': 'stale-failure-code',
+        'selected_error': 'stale selected detail',
+    })
+    result = _run_failed_engine(runner_env, test_repo, 'real engine stderr')
+    assert result.run.error == 'real engine stderr'
+    assert json.loads(status.read_text())['run_interruption']['error'] == 'real engine stderr'
+    assert 'stale' not in (result.run.error or '')
+
+
+@pytest.mark.parametrize(
+    'metrics, stderr, expected',
+    [
+        ({'run_id': 'run-current', 'run_completed': False, 'failure_reason': None},
+         'engine boom', 'engine boom'),
+        ({'run_id': 'run-current', 'run_completed': False, 'failure_reason': {'raw': 'dict'}},
+         'engine boom', 'engine boom'),
+        ({'run_id': 'run-current', 'run_completed': False, 'failure_reason': '   '},
+         'engine boom', 'engine boom'),
+        ({'run_id': 'run-current', 'run_completed': False, 'failure_reason': '   ',
+          'selected_error': 'current selected failure'}, 'engine boom', 'current selected failure'),
+        ({'run_id': 'run-current', 'run_completed': False, 'failure_reason': {'bad': 'shape'},
+          'selected_error': 'current selected failure'}, 'engine boom', 'current selected failure'),
+        ({}, 'engine boom', 'engine boom'),
+        ({'run_id': 'run-current', 'run_completed': False},
+         '', 'engine exited rc=1; scan incomplete'),
+    ],
+)
+def test_failed_run_without_usable_structured_reason_falls_back(
+    runner_env, test_repo, monkeypatch, metrics, stderr, expected
+):
+    monkeypatch.setattr('bluei.app.runner.generate_id', lambda _prefix: 'run-current')
+    _write_failed_status(runner_env, metrics)
+    result = _run_failed_engine(runner_env, test_repo, stderr)
+    assert result.run.error == expected

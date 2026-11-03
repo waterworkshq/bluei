@@ -823,6 +823,12 @@ class RunEngine:
                     run.model_invocations_by_backend = failed_metrics.get("model_invocations_by_backend", {})
                     run.fixes_verified = int(failed_metrics.get("fixes_verified", 0) or 0)
                     run.fixes_failed = int(failed_metrics.get("fixes_failed_verification", 0) or 0)
+                    for key in ("failure_reason", "selected_error"):
+                        structured_reason = failed_metrics.get(key)
+                        if isinstance(structured_reason, str) and structured_reason.strip():
+                            # This run's own engine-authored reason beats raw stderr.
+                            run.error = " ".join(structured_reason.split())[:500]
+                            break
                 self._mark_interrupted_status(
                     repo_name,
                     options.phase,

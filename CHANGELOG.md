@@ -10,6 +10,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Failed selected repairs refresh the current run mode, counts, backend configuration, and completion status instead of keeping the previous scan's projection. Current-run structured rejection reasons take precedence over unrelated stderr warnings; stale failure reasons are ignored and later completed runs clear old interruption metadata.
 - Scope-limit, validation, and finalization aborts preserve the completed attempt's invocation, failure, and blocking counters instead of reporting zero after the model has already run. Safety limits and rejection decisions are unchanged.
 - Single-finding model prompts describe the configured validation checks by ordinal and pre-fix status without exposing command arguments, check names, or output. The engine still executes the original commands. Prompts distinguish tolerated unchanged baseline failures from regressions; strict mode requires all checks to pass. Tolerated failures must retain the same exit code and nonempty failure fingerprint, so nondeterministic failing output can now block verification rather than silently pass.
 - Public scans report explicit per-detector completion, missing tools, failures, and deliberate skips. Interrupted and skipped-only scans retain current-run counts without claiming clean zero findings or improving health; non-scanning repair/merge phases no longer masquerade as new scans. Incomplete verification cannot close issues or trigger fixing.
