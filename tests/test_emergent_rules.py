@@ -207,6 +207,9 @@ def test_emergent_rule_store_records_shadow_runs_and_promotes_safe_rule(
     store.validate_proposals()
     rule = store.load()[0]
 
+    rule.negative_examples = ["value = 42"]
+    store.save([rule])
+
     first = store.record_shadow_run(
         rule.rule_id,
         matches=4,
@@ -287,7 +290,8 @@ def test_record_shadow_run_zero_findings_stays_tentative(tmp_path) -> None:
 def test_record_shadow_run_promotes_with_real_findings(tmp_path) -> None:
     """Positive shadow evidence (findings > 0, zero FPs) still promotes ACTIVE."""
     store = EmergentRuleStore(tmp_path / "emergent_rules.json")
-    store.save([_rule("er-live", status=EmergentRuleStatus.TENTATIVE)])
+    store.save([_rule("er-live", status=EmergentRuleStatus.TENTATIVE,
+                      negative_examples=["value = 42"])])
 
     for _ in range(3):
         result = store.record_shadow_run(
@@ -585,7 +589,8 @@ def test_promote_rule_active_to_retired(tmp_path) -> None:
 def test_promote_rule_writes_plugin_yaml(tmp_path) -> None:
     store = EmergentRuleStore(tmp_path / "emergent_rules.json")
     store.save(
-        [_rule("er-test", status=EmergentRuleStatus.ACTIVE, observation_count=10)]
+        [_rule("er-test", status=EmergentRuleStatus.ACTIVE, observation_count=10,
+               negative_examples=["value = 42"])]
     )
     plugin_dir = tmp_path / "plugin"
     plugin_dir.mkdir()
@@ -831,7 +836,8 @@ class TestEmergentRulesPromoteEdgeCases:
 
     def test_promote_rule_handles_corrupt_plugin_yaml(self, tmp_path):
         store = EmergentRuleStore(tmp_path / "rules.json")
-        store.save([_rule("er-test", status=EmergentRuleStatus.ACTIVE)])
+        store.save([_rule("er-test", status=EmergentRuleStatus.ACTIVE,
+                          negative_examples=["value = 42"])])
         plugin_dir = tmp_path / "plugin"
         plugin_dir.mkdir()
         (plugin_dir / "plugin.yaml").write_text("key: value\n", encoding="utf-8")
@@ -1308,7 +1314,7 @@ class TestRecordShadowRunWithMeasuredFPs:
         assert result["status"] == "rejected"
         reloaded = store.load()[0]
         assert reloaded.false_positive_count == 3
-        assert reloaded.false_positive_rate == 3 / 5
+        assert reloaded.false_positive_rate == 1.0
 
 
 class TestNegativeExamplesRoundTrip:

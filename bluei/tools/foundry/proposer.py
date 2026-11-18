@@ -23,7 +23,7 @@ from bluei.engine.recipe_schema import (
     parse_recipe,
 )
 from bluei.tools.foundry.models import RecipeProposal
-from bluei.tools.foundry.oracle import _run_detector_oracle
+from bluei.tools.foundry.oracle import _run_detector_oracle, qualify_retained_recipe
 from bluei.tools.foundry.prompt import _build_prompt
 
 
@@ -78,6 +78,9 @@ def propose_recipe(
     *,
     ruff_executable: str = "ruff",
     eslint_executable: str = "eslint",
+    retained: Optional[dict] = None,
+    repo_path=None,
+    checks: Optional[list] = None,
 ) -> Optional[RecipeProposal]:
     """Propose a Recipe from a seeded Pattern via an LLM.
 
@@ -95,7 +98,7 @@ def propose_recipe(
     try:
         cleaned_yaml = _strip_unknown_keys(raw_yaml)
         parsed: Recipe = parse_recipe(cleaned_yaml)
-    except (ValueError, yaml.YAMLError):
+    except (ValueError, TypeError, AttributeError, yaml.YAMLError):
         return None
 
     if parsed.replacement.type not in _KNOWN_REPLACEMENT_TYPES:
@@ -103,14 +106,21 @@ def propose_recipe(
     if parsed.match.type not in _KNOWN_MATCH_TYPES:
         return None
 
-    passed, reason = _run_detector_oracle(
-        pattern.rule,
-        pattern.before_snippet,
-        pattern.after_snippet,
-        pattern.language,
-        ruff_executable=ruff_executable,
-        eslint_executable=eslint_executable,
-    )
+    if retained is not None:
+        passed = qualify_retained_recipe(
+            parsed, cleaned_yaml, retained, repo_path, checks,
+            ruff_executable=ruff_executable,
+        )
+        reason = "authored recipe did not qualify against retained evidence"
+    else:
+        passed, reason = _run_detector_oracle(
+            pattern.rule,
+            pattern.before_snippet,
+            pattern.after_snippet,
+            pattern.language,
+            ruff_executable=ruff_executable,
+            eslint_executable=eslint_executable,
+        )
 
     return RecipeProposal(
         recipe_yaml=cleaned_yaml,

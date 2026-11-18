@@ -116,7 +116,12 @@ def validate_candidate(*, worktree_path, source_repo, candidate_base, findings,
 
 def candidate_signature(worktree_path):
     """Pin the checked tracked bytes, index and HEAD across validators/rescans."""
+    return _capture_candidate(worktree_path)[0]
+
+
+def _capture_candidate(worktree_path):
     signature = hashlib.sha256()
+    captured = []
     for command in (
         ["git", "rev-parse", "HEAD"],
         ["git", "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"],
@@ -134,7 +139,8 @@ def candidate_signature(worktree_path):
             raise ValueError("candidate exceeds bounded patch representation")
         signature.update(len(data).to_bytes(8, "big"))
         signature.update(data)
-    return signature.hexdigest()
+        captured.append(data)
+    return signature.hexdigest(), captured[1]
 
 
 def retain_candidate_patch(*, worktree_path, output_dir, identity, prefix="local-fix",
@@ -150,18 +156,11 @@ def retain_candidate_patch(*, worktree_path, output_dir, identity, prefix="local
     if any(path for path in untracked.stdout.split(b"\0")
            if path and path != QA_FIX_PROMPT_FILENAME.encode()):
         raise ValueError("repair contains new files not represented by its tracked-file patch")
-    # ponytail: tracked-file patches are bounded to 1 MiB; larger/new-file artifacts need a separate format.
-    with tempfile.TemporaryFile() as output:
-        subprocess.run(
-            ["git", "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"], cwd=str(worktree_path),
-            stdout=output, stderr=subprocess.DEVNULL, timeout=60, check=True,
-            preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_FSIZE, ((1 << 20) + 1,) * 2),
-        )
-        output.seek(0)
-        patch = output.read((1 << 20) + 1)
-    if not patch.strip() or len(patch) > (1 << 20):
-        raise ValueError("repair patch is empty or exceeds 1 MiB")
-    if expected_signature is not None and candidate_signature(worktree_path) != expected_signature:
+    # Capture and fingerprint the same patch bytes that will be persisted.
+    captured_signature, patch = _capture_candidate(worktree_path)
+    if not patch.strip():
+        raise ValueError("repair patch is empty")
+    if expected_signature is not None and captured_signature != expected_signature:
         raise ValueError("candidate changed during patch retention")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

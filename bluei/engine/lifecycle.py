@@ -154,82 +154,8 @@ def _extract_fix_pattern(
                 log_file,
                 f"pattern-extract-hook: source={fix_source} finding_id={finding.finding_id} pattern_id={pattern_id}",
             )
-            try:
-                workspace = Path(pattern_store_path).parent.parent
-                if _is_pattern_sharing_enabled(workspace):
-                    from bluei.engine.shared_pattern_library import SharedPatternLibrary
-
-                    lib_path = workspace / "state" / "shared_patterns"
-                    lib = SharedPatternLibrary(lib_path)
-                    stored = store.get_pattern(pattern_id)
-                    if stored is not None and stored.confidence >= 0.8:
-                        repo_id = str(worktree_path.resolve().stem)
-                        lib.publish(
-                            rule=stored.rule,
-                            language=stored.language,
-                            before_snippet=stored.before_snippet,
-                            after_snippet=stored.after_snippet,
-                            confidence=stored.confidence,
-                            repo_id=repo_id,
-                            structural_hash=stored.structural_hash,
-                            success_count=stored.success_count,
-                            failure_count=stored.failure_count,
-                        )
-                        try:
-                            from bluei.engine.shared_pattern_library import (
-                                check_promotion_eligibility,
-                                promote_pattern_to_recipe,
-                            )
-                            from bluei.engine.governance import PromotionResult
-                            from bluei.engine.recipe_engine import staged_recipe_dir
-
-                            cross_pat = (
-                                lib._get_cached(stored.language).get(
-                                    f"{stored.rule}::{stored.structural_hash}"
-                                )
-                                if stored.structural_hash
-                                else None
-                            )
-                            if cross_pat and check_promotion_eligibility(cross_pat):
-                                from bluei.app.config import load_global_config
-
-                                _promote_config = load_global_config()
-                                _state_dir = (
-                                    pattern_store_path.parent
-                                    if pattern_store_path
-                                    else None
-                                )
-                                _ar_path = (
-                                    _state_dir / "approval_records.jsonl"
-                                    if _state_dir
-                                    else None
-                                )
-
-                                result = promote_pattern_to_recipe(
-                                    cross_pat,
-                                    stored.language,
-                                    staged_recipe_dir(),
-                                    config=_promote_config,
-                                    repo_state_dir=_state_dir,
-                                    approval_records_path=_ar_path,
-                                )
-                                if result == PromotionResult.PROMOTED:
-                                    try:
-                                        _get_recipe_engine().reload()
-                                    except Exception:
-                                        _logger.debug(
-                                            "Pattern extract hook failed (top-level)"
-                                        )
-                                elif result == PromotionResult.PENDING_APPROVAL:
-                                    _logger.info(
-                                        "Pattern promotion queued for approval: %s",
-                                        cross_pat.pattern_id,
-                                    )
-                                # NOT_ELIGIBLE: no action
-                        except Exception:
-                            _logger.debug("Pattern extract hook failed (outer)")
-            except Exception:
-                _logger.debug("Failed to reload recipe engine after fix")
+            # Legacy extraction is local-only: no retained patch or registered
+            # identity accompanies these observations.
         else:
             _append_text(
                 log_file,
@@ -379,6 +305,80 @@ def apply_claude_fix(req: ClaudeFixRequest) -> Tuple[int, str, str]:
             prompt_path.unlink(missing_ok=True)
         except Exception:
             _logger.debug("Failed to unlink prompt temp file")
+
+
+def start_retained_autofix(*, workspace: Path, worktree: Path,
+                           finding: Finding, repo_id: str, log_file: Path) -> Optional[Tuple[str, str]]:
+    """Open an observation before the supported repair mutates its target."""
+    from uuid import uuid4
+
+    from bluei.engine.shared_pattern_library import SharedPatternLibrary
+
+    if not _is_pattern_sharing_enabled(workspace):
+        return None
+    try:
+        target = (worktree / finding.path).resolve()
+        if not target.is_relative_to(worktree.resolve()) or not target.is_file():
+            return None
+        with target.open("rb") as stream:
+            raw = stream.read((1 << 20) + 1)
+        if not raw or len(raw) > (1 << 20) or b"\0" in raw:
+            return None
+        before = raw.decode("utf-8")
+        attempt_id = uuid4().hex
+        library = SharedPatternLibrary(workspace / "state" / "shared_patterns")
+        library.record_attempt(attempt_id, repo_id, before)
+        return attempt_id, before
+    except (OSError, ValueError, TypeError) as exc:
+        _append_text(log_file, f"accepted attempt unavailable: {type(exc).__name__}")
+        return None
+
+
+def record_retained_autofix(
+    *, worktree: Path, patch_path: Path, base: str, finding: Finding,
+    repo_id: str, workspace: Path, state_dir: Path, log_file: Path,
+    attempt: Optional[Tuple[str, str]] = None,
+) -> None:
+    """Record one repeatable observation of an accepted ordinary repair."""
+    import fcntl
+
+    from bluei.engine.jsonl import read_jsonl
+    from bluei.engine.pattern_extractor import read_accepted_evidence
+
+    evidence_path = state_dir / "accepted_fix_evidence.jsonl"
+    try:
+        state_dir.resolve().relative_to((workspace / "repos").resolve())
+        evidence = read_accepted_evidence(worktree, patch_path, base, finding, repo_id)
+        if not evidence:
+            return
+        with evidence_path.with_suffix(".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            records = read_jsonl(evidence_path, skip_errors=False)
+            existing = next((r for r in records if r.get("evidence_id") == evidence["evidence_id"]), None)
+            from bluei.engine.governance import format_asset_ref
+            from bluei.engine.shared_pattern_library import SharedPatternLibrary
+
+            evidence["patch_name"] = patch_path.name
+            evidence["local_asset_ref"] = format_asset_ref("pattern", f"fp-{evidence['evidence_id']}")
+            if attempt is None:
+                if existing is None:
+                    append_jsonl(evidence_path, evidence)
+                return
+            attempt_id, before = attempt
+            if before != evidence["before"]:
+                return
+            library = SharedPatternLibrary(workspace / "state" / "shared_patterns")
+            shared_id = library.observe_accepted(
+                evidence["rule"], "python", before, evidence["after"], repo_id, evidence["evidence_id"],
+            )
+            evidence["shared_asset_ref"] = format_asset_ref("pattern", shared_id)
+            if existing is None:
+                append_jsonl(evidence_path, evidence)
+            elif existing.get("shared_asset_ref") != evidence["shared_asset_ref"]:
+                return
+            library.record_attempt(attempt_id, repo_id, before, evidence_id=evidence["evidence_id"])
+    except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError) as exc:
+        _append_text(log_file, f"accepted evidence unavailable: {type(exc).__name__}")
 
 
 def record_accepted_fix(req: ClaudeFixRequest, fix_source: str = "claude") -> None:
@@ -613,7 +613,8 @@ def _transactional_autofix(func):
     from functools import wraps
 
     @wraps(func)
-    def wrapped(worktree_path, finding, log_file, pattern_store_path=None, detected_frameworks=None):
+    def wrapped(worktree_path, finding, log_file, pattern_store_path=None, detected_frameworks=None,
+                *, retained_state=None):
         from bluei.engine.cascade import default_checkpoint_dir
         from bluei.engine.worktree_checkpoint import (
             CheckpointError, capture_checkpoint, changed_paths, discard_checkpoint, restore_checkpoint,
@@ -631,7 +632,8 @@ def _transactional_autofix(func):
             discard_checkpoint(checkpoint)
 
         try:
-            accepted = func(worktree_path, finding, log_file, None, detected_frameworks)
+            options = {"retained_state": retained_state} if retained_state else {}
+            accepted = func(worktree_path, finding, log_file, None, detected_frameworks, **options)
             if accepted:
                 allowed = {target.as_posix()}
                 allowed.update(
@@ -702,6 +704,7 @@ def apply_autofix(
     log_file: Path,
     pattern_store_path: Optional[Path] = None,
     detected_frameworks: Optional[list] = None,
+    *, retained_state=None,
 ) -> bool:
     """Apply a deterministic fix for a finding using recipes or hardcoded patterns.
 
@@ -753,7 +756,13 @@ def apply_autofix(
 
     # --- Phase 1: Try recipe engine for declarative YAML recipes ---
     file_text = file_path.read_text(encoding="utf-8") if file_path.exists() else ""
-    recipe = _get_recipe_engine().match(finding.rule, "python", file_text=file_text)
+    recipe = None
+    if retained_state:
+        from bluei.engine.retained_recipe import select_active_recipe
+
+        recipe = select_active_recipe(*retained_state, finding, file_text)
+    if recipe is None:
+        recipe = _get_recipe_engine().match(finding.rule, "python", file_text=file_text)
     if recipe:
         result = _get_recipe_engine().apply(
             recipe, file_path, worktree_path, finding=finding

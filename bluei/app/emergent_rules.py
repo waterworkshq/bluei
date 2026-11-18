@@ -88,7 +88,7 @@ class EmergentRule:
     evidence_runs: List[str] = field(default_factory=list)
     source_finding_ids: List[str] = field(default_factory=list)
     observation_count: int = 0
-    false_positive_rate: float = 0.0
+    false_positive_rate: float | None = None
     shadow_runs: int = 0
     shadow_findings: int = 0
     false_positive_count: int = 0
@@ -122,7 +122,7 @@ class EmergentRule:
         payload.setdefault("evidence_runs", [])
         payload.setdefault("source_finding_ids", [])
         payload.setdefault("observation_count", 0)
-        payload.setdefault("false_positive_rate", 0.0)
+        payload.setdefault("false_positive_rate", None)
         payload.setdefault("shadow_runs", 0)
         payload.setdefault("shadow_findings", 0)
         payload.setdefault("false_positive_count", 0)
@@ -360,7 +360,7 @@ class EmergentRuleStore:
         rule_id: str,
         *,
         matches: int,
-        false_positives: int,
+        false_positives: int | None,
         min_shadow_runs: int = 3,
         max_false_positive_rate: float = 0.2,
     ) -> Dict[str, Any]:
@@ -394,22 +394,26 @@ class EmergentRuleStore:
                 return {"status": rule.status.value, "updated": False}
             rule.shadow_runs += 1
             rule.shadow_findings += max(0, matches)
-            rule.false_positive_count += max(0, false_positives)
+            negative_result = _negative_corpus_rate(rule)
+            # Preserve the existing reported-false-positive veto even when the
+            # corpus is unavailable. Only the corpus can qualify promotion.
+            rule.false_positive_count += max(0, false_positives or 0)
+            reported_rate = rule.false_positive_count / max(1, rule.shadow_findings)
             rule.false_positive_rate = (
-                rule.false_positive_count / rule.shadow_findings
-                if rule.shadow_findings
-                else 0.0
+                max(reported_rate, negative_result) if negative_result is not None
+                else reported_rate if rule.false_positive_count else None
             )
             if (
                 rule.shadow_runs >= min_shadow_runs
                 and rule.shadow_findings > 0
+                and negative_result is not None
                 and rule.false_positive_rate <= max_false_positive_rate
             ):
                 rule.status = EmergentRuleStatus.ACTIVE
                 rule.activated_at = now_iso()
             elif (
                 rule.shadow_runs >= min_shadow_runs
-                and rule.false_positive_rate > max_false_positive_rate
+                and max(reported_rate, negative_result or 0.0) > max_false_positive_rate
             ):
                 rule.status = EmergentRuleStatus.REJECTED
                 rule.rejected_reason = "shadow_false_positive_rate"
@@ -538,6 +542,9 @@ class EmergentRuleStore:
                 "promoted": False,
                 "reason": f"cannot promote from {target.status.value}",
             }
+        rate = _negative_corpus_rate(target)
+        if plugin_dir is not None and (rate is None or rate > 0.2):
+            return {"promoted": False, "reason": "known-clean negative evidence is missing or failed"}
 
         target.status = EmergentRuleStatus.RETIRED
         target.retired_at = now_iso()
@@ -830,6 +837,26 @@ def _scan_structural(
             )
         )
     return matches
+
+
+def _negative_corpus_rate(rule: EmergentRule) -> float | None:
+    """Distinguish measured zero from absent or unsupported evidence."""
+    examples = list(dict.fromkeys(s for s in rule.negative_examples if isinstance(s, str) and s.strip()))
+    pattern = rule.detection_pattern
+    if not examples or not pattern.search_pattern.strip():
+        return None
+    # ponytail: structural negatives need an evaluability verdict from the capped scanner.
+    if pattern.detection_type == DetectionType.TEXT_PATTERN:
+        matches = sum(any(pattern.search_pattern.strip() in line for line in s.splitlines()) for s in examples)
+    elif pattern.detection_type == DetectionType.REGEX_PATTERN:
+        try:
+            regex = re.compile(pattern.search_pattern.strip())
+        except re.error:
+            return None
+        matches = sum(any(regex.search(line) for line in s.splitlines()) for s in examples)
+    else:
+        return None
+    return matches / len(examples)
 
 
 def measure_false_positives(rule: EmergentRule) -> int:

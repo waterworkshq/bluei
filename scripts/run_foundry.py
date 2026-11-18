@@ -179,5 +179,52 @@ def main(
     return 0 if (summary.written > 0 or summary.queued_pending > 0) else 1
 
 
+def run_registered_foundry(repo_name: str, evidence_id: str, *, llm_callback=None) -> int:
+    """Qualify one accepted repair from the public repository state."""
+    from bluei.app.config import ConfigManager, load_global_config
+    from bluei.app.state import StateManager
+    from bluei.engine.bundle_loader import bundle_from_accepted
+    from bluei.engine.governance import resolve_learning_mode
+    from bluei.engine.retained_recipe import load_accepted_evidence, require_fleet_evidence, trail_path
+
+    try:
+        manager = ConfigManager()
+        repo = manager.load_repo_config(repo_name) if repo_name in manager.list_repo_configs() else None
+        config = load_global_config(manager.workspace)
+        if not repo or not repo.id or not repo.baseline_checks or resolve_learning_mode(config) == "paused":
+            raise ValueError("registered repository with configured checks and unpaused learning required")
+        state_dir = StateManager(manager.repos_dir).get_state_file(repo_name).parent
+        evidence = load_accepted_evidence(state_dir, repo.id, evidence_id)
+        bundle = bundle_from_accepted(evidence)
+        require_fleet_evidence(state_dir, evidence)
+        pattern = FixPattern(
+            pattern_id=evidence["local_asset_ref"].removeprefix("pattern:"), rule=bundle.rule,
+            language=bundle.language, file_path=evidence["path"], diff_patch="",
+            before_snippet=bundle.before, after_snippet=bundle.after,
+        )
+        if llm_callback is None:
+            template = resolve_author_cmd_template(config)
+            if template is None:
+                raise ValueError(DISABLED_MESSAGE)
+            llm_callback = make_claude_callback(template)
+        summary = run_foundry(
+            [pattern], [bundle], llm_callback=llm_callback, staged_dir=state_dir / "recipes" / "staged",
+            config=config, approval_records_path=trail_path(state_dir), retained=evidence,
+            repo_path=Path(repo.path).resolve(), checks=repo.baseline_checks,
+        )
+        return 0 if summary.queued_pending or summary.written else 1
+    except (OSError, ValueError, KeyError, AttributeError, TypeError) as exc:
+        print(f"foundry: retained proposal refused: {exc}", file=sys.stderr)
+        return 1
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        import argparse
+
+        parser = argparse.ArgumentParser(description="Qualify a registered repository's accepted repair")
+        parser.add_argument("--repo", required=True)
+        parser.add_argument("--evidence", required=True)
+        options = parser.parse_args()
+        raise SystemExit(run_registered_foundry(options.repo, options.evidence))
     raise SystemExit(main())

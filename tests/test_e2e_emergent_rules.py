@@ -384,7 +384,7 @@ class TestIntegratedLifecycle:
             make_finding(
                 finding_id=f"f-promo-{i}",
                 rule="todo-XXX",
-                path=f"src/mod_{i}.py",
+                path=f"src/mod_{i}.txt",
                 snippet="# TODO: fix",
             )
             for i in range(6)
@@ -396,6 +396,9 @@ class TestIntegratedLifecycle:
         rule_id = rules[0].rule_id
         observation_count = rules[0].observation_count
         assert observation_count == 6
+
+        rules[0].negative_examples = ["value = 42"]
+        store.save(rules)
 
         approval = store.approve_rule(rule_id)
         assert approval == {"status": "active", "updated": True}

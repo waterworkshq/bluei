@@ -60,6 +60,9 @@ def run_foundry(
     approval_records_path: Optional[Path] = None,
     ruff_executable: str = "ruff",
     eslint_executable: str = "eslint",
+    retained: Optional[dict] = None,
+    repo_path: Optional[Path] = None,
+    checks: Optional[list] = None,
 ) -> FoundrySummary:
     """Orchestrate proposal -> validation -> policy-routed write per Pattern."""
     config = config or {}
@@ -67,12 +70,21 @@ def run_foundry(
     summary = FoundrySummary()
 
     for pattern in patterns:
+        bundle = bundles_by_rule.get(pattern.rule)
+        extra = {}
+        if retained is not None:
+            matching = [b for b in bundles if b.asset_ref == retained.get("shared_asset_ref")
+                        and b.id == f"gb-{retained['evidence_id']}"
+                        and b.before == retained['before'] and b.after == retained['after']]
+            if (len(matching) != 1 or pattern.rule != retained['rule']
+                    or f"pattern:{pattern.pattern_id}" != retained['local_asset_ref']):
+                summary.rejected += 1
+                continue
+            bundle = matching[0]
+            extra = {"retained": retained, "repo_path": repo_path, "checks": checks}
         proposal = propose_recipe(
-            pattern,
-            bundles_by_rule.get(pattern.rule),
-            llm_callback,
-            ruff_executable=ruff_executable,
-            eslint_executable=eslint_executable,
+            pattern, bundle, llm_callback, ruff_executable=ruff_executable,
+            eslint_executable=eslint_executable, **extra,
         )
 
         if proposal is None:
@@ -120,26 +132,64 @@ def run_foundry(
             summary.held_paused += 1
             continue
 
-        if policy == "gate_closed":
-            if approval_records_path is not None:
-                record = ApprovalRecord(
-                    asset_ref=asset_ref,
-                    decision="pending_approval",
-                    native_state_before="seeded-pattern",
-                    native_state_after="pending-recipe",
-                    reason="Foundry proposal; gate-closed policy requires approval",
-                    evidence_snapshot={
-                        "recipe_id": recipe_id,
-                        "proposed_recipe_yaml": proposal.recipe_yaml,
-                        "source_pattern_id": proposal.source_pattern_id,
-                        "source_bundle_id": proposal.source_bundle_id,
-                        "rule": pattern.rule,
-                    },
-                    actor="system:recipe-foundry",
-                    timestamp=now_iso(),
+        if retained is not None:
+            import hashlib
+
+            from bluei.engine.retained_recipe import (
+                append_decision, bound_artifact, digest, latest, stage_exact, stage_path,
+                trail_lock, trail_path,
+            )
+
+            # Runtime evidence uses the existing write-producing default, not
+            # the build-time seed exception.
+            policy = resolve_policy(config, "recipe", "write_producing")
+            if approval_records_path is None:
+                summary.rejected += 1
+                continue
+            state_dir = approval_records_path.parent
+            if approval_records_path != trail_path(state_dir):
+                summary.rejected += 1
+                continue
+            proof = {
+                "contract": "retained-ruff-b904-v1", "repo_id": retained["repo_id"],
+                "asset_ref": asset_ref, "evidence_sha256": digest(retained),
+                "source_pattern_id": proposal.source_pattern_id,
+                "source_bundle_id": bundle.id, "shared_asset_ref": bundle.asset_ref,
+                "checks_sha256": digest(checks), "proposed_recipe_yaml": proposal.recipe_yaml,
+                "recipe_sha256": hashlib.sha256(proposal.recipe_yaml.encode()).hexdigest(),
+            }
+            proof["proposal_id"] = digest(proof)
+            with trail_lock(state_dir) as trail:
+                # Recheck after authoring and validation: neither can bless a
+                # patch or evidence record that changed while they were running.
+                _, recipe, artifact = bound_artifact(
+                    {"asset_ref": asset_ref, "evidence_snapshot": proof}, retained["repo_id"], state_dir,
                 )
-                append_jsonl(approval_records_path, record.to_dict())
-            summary.queued_pending += 1
+                previous = latest(trail, asset_ref)
+                if previous:
+                    if previous.get("decision") == "pending_approval" and previous.get("evidence_snapshot") == proof:
+                        summary.queued_pending += 1
+                    else:
+                        summary.rejected += 1
+                    continue
+                if policy == "gate_closed":
+                    append_decision(trail, asset_ref, "pending_approval", "accepted-pattern",
+                                    "pending-recipe", proof, "system:recipe-foundry")
+                    summary.queued_pending += 1
+                else:
+                    stage_exact(stage_path(state_dir, recipe), artifact)
+                    append_decision(trail, asset_ref, "auto_promote", "accepted-pattern",
+                                    "staged-retained-recipe", proof, "system:recipe-foundry")
+                    summary.written += 1
+                    summary.auto_promoted += 1
+            continue
+
+        if policy == "gate_closed":
+            # A curated seed has no registered retained evidence. The public
+            # inbox cannot act on it, so do not queue an unbound proposal.
+            _logger.warning("foundry: %s requires registered retained evidence", asset_ref)
+            summary.rejected += 1
+            summary.rejected_topics.append(pattern.rule)
             continue
 
         staged_dir.mkdir(parents=True, exist_ok=True)

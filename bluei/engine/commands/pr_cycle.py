@@ -811,6 +811,8 @@ def _process_one_issue(
 
     run_status = "unknown"
     model_request = None
+    ordinary_autofix = False
+    retained_attempt = None
     cascade_acceptance = []
     # Scoped runs verify closure against the same discovery scope that
     # produced the finding; repository runs keep the default verification.
@@ -1204,14 +1206,30 @@ def _process_one_issue(
                         )
                         return counters.to_deltas()
                 else:
+                    options = {}
+                    if (
+                        repo_config is not None and repo_config.id
+                        and ctx.learning_mode in {"active", "audit_only"} and not args.live_github_actions
+                        and not args.dry_run and not getattr(args, "finding_id", None)
+                        and not getattr(args, "no_learning", False)
+                        and canonical_ruff_rule(finding.rule) == "ruff-b904"
+                    ):
+                        from bluei.app.config import WORKSPACE
+                        from bluei.engine.lifecycle import start_retained_autofix
+
+                        retained_attempt = start_retained_autofix(
+                            workspace=WORKSPACE, worktree=worktree_path,
+                            finding=finding, repo_id=repo_config.id, log_file=log_file,
+                        )
+                        if retained_attempt is not None and ctx.learning_mode == "active":
+                            options["retained_state"] = (
+                                ctx.state_file.parent, repo_config.id, repo_config.baseline_checks,
+                                retained_attempt[0],
+                            )
                     applied = apply_autofix(
-                        worktree_path,
-                        finding,
-                        log_file,
-                        # ponytail: defer deterministic mining until its final
-                        # accepted-outcome producer is connected, not tier exit.
-                        pattern_store_path=None,
+                        worktree_path, finding, log_file, pattern_store_path=None, **options,
                     )
+                    ordinary_autofix = applied
                     if not applied:
                         from bluei.engine.context_fix import record_context_failure
                         from bluei.engine.reforge import get_context_rule, match_context
@@ -1540,6 +1558,24 @@ def _process_one_issue(
             run_status = "selected-patch-verified" if selected_repair else "local-patch-verified"
             _append_text(log_file, f"{_patch_prefix}-patch: path={_patch_path}")
             accepted_artifact = True
+            if (
+                ordinary_autofix and not selected_repair and not args.dry_run
+                and ctx.learning_mode != "paused" and not getattr(args, "no_learning", False)
+                and getattr(args, "pattern_store_path", None) and repo_config is not None
+                and repo_config.baseline_checks
+                and list(PER_REPO_BASELINE_CHECKS.values()) == repo_config.baseline_checks
+                and all(r.get("available") is True and r.get("rc") == 0
+                        for r in (*post_fix_results.values(), *target_results.values()))
+            ):
+                from bluei.app.config import WORKSPACE
+                from bluei.engine.lifecycle import record_retained_autofix
+
+                record_retained_autofix(
+                    worktree=worktree_path, patch_path=_patch_path, base=candidate_base,
+                    finding=finding, repo_id=repo_config.id, workspace=WORKSPACE,
+                    state_dir=ctx.state_file.parent, log_file=log_file,
+                    attempt=retained_attempt,
+                )
         else:
             finalize_result = _finalize_pr_for_issue(
                 issue=issue,

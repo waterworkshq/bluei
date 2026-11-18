@@ -171,11 +171,13 @@ def _cmd_emergent(rest: list[str]) -> int:
         except KeyError:
             print(f"bluei: emergent rule '{rule_id}' not found.", file=sys.stderr)
             return 1
+        rate = result.get("false_positive_rate")
+        rate_label = "unmeasured" if rate is None else f"{rate:.3f}"
         print(
             "Emergent shadow: "
             f"rule={rule_id} status={result['status']} "
             f"shadow_runs={result.get('shadow_runs', 0)} "
-            f"false_positive_rate={result.get('false_positive_rate', 0.0):.3f}"
+            f"false_positive_rate={rate_label}"
         )
         return 0
 
@@ -300,7 +302,8 @@ def _emergent_show(store, rule_id: str) -> int:
         print(f"Category: {rule.category}")
         print(f"Observations: {rule.observation_count}")
         print(f"Shadow runs: {rule.shadow_runs}")
-        print(f"False positive rate: {rule.false_positive_rate:.3f}")
+        rate = rule.false_positive_rate
+        print("False positive rate: " + ("unmeasured" if rate is None else f"{rate:.3f}"))
         if rule.evidence_runs:
             print(f"Evidence runs: {', '.join(rule.evidence_runs)}")
         if rule.source_finding_ids:
