@@ -29,6 +29,19 @@ class VerificationResult:
         target_failures: List of target check names that failed.
         baseline_results: Pre-computed baseline results.
         post_results: Pre-computed post-fix results.
+        qualified: True only when checks were configured and every configured
+            name is runtime-available (``available=True`` marker) in both the
+            baseline and post results. An empty/missing check set stays
+            passed-but-not-qualified and must not qualify autonomous repair.
+        unavailable: Names of checks with missing/unavailable evidence.
+        checks_configured: Number of configured check names.
+        checks_available: Observed names with all-executed evidence.
+        checks_passed: Configured names passing with runtime evidence in both
+            baseline and post — the passing-control count qualification
+            requires (>=1). Stage-1 semantic ceiling: a passing control does
+            not prove arbitrary check-command quality.
+        tolerated_failures: Executed baseline failures unchanged post-fix —
+            real evidence and qualified, but never reported as "all passed".
     """
 
     passed: bool
@@ -38,6 +51,12 @@ class VerificationResult:
     target_failures: List[str] = field(default_factory=list)
     baseline_results: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     post_results: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    qualified: bool = False
+    unavailable: List[str] = field(default_factory=list)
+    checks_configured: int = 0
+    checks_available: int = 0
+    checks_passed: int = 0
+    tolerated_failures: List[str] = field(default_factory=list)
 
 
 def verify_fix_closed(
@@ -128,6 +147,12 @@ def run_validation(
         target_failures=result.get("target_failures", []),
         baseline_results=result.get("baseline_results", {}),
         post_results=result.get("post_results", {}),
+        qualified=result.get("qualified", False),
+        unavailable=result.get("unavailable", []),
+        checks_configured=result.get("checks_configured", 0),
+        checks_available=result.get("checks_available", 0),
+        checks_passed=result.get("checks_passed", 0),
+        tolerated_failures=result.get("tolerated_failures", []),
     )
 
 

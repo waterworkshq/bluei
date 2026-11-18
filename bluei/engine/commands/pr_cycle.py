@@ -1,13 +1,13 @@
 """PR cycle phase: queue candidates, apply fixes, create PRs."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import subprocess
 import time
 
-from bluei.engine.models import Finding, FixEngine, IssueStatus, now_iso
+from bluei.engine.models import Finding, FixEngine, IssueStatus, now_iso, canonical_ruff_rule
 from bluei.engine.state import (
     NON_ACTIONABLE_ISSUE_STATUSES,
     _append_text,
@@ -36,6 +36,7 @@ from bluei.engine.lifecycle import (
     ClaudeFixRequest,
     apply_autofix,
     apply_claude_fix,
+    record_accepted_fix,
 )
 from bluei.engine.validation import (
     build_target_checks,
@@ -78,7 +79,7 @@ def _model_lane_eligible(finding: Finding) -> bool:
     if finding.safe_to_autofix:
         return True
     return (
-        finding.rule in _get_llm_fixable_rules()
+        (canonical_ruff_rule(finding.rule) or finding.rule) in _get_llm_fixable_rules()
         or classify_finding(finding) == RefactorClass.CONTEXTUAL_FIX
     )
 
@@ -138,6 +139,8 @@ def _select_candidates(
     gh_repo_slug: str,
     args: Any,
     issues_data: Dict[str, Any],
+    fresh_findings: Optional[List[Finding]] = None,
+    detector_outcomes: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Tuple[List[Tuple[Dict[str, Any], Finding]], int]:
     """Phase A: walk the issue queue, filter and classify each issue.
 
@@ -146,6 +149,20 @@ def _select_candidates(
     """
     candidates: List[Tuple[Dict[str, Any], Finding]] = []
     escalated = 0
+    aliases: Dict[str, set[str]] = {}
+    by_fresh_id: Dict[str, List[Finding]] = {}
+    if fresh_findings is not None:
+        from bluei.engine.state import _load_markdown_identities, _load_ruff_identities
+
+        _load_markdown_identities(findings_file, aliases=aliases)
+        _load_ruff_identities(findings_file, aliases=aliases)
+        for fresh in fresh_findings:
+            by_fresh_id.setdefault(fresh.finding_id, []).append(fresh)
+        active_ids = [
+            str(item.get("finding_id") or "")
+            for item in issues_data.get("issues", [])
+            if item.get("status") not in NON_ACTIONABLE_ISSUE_STATUSES
+        ]
     for issue in issues_data.get("issues", []):
         if issue.get("status") in ("resolved_merged",):
             continue
@@ -168,6 +185,32 @@ def _select_candidates(
             continue
         if issue.get("status") in NON_ACTIONABLE_ISSUE_STATUSES:
             continue
+        retained_patch = issue.get("verified_fix_patch") or issue.get("selected_fix_patch")
+        if retained_patch:
+            _append_text(
+                log_file, f"pr-cycle: retained patch pending application for finding={finding.finding_id}",
+            )
+            continue
+
+        if fresh_findings is not None:
+            ids = aliases.get(finding.finding_id, {finding.finding_id})
+            matching = [fresh for fid in ids for fresh in by_fresh_id.get(fid, [])]
+            complete = (
+                detector_outcomes is not None
+                and not any(record.get("status") in {"failed", "unavailable"}
+                            for record in detector_outcomes.values())
+                and len(matching) == 1
+                and responsible_detector_ran(matching[0].rule, detector_outcomes)
+            )
+            if not complete or sum(fid in ids for fid in active_ids) != 1:
+                _append_text(
+                    log_file, f"pr-cycle: unqualified queue finding={finding.finding_id}; "
+                    "absent, ambiguous or incomplete fresh evidence",
+                )
+                continue
+            # Retain issue identity/history while using only current detector
+            # metadata for classification, confidence and fix applicability.
+            finding = replace(matching[0], finding_id=finding.finding_id)
 
         if args.live_github_actions and not is_path_tracked(repo_path, finding.path):
             set_issue_status(
@@ -433,7 +476,7 @@ def _finalize_pr_for_issue(
             return FinalizeResult(
                 success=True,
                 run_status="resolved-verified-noop",
-                fixes_verified_delta=1,
+                fixes_verified_delta=0,
             )
         if commit_result != "committed":
             run_status = IssueStatus.NEEDS_HUMAN_COMMIT_FAILED.value
@@ -479,6 +522,14 @@ def _finalize_pr_for_issue(
             pr_result.get("number") if pr_result.get("number") is not None else None
         )
         pr_url = str(pr_result.get("url") or "")
+        if not args.dry_run and pr_number is None:
+            run_status = "needs-human-pr-creation-failed"
+            set_issue_status(issue, "fix_failed_verification", run_status)
+            return FinalizeResult(
+                success=False, run_status=run_status, should_break=True,
+                fixes_failed_verification_delta=1,
+                blocked_reasons_additions=[run_status],
+            )
         if pr_number is not None:
             issue_github["pr_number"] = pr_number
         if pr_url:
@@ -665,7 +716,10 @@ def _setup_worktree(
     log_file = ctx.log_file
     issue_github = issue.setdefault("github", {})
 
+    from uuid import uuid4
+
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
+    attempt_suffix = uuid4().hex[:10]
     finding_suffix = finding.finding_id[:8]
     if args.live_github_actions:
         worktree_branch = str(
@@ -674,8 +728,8 @@ def _setup_worktree(
             or f"qa/live-{branch_suffix(finding.rule)}-{finding_suffix}"
         )
     else:
-        worktree_branch = f"bluei/{ts}-{idx}"
-    worktree_path = worktree_root.resolve() / f"bluei-{ts}-{idx}-{finding_suffix}"
+        worktree_branch = f"bluei/{ts}-{idx}-{attempt_suffix}"
+    worktree_path = worktree_root.resolve() / f"bluei-{ts}-{idx}-{finding_suffix}-{attempt_suffix}"
 
     wt_result = create_worktree(
         repo_path=repo_path,
@@ -756,6 +810,8 @@ def _process_one_issue(
     worktree_branch = wt.worktree_branch
 
     run_status = "unknown"
+    model_request = None
+    cascade_acceptance = []
     # Scoped runs verify closure against the same discovery scope that
     # produced the finding; repository runs keep the default verification.
     _verify_kwargs = (
@@ -764,6 +820,10 @@ def _process_one_issue(
         else {}
     )
     try:
+        candidate_base = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=worktree_path,
+            capture_output=True, text=True, timeout=60, check=True,
+        ).stdout.strip()
         counters.fix_attempts += 1
         set_issue_status(issue, "fix_attempted", "starting sandbox autofix attempt")
 
@@ -772,6 +832,7 @@ def _process_one_issue(
             checks=PER_REPO_BASELINE_CHECKS,
             log_file=log_file,
             phase="worktree-baseline",
+            environment_repo=repo_path,
         )
         validation_baseline = choose_validation_baseline(
             repo_baseline_results=baseline_results,
@@ -780,6 +841,25 @@ def _process_one_issue(
         )
 
         target_checks = build_target_checks(finding)
+        baseline_gate = run_validation_gate(
+            repo_path=worktree_path,
+            worktree_path=worktree_path,
+            checks=PER_REPO_BASELINE_CHECKS,
+            baseline_results=validation_baseline,
+            post_fix_results=validation_baseline,
+            target_results={},
+            allow_unchanged_baseline_failures=args.allow_unchanged_baseline_failures,
+            log_file=log_file,
+        )
+        if not baseline_gate.get("passed") or not baseline_gate.get("qualified"):
+            run_status = (
+                f"{IssueStatus.NEEDS_HUMAN_VALIDATION_FAILED.value}:"
+                f"{baseline_gate.get('message', 'baseline checks unqualified')}"
+            )
+            counters.blocked_reasons.append(run_status)
+            set_issue_status(issue, "fix_failed_verification", run_status)
+            counters.fixes_failed_verification += 1
+            return counters.to_deltas()
 
         # File-level checkpoint for Dry Replay (ADR-0011). try_replay below
         # mutates the worktree file; we need the pre-fix state to replay
@@ -855,13 +935,9 @@ def _process_one_issue(
             else:
                 _standalone_attempted = True
                 _replay_t0 = time.monotonic()
-                # record_outcome: try_replay's internal three-way recording
-                # (HIT/MISS/FAILURE per ADR-0004) is authoritative on the
-                # mainline — MISS/FAILURE reach failure_count/last_failed_at
-                # instead of being silently dropped. Under
-                # learning_mode == "paused" (ADR-0013 full freeze) the replay
-                # may still run and deliver value, but the store must not
-                # mutate: evidence recording is gated, not the application.
+                # Negative replay observations are immediate; positive evidence
+                # waits for outer validation, closure and artifact acceptance.
+                # Paused mode freezes both without disabling application.
                 replayed, replay_pid = try_replay(
                     worktree_path=worktree_path,
                     finding=finding,
@@ -869,6 +945,7 @@ def _process_one_issue(
                     baseline_checks=PER_REPO_BASELINE_CHECKS,
                     log_file=log_file,
                     record_outcome=(ctx.learning_mode != "paused"),
+                    record_success=False,
                 )
                 _replay_latency_ms = int((time.monotonic() - _replay_t0) * 1000)
                 if replayed:
@@ -876,31 +953,6 @@ def _process_one_issue(
                     _append_text(
                         log_file,
                         f"pattern-replay-savings: pattern_id={replay_pid} rule={finding.rule}",
-                    )
-                    saved = cost_tracker.estimate_invocation_cost(
-                        "claude-sonnet-4",
-                        input_tokens=4000,
-                        output_tokens=2000,
-                    )
-                    cost_tracker.record_pattern_replay_savings(
-                        model="claude-sonnet-4",
-                        saved_cost=saved,
-                        pattern_id=replay_pid or "",
-                        rule=finding.rule,
-                    )
-                    ctx.ledger_records.append(
-                        {
-                            "cycle": args.run_phase,
-                            "finding_id": finding.finding_id,
-                            "rule": finding.rule,
-                            "stages_tried": [],
-                            "final_stage": "pattern-replay",
-                            "outcome": "resolved_deterministic",
-                            "via": "standalone-replay",
-                            "pattern_id": replay_pid,
-                            "latency_ms": _replay_latency_ms,
-                            "timestamp": now_iso(),
-                        }
                     )
                 elif replay_pid is not None:
                     from bluei.engine.pattern_replay import format_pattern_hint
@@ -919,46 +971,66 @@ def _process_one_issue(
             ):
                 from bluei.engine.lifecycle import apply_cascade_fix
 
-                applied = apply_cascade_fix(
-                    worktree_path,
-                    finding,
-                    log_file,
-                    pattern_store_path=Path(args.pattern_store_path)
-                    if args.pattern_store_path
-                    else None,
-                    deterministic_only=args.deterministic_only,
-                    ledger_path=ctx.state_file.parent / "cascade_resolutions.jsonl",
-                    cycle=args.run_phase,
-                    ledger_records=ctx.ledger_records,
-                    run_id=ctx.run_id,
-                    cost_tracker=ctx.cost_tracker,
-                    governance_state=ctx.governance_state,
-                    # The standalone replay attempted (and recorded) this
-                    # pattern for the finding when it actually RAN — the
-                    # cascade's pattern stage must not re-attempt and
-                    # double-record it. The gate-resolved candidate id counts
-                    # ONLY when the standalone replay was attempted (the
-                    # governance/resolve-failure skips never tried the
-                    # pattern, so the cascade stage is free to attempt it);
-                    # it is the reliable id source because try_replay
-                    # returns the pid only on some outcomes (a
-                    # snippet-not-found MISS records internally but returns
-                    # None).
-                    attempted_pattern_ids={
-                        pid
-                        for pid in (
-                            getattr(_gov_candidate, "pattern_id", None)
-                            if _standalone_attempted
-                            else None,
-                            replay_pid,
-                        )
-                        if pid
-                    }
-                    or None,
-                )
+                try:
+                    applied = apply_cascade_fix(
+                        worktree_path,
+                        finding,
+                        log_file,
+                        # Inner tier/replay success is not final acceptance.
+                        pattern_store_path=None,
+                        deterministic_only=(
+                            args.deterministic_only
+                            or args.fix_engine == FixEngine.DETERMINISTIC.value
+                        ),
+                        ledger_path=ctx.state_file.parent / "cascade_resolutions.jsonl",
+                        cycle=args.run_phase,
+                        ledger_records=ctx.ledger_records,
+                        run_id=ctx.run_id,
+                        cost_tracker=ctx.cost_tracker,
+                        governance_state=ctx.governance_state,
+                        baseline_checks=PER_REPO_BASELINE_CHECKS,
+                        baseline_results=validation_baseline,
+                        environment_repo=repo_path,
+                        claude_cmd_template=args.claude_cmd_template,
+                        backend=args.fix_engine,
+                        allow_unchanged_baseline_failures=args.allow_unchanged_baseline_failures,
+                        deferred_acceptance=cascade_acceptance,
+                        max_files_changed=args.max_files_changed,
+                        max_loc_diff=args.max_loc_diff,
+                        # The standalone replay attempted (and recorded) this
+                        # pattern for the finding when it actually RAN — the
+                        # cascade's pattern stage must not re-attempt and
+                        # double-record it. The gate-resolved candidate id counts
+                        # ONLY when the standalone replay was attempted (the
+                        # governance/resolve-failure skips never tried the
+                        # pattern, so the cascade stage is free to attempt it);
+                        # it is the reliable id source because try_replay
+                        # returns the pid only on some outcomes (a
+                        # snippet-not-found MISS records internally but returns
+                        # None).
+                        attempted_pattern_ids={
+                            pid
+                            for pid in (
+                                getattr(_gov_candidate, "pattern_id", None)
+                                if _standalone_attempted
+                                else None,
+                                replay_pid,
+                            )
+                            if pid
+                        }
+                        or None,
+                    )
+                finally:
+                    counters.claude_invocations += sum(
+                        record.get("model_invocations", 0) for record in cascade_acceptance
+                    )
+                    counters.deterministic_invocations += sum(
+                        record.get("deterministic_invocations", 0) for record in cascade_acceptance
+                    )
+                    ctx.claude_invocations = counters.claude_invocations
+                    ctx.deterministic_invocations = counters.deterministic_invocations
                 if applied:
                     run_status = "fix-applied:cascade"
-                    counters.deterministic_invocations += 1
                     _append_text(
                         log_file,
                         f"cascade-fix: succeeded finding_id={finding.finding_id} rule={finding.rule}",
@@ -979,19 +1051,24 @@ def _process_one_issue(
                     return counters.to_deltas()
             else:
                 llm_rules = _get_llm_fixable_rules()
+                rule_key = canonical_ruff_rule(finding.rule) or finding.rule
                 is_llm_fixable = (
-                    not finding.safe_to_autofix and finding.rule in llm_rules
+                    not finding.safe_to_autofix and rule_key in llm_rules
                 )
                 use_claude_engine = (
-                    args.fix_engine == FixEngine.CLAUDE.value
-                    or bool(getattr(args, "finding_id", None))
-                    or finding.rule in CLAUDE_REQUIRED_RULES
-                    or is_llm_fixable
+                    args.fix_engine != FixEngine.DETERMINISTIC.value
+                    and not getattr(args, "deterministic_only", False)
+                    and (
+                        args.fix_engine in (FixEngine.CLAUDE.value, FixEngine.OPENCODE.value)
+                        or bool(getattr(args, "finding_id", None))
+                        or finding.rule in CLAUDE_REQUIRED_RULES
+                        or is_llm_fixable
+                    )
                 )
                 if not use_claude_engine:
                     counters.deterministic_invocations += 1
                 extra_prompt = (
-                    llm_rules.get(finding.rule, {}).get("prompt_hint")
+                    llm_rules.get(rule_key, {}).get("prompt_hint")
                     if is_llm_fixable
                     else None
                 )
@@ -1055,35 +1132,35 @@ def _process_one_issue(
                     # Counted at the actual call, after the cost-limit check,
                     # so a skipped attempt is never reported as an invocation.
                     counters.claude_invocations += 1
-                    rc, claude_output, prompt_file = apply_claude_fix(
-                        ClaudeFixRequest(
-                            worktree_path=worktree_path,
-                            finding=finding,
-                            baseline_checks={},
-                            baseline_statuses=[
-                                record.get("rc") for record in validation_baseline.values()
-                            ],
-                            allow_unchanged_baseline_failures=args.allow_unchanged_baseline_failures,
-                            target_checks=target_checks,
-                            claude_cmd_template=resolved_tmpl,
-                            max_files_changed=args.max_files_changed,
-                            max_loc_diff=args.max_loc_diff,
-                            log_file=log_file,
-                            findings_file=findings_file,
-                            lessons_file=(
-                                None
-                                if getattr(args, "no_learning", False)
-                                else lessons_file
-                            ),
-                            extra_prompt=extra_prompt,
-                            pattern_store_path=Path(args.pattern_store_path)
-                            if args.pattern_store_path
-                            else None,
-                            learned_patterns=learned_patterns,
-                            authoritative_guidelines=authoritative_guidelines,
-                            repo_taste=repo_taste,
-                        ),
+                    learning_enabled = (
+                        not getattr(args, "no_learning", False)
+                        and ctx.learning_mode != "paused"
                     )
+                    model_request = ClaudeFixRequest(
+                        worktree_path=worktree_path,
+                        finding=finding,
+                        baseline_checks={},
+                        baseline_statuses=[
+                            record.get("rc") for record in validation_baseline.values()
+                        ],
+                        allow_unchanged_baseline_failures=args.allow_unchanged_baseline_failures,
+                        target_checks=target_checks,
+                        claude_cmd_template=resolved_tmpl,
+                        max_files_changed=args.max_files_changed,
+                        max_loc_diff=args.max_loc_diff,
+                        log_file=log_file,
+                        findings_file=findings_file,
+                        lessons_file=lessons_file if learning_enabled else None,
+                        extra_prompt=extra_prompt,
+                        pattern_store_path=(
+                            Path(args.pattern_store_path)
+                            if learning_enabled and args.pattern_store_path else None
+                        ),
+                        learned_patterns=learned_patterns,
+                        authoritative_guidelines=authoritative_guidelines,
+                        repo_taste=repo_taste,
+                    )
+                    rc, claude_output, prompt_file = apply_claude_fix(model_request)
                     cost_tracker.record_invocation(
                         model=model_name,
                         input_tokens=3000,
@@ -1131,68 +1208,24 @@ def _process_one_issue(
                         worktree_path,
                         finding,
                         log_file,
-                        pattern_store_path=Path(args.pattern_store_path)
-                        if args.pattern_store_path
-                        else None,
+                        # ponytail: defer deterministic mining until its final
+                        # accepted-outcome producer is connected, not tier exit.
+                        pattern_store_path=None,
                     )
                     if not applied:
-                        from bluei.engine.context_fix import (
-                            apply_contextual_fix,
-                            record_context_failure,
-                        )
+                        from bluei.engine.context_fix import record_context_failure
+                        from bluei.engine.reforge import get_context_rule, match_context
 
-                        _append_text(
-                            log_file,
-                            f"contextual-fix: attempting for rule={finding.rule} path={finding.path}",
+                        # Contextual fallback repeats this same transformation or
+                        # invokes a model outside the chosen deterministic lane.
+                        ctx_rule = get_context_rule(finding.rule)
+                        matched_ctx = match_context(finding.path, ctx_rule) if ctx_rule else None
+                        failures_path = ctx.state_file.parent / "context_failures.jsonl"
+                        record_context_failure(
+                            failures_path, finding.rule, finding.path,
+                            matched_ctx.framework if matched_ctx else "",
+                            matched_ctx.fix_strategy if matched_ctx else "deterministic",
                         )
-                        applied = apply_contextual_fix(
-                            repo_path=repo_path,
-                            finding=finding,
-                            log_file=log_file,
-                            worktree_path=worktree_path,
-                        )
-                        if not applied:
-                            from bluei.engine.context_fix import (
-                                update_context_rule_on_repeated_failure,
-                            )
-                            from bluei.engine.reforge import (
-                                get_context_rule,
-                                match_context as _match_context,
-                            )
-
-                            failures_path = (
-                                Path(args.workspace or ".")
-                                / "state"
-                                / "context_failures.jsonl"
-                            )
-                            ctx_rule = get_context_rule(finding.rule)
-                            matched_ctx = (
-                                _match_context(finding.path, ctx_rule)
-                                if ctx_rule
-                                else None
-                            )
-                            fw = matched_ctx.framework if matched_ctx else ""
-                            strategy = (
-                                matched_ctx.fix_strategy
-                                if matched_ctx
-                                else "contextual"
-                            )
-                            record_context_failure(
-                                failures_path,
-                                finding.rule,
-                                finding.path,
-                                fw,
-                                strategy,
-                            )
-                            if ctx_rule and matched_ctx:
-                                mutated = update_context_rule_on_repeated_failure(
-                                    finding.rule, fw, failures_path
-                                )
-                                if mutated:
-                                    _append_text(
-                                        log_file,
-                                        f"context-learning: rule={finding.rule} context={fw} auto-updated to skip",
-                                    )
                     if not applied:
                         run_status = "fix-noop"
                         set_issue_status(
@@ -1283,7 +1316,24 @@ def _process_one_issue(
                 )
                 ctx._dry_replay_capped = len(_dr_candidates) > _dr_cap
 
-        files_changed, loc_diff = diff_stats(worktree_path)
+        current_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=worktree_path,
+            capture_output=True, text=True, timeout=60, check=True,
+        ).stdout.strip()
+        if current_head != candidate_base:
+            run_status = "fix-failed-verification:candidate-changed-head"
+            set_issue_status(issue, "fix_failed_verification", run_status)
+            counters.fixes_failed_verification += 1
+            counters.blocked_reasons.append(run_status)
+            return counters.to_deltas()
+        try:
+            files_changed, loc_diff = diff_stats(worktree_path)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            run_status = "fix-failed-verification:candidate-diff-unavailable"
+            set_issue_status(issue, "fix_failed_verification", run_status)
+            counters.fixes_failed_verification += 1
+            counters.blocked_reasons.append(run_status)
+            return counters.to_deltas()
         _append_text(
             log_file,
             f"fix-scope-stats: files_changed={files_changed} loc_diff={loc_diff}",
@@ -1304,7 +1354,6 @@ def _process_one_issue(
                     "resolved_verified",
                     "finding already closed on branch; no code change needed",
                 )
-                counters.fixes_verified += 1
                 if (
                     args.live_github_actions
                     and issue_number is not None
@@ -1348,11 +1397,23 @@ def _process_one_issue(
             # Signal orchestrator to break out of the loop (preserves original break).
             raise _BreakLoop(counters.to_deltas())
 
+        from bluei.engine.repair_acceptance import candidate_signature
+
+        try:
+            checked_candidate = candidate_signature(worktree_path)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            run_status = "fix-failed-verification:candidate-diff-unavailable"
+            set_issue_status(issue, "fix_failed_verification", run_status)
+            counters.fixes_failed_verification += 1
+            counters.blocked_reasons.append(run_status)
+            return counters.to_deltas()
+
         post_fix_results = run_named_checks(
             repo_path=worktree_path,
             checks=PER_REPO_BASELINE_CHECKS,
             log_file=log_file,
             phase="post-fix",
+            environment_repo=repo_path,
         )
         target_results = (
             run_named_checks(
@@ -1360,6 +1421,7 @@ def _process_one_issue(
                 checks=target_checks,
                 log_file=log_file,
                 phase="target-check",
+                environment_repo=repo_path,
             )
             if target_checks
             else {}
@@ -1368,14 +1430,17 @@ def _process_one_issue(
         validation_result = run_validation_gate(
             repo_path=worktree_path,
             worktree_path=worktree_path,
-            checks={},
+            checks=PER_REPO_BASELINE_CHECKS,
             baseline_results=validation_baseline,
             post_fix_results=post_fix_results,
             target_results=target_results,
             allow_unchanged_baseline_failures=args.allow_unchanged_baseline_failures,
             log_file=log_file,
         )
-        checks_ok = validation_result.get("passed", False)
+        checks_ok = (
+            validation_result.get("passed", False)
+            and validation_result.get("qualified", False)
+        )
         validation_reason = validation_result.get("message", "")
         if not checks_ok:
             run_status = (
@@ -1437,74 +1502,98 @@ def _process_one_issue(
             )
             return counters.to_deltas()
 
-        if getattr(args, "finding_id", None):
-            import hashlib
-            from uuid import uuid4
+        try:
+            candidate_unchanged = candidate_signature(worktree_path) == checked_candidate
+        except (OSError, ValueError, subprocess.SubprocessError):
+            candidate_unchanged = False
+        if not candidate_unchanged:
+            run_status = "fix-failed-verification:candidate-changed-during-validation"
+            set_issue_status(issue, "fix_failed_verification", run_status)
+            counters.fixes_failed_verification += 1
+            counters.blocked_reasons.append(run_status)
+            return counters.to_deltas()
+
+        selected_repair = bool(getattr(args, "finding_id", None))
+        if selected_repair or not args.live_github_actions or args.dry_run:
+            from bluei.engine.repair_acceptance import retain_candidate_patch
+
             try:
-                _untracked = subprocess.run(
-                    ["git", "ls-files", "--others", "-z"], cwd=str(worktree_path),
-                    capture_output=True, timeout=60, check=True,
+                _patch_prefix = "selected-fix" if selected_repair else "local-fix"
+                _patch_path = retain_candidate_patch(
+                    worktree_path=worktree_path, output_dir=ctx.state_file.parent,
+                    identity=finding.finding_id, prefix=_patch_prefix,
+                    expected_signature=checked_candidate,
                 )
-                from bluei.engine.constants import QA_FIX_PROMPT_FILENAME
-                if any(path for path in _untracked.stdout.split(b"\0")
-                       if path and path != QA_FIX_PROMPT_FILENAME.encode()):
-                    raise ValueError("selected repair contains new files not represented by its tracked-file patch")
-                _patch_key = hashlib.sha256(finding.finding_id.encode()).hexdigest()
-                _patch_path = ctx.state_file.parent / f"selected-fix-{_patch_key}-{uuid4().hex}.patch"
-                _patch_path.parent.mkdir(parents=True, exist_ok=True)
-                import resource
-                import tempfile
-                with tempfile.TemporaryFile() as _diff_output:
-                    subprocess.run(
-                        ["git", "diff", "--binary", "HEAD"], cwd=str(worktree_path),
-                        stdout=_diff_output, stderr=subprocess.DEVNULL, timeout=60, check=True,
-                        preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_FSIZE, ((1 << 20) + 1,) * 2),
-                    )
-                    _diff_output.seek(0)
-                    _patch_bytes = _diff_output.read((1 << 20) + 1)
-                if not _patch_bytes.strip() or len(_patch_bytes) > (1 << 20):
-                    raise ValueError("selected patch is empty or exceeds 1 MiB")
-                with _patch_path.open("xb") as _patch_stream:
-                    _patch_stream.write(_patch_bytes)
-                issue["selected_fix_patch"] = str(_patch_path)
+                issue["selected_fix_patch" if selected_repair else "verified_fix_patch"] = str(_patch_path)
                 set_issue_status(issue, "open", "candidate patch verified; source finding remains open until applied")
-                mark_finding_activity(state=state, finding_ids=[finding.finding_id], action="patch-verified")
-                counters.fixes_verified += 1
-                run_status = "selected-patch-verified"
-                _append_text(log_file, f"selected-fix-patch: path={_patch_path}")
-                return counters.to_deltas()
+                if issue in ctx.issues_data.get("issues", []):
+                    from bluei.engine.state import save_issues
+
+                    save_issues(ctx.issues_file, ctx.issues_data)
             except (OSError, ValueError, subprocess.SubprocessError) as _patch_exc:
                 counters.fixes_failed_verification += 1
                 set_issue_status(issue, "fix_failed_verification", f"patch retention failed: {_patch_exc}")
-                counters.blocked_reasons.append("selected patch could not be retained")
+                counters.blocked_reasons.append("repair patch could not be retained")
                 return counters.to_deltas()
+            mark_finding_activity(state=state, finding_ids=[finding.finding_id], action="patch-verified")
+            counters.fixes_verified += 1
+            run_status = "selected-patch-verified" if selected_repair else "local-patch-verified"
+            _append_text(log_file, f"{_patch_prefix}-patch: path={_patch_path}")
+            accepted_artifact = True
+        else:
+            finalize_result = _finalize_pr_for_issue(
+                issue=issue,
+                issue_github=issue_github,
+                issue_number=issue_number,
+                issue_url=issue_url,
+                finding=finding,
+                worktree_path=worktree_path,
+                worktree_branch=worktree_branch,
+                repo_path=repo_path,
+                gh_repo_slug=gh_repo_slug,
+                log_file=log_file,
+                args=args,
+                state=state,
+                safety_config=safety_config,
+                repo_config=repo_config,
+            )
+            counters.fixes_verified += finalize_result.fixes_verified_delta
+            counters.fixes_failed_verification += (
+                finalize_result.fixes_failed_verification_delta
+            )
+            counters.created_prs += finalize_result.created_prs_delta
+            counters.open_prs += finalize_result.open_prs_delta
+            counters.blocked_reasons.extend(finalize_result.blocked_reasons_additions)
+            run_status = finalize_result.run_status
+            if finalize_result.should_break:
+                raise _BreakLoop(counters.to_deltas())
+            accepted_artifact = finalize_result.success and finalize_result.pr_number is not None
 
-        finalize_result = _finalize_pr_for_issue(
-            issue=issue,
-            issue_github=issue_github,
-            issue_number=issue_number,
-            issue_url=issue_url,
-            finding=finding,
-            worktree_path=worktree_path,
-            worktree_branch=worktree_branch,
-            repo_path=repo_path,
-            gh_repo_slug=gh_repo_slug,
-            log_file=log_file,
-            args=args,
-            state=state,
-            safety_config=safety_config,
-            repo_config=repo_config,
-        )
-        counters.fixes_verified += finalize_result.fixes_verified_delta
-        counters.fixes_failed_verification += (
-            finalize_result.fixes_failed_verification_delta
-        )
-        counters.created_prs += finalize_result.created_prs_delta
-        counters.open_prs += finalize_result.open_prs_delta
-        counters.blocked_reasons.extend(finalize_result.blocked_reasons_additions)
-        run_status = finalize_result.run_status
-        if finalize_result.should_break:
-            raise _BreakLoop(counters.to_deltas())
+        if accepted_artifact:
+            for record in cascade_acceptance:
+                confirm = record.get("confirm")
+                if confirm is not None:
+                    confirm()
+            if model_request is not None:
+                record_accepted_fix(model_request)
+            if replay_succeeded and replay_pid and ctx.learning_mode != "paused":
+                from bluei.engine.pattern_store import ReplayOutcome
+
+                pattern_store.record_replay_outcome(replay_pid, ReplayOutcome.HIT)
+                saved = cost_tracker.estimate_invocation_cost(
+                    "claude-sonnet-4", input_tokens=4000, output_tokens=2000,
+                )
+                cost_tracker.record_pattern_replay_savings(
+                    model="claude-sonnet-4", saved_cost=saved,
+                    pattern_id=replay_pid, rule=finding.rule,
+                )
+                ctx.ledger_records.append({
+                    "cycle": args.run_phase, "finding_id": finding.finding_id,
+                    "rule": finding.rule, "stages_tried": [],
+                    "final_stage": "pattern-replay", "outcome": "resolved_deterministic",
+                    "via": "standalone-replay", "pattern_id": replay_pid,
+                    "latency_ms": _replay_latency_ms, "timestamp": now_iso(),
+                })
 
     finally:
         remove_worktree(
@@ -1517,6 +1606,39 @@ def _process_one_issue(
         _append_text(log_file, f"cleanup: branch={worktree_branch} status={run_status}")
 
     return counters.to_deltas()
+
+
+def execute_structural_entry(ctx, item, finding, baseline_results, idx):
+    """Execute one explicitly eligible durable item through the qualified solo path."""
+    from bluei.engine.governance import resolve_learning_mode
+    from bluei.app.config import load_global_config
+
+    _project_repo_safety(ctx)
+    ctx.learning_mode = (
+        "paused" if getattr(ctx.args, "no_learning", False)
+        else resolve_learning_mode(load_global_config())
+    )
+    matches = [issue for issue in ctx.issues_data.get("issues", [])
+               if issue.get("finding_id") == finding.finding_id]
+    if len(matches) > 1:
+        raise ValueError("ambiguous structural finding issues")
+    if matches:
+        issue = matches[0]
+    else:
+        issue = dict(finding.to_dict(), issue_id=f"refactor-{item.work_id}",
+                     status="open", github={}, history=[])
+        ctx.issues_data.setdefault("issues", []).append(issue)
+    if issue.get("verified_fix_patch") or issue.get("selected_fix_patch"):
+        return _IssueCounters.from_ctx(ctx).to_deltas(), issue
+    if count_failed_fix_attempts(issue) >= ctx.args.max_fix_attempts_per_issue:
+        raise ValueError("structural finding exhausted its configured attempt limit")
+    try:
+        delta = _process_one_issue(ctx, idx, issue, finding, baseline_results)
+    except _BreakLoop as exc:
+        delta = exc.args[0]
+    for name in CounterDeltas.__dataclass_fields__:
+        setattr(ctx, name, getattr(delta, name))
+    return delta, issue
 
 
 def _project_repo_safety(ctx: "RunContext") -> None:
@@ -1575,7 +1697,9 @@ def _project_repo_safety(ctx: "RunContext") -> None:
         return
 
     ctx.repo_config = config
-    ctx.safety_config = config.safety if config is not None else None
+    ctx.safety_config = (
+        config.safety if config is not None else {"mode": "observe", "block_push": True}
+    )
 
 
 def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
@@ -1663,6 +1787,19 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
     else:
         ctx.learning_mode = resolve_learning_mode(load_global_config())
 
+    queue_fresh_findings = ctx.findings if ctx.run_issue_cycle else None
+    if not ctx.run_issue_cycle and getattr(args, "run_phase", "") == "pr-cycle":
+        from bluei.engine.discovery import discover_findings
+        from bluei.engine.state import append_findings
+
+        ctx.detector_outcomes = {}
+        queue_fresh_findings = discover_findings(
+            repo_path, log_file=log_file, docs_index_file=ctx.docs_index_file,
+            outcomes=ctx.detector_outcomes,
+            discovery_scope=getattr(args, "discovery_scope", "repository"),
+        )
+        append_findings(findings_file, queue_fresh_findings)
+
     # Restrict the walk before any unrelated issue can be mutated.
     selected_id = getattr(args, "finding_id", None)
     selected_error = ""
@@ -1738,6 +1875,8 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
         gh_repo_slug=gh_repo_slug,
         args=args,
         issues_data={"issues": []} if selected_id is not None else _walk_issues_data,
+        fresh_findings=queue_fresh_findings,
+        detector_outcomes=ctx.detector_outcomes,
     )
     issues_escalated_max_retries += _escalated
 
@@ -1779,7 +1918,7 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
         baseline_failures = [
             name
             for name, result in baseline_results.items()
-            if int(result.get("rc", 1)) != 0
+            if result.get("rc") is None or int(result.get("rc", 1)) != 0
         ]
         if baseline_failures:
             _append_text(
@@ -1833,7 +1972,7 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
                         args.open_prs_cap - open_prs,
                     )
                 ]
-                _success, _detail = _process_batch(
+                _batch_result = _process_batch(
                     batch=_bg,
                     repo_path=repo_path,
                     args=args,
@@ -1846,13 +1985,34 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
                     discovery=ctx.discovery,
                     cost_tracker=ctx.cost_tracker,
                     pr_budget=_pr_budget,
+                    baseline_checks=PER_REPO_BASELINE_CHECKS,
+                    repo_baseline_results=baseline_results,
+                    docs_index_file=ctx.docs_index_file,
+                    artifact_dir=ctx.state_file.parent / "batch-patches",
                 )
+                _success, _detail = _batch_result
+                _batch_metrics = getattr(_batch_result, "metrics", None)
+                if _batch_metrics is not None:
+                    fix_attempts += _batch_metrics.attempts
+                    deterministic_invocations += _batch_metrics.deterministic_fixes
+                    claude_invocations += _batch_metrics.model_fixes
+                    fixes_verified += _batch_metrics.verified_fixes
+                    fixes_failed_verification += max(
+                        0, _batch_metrics.attempts - _batch_metrics.verified_fixes,
+                    )
+                    created_prs += _batch_metrics.prs_created
+                    open_prs += _batch_metrics.prs_created
+                    if _batch_metrics.issue_patches:
+                        from bluei.engine.state import save_issues
+
+                        save_issues(ctx.issues_file, issues_data)
                 if _success:
-                    # A split success can represent several sub-batch PRs —
-                    # count them all against the run's PR budget.
-                    _n_prs = parse_pr_count(_detail)
-                    created_prs += _n_prs
-                    open_prs += _n_prs
+                    # Legacy callers return only PR detail; current batches carry
+                    # exact artifact/member/backend counters independently.
+                    if _batch_metrics is None:
+                        _n_prs = parse_pr_count(_detail)
+                        created_prs += _n_prs
+                        open_prs += _n_prs
                     _bsf = Path(
                         getattr(args, "batch_state_file", str(DEFAULT_BATCH_STATE))
                     )
@@ -1862,6 +2022,11 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
                     _append_text(
                         log_file, f"batch-cycle: {_bg.batch_id} failed: {_detail}"
                     )
+                    if _detail and _detail.startswith("batch repair unqualified:"):
+                        print(f"[UNQUALIFIED] {_detail}")
+                        blocked_reasons.append(_detail)
+                        for _issue in _bg.issues:
+                            set_issue_status(_issue, "open", _detail)
 
         _iteration_items = _solo_items
     else:
@@ -1922,6 +2087,8 @@ def run_pr_cycle_phase(*args, **kwargs) -> Dict[str, Any]:
     ):
         selected_error = (
             f"selected finding {selected_id} failed its single model attempt"
+            if claude_invocations else
+            f"selected finding {selected_id} did not produce an accepted patch; no model invoked"
         )
         blocked_reasons.append(selected_error)
         _append_text(log_file, f"pr-cycle: fail-closed: {selected_error}")

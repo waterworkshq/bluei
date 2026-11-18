@@ -245,10 +245,12 @@ def test_python_scope_runs_plugin_ruff_only_and_dedupes_catalog_codes(
     tmp_path, monkeypatch, make_finding
 ):
     # Scoped discovery asks plugin-python for a provenance-complete ruff-only
-    # run: the config flag reaches the plugin, its raw ruff-<CODE> rules are
-    # trusted without a rule-list filter or outcome-counter rewrite, and only
-    # codes the native core ruff producer's catalog covers are dropped once
-    # that core producer ran. Plugin-only codes keep every diagnostic.
+    # run: the config flag reaches the plugin, its canonical ruff-<code>
+    # rules are trusted without a rule-list filter or outcome-counter
+    # rewrite, and dedupe happens against the native producer's actual
+    # identical diagnostics once that core producer ran. Plugin diagnostics
+    # with no identical native instance — plugin-only codes, other
+    # locations, or a different message on the same line — all survive.
     repo = _make_mixed_repo(tmp_path)
     calls = {}
 
@@ -257,26 +259,38 @@ def test_python_scope_runs_plugin_ruff_only_and_dedupes_catalog_codes(
         return []
 
     def fake_ruff(repo_path, log_file, outcome=None):
-        outcome["python-linter-ruff"] = {"status": "ran", "count": 1}
-        return [make_finding(path="app.py", line=10, rule="ruff-e501",
-                             snippet="native-ruff")]
+        outcome["python-linter-ruff"] = {"status": "ran", "count": 2}
+        return [
+            make_finding(path="app.py", line=10, rule="ruff-e501",
+                         snippet="line too long (90 > 88)"),
+            make_finding(path="app.py", line=4, rule="ruff-f811",
+                         snippet="Redefinition of unused `x` from line 1"),
+        ]
 
     def fake_plugin(repo_path, outcomes=None, discovery_scope=None,
                     config=None, **kwargs):
         calls["scope"] = discovery_scope
         calls["config"] = config
         outcomes["plugin:plugin-python"] = {
-            "status": "ran", "count": 3, "reason": "ruff ran",
+            "status": "ran", "count": 4, "reason": "ruff ran",
         }
         return [
-            make_finding(path="app.py", line=10, rule="ruff-E501",
-                         snippet="plugin-dup"),
-            make_finding(path="app.py", line=4, rule="ruff-F821",
-                         finding_id="f821a",
+            # Identical diagnostic (path/line/rule/message): deduped,
+            # native kept.
+            make_finding(path="app.py", line=10, rule="ruff-e501",
+                         snippet="line too long (90 > 88)"),
+            # Same code+line as a native instance but a different message:
+            # a distinct diagnostic, kept.
+            make_finding(path="app.py", line=4, rule="ruff-f811",
+                         finding_id="f811y",
+                         snippet="Redefinition of unused `y` from line 3"),
+            # Same code+line, identical to the native f811: deduped.
+            make_finding(path="app.py", line=4, rule="ruff-f811",
+                         snippet="Redefinition of unused `x` from line 1"),
+            # Plugin-only code at a fresh location: kept.
+            make_finding(path="app.py", line=5, rule="ruff-f821",
+                         finding_id="f821",
                          snippet="Undefined name `alpha`"),
-            make_finding(path="app.py", line=4, rule="ruff-F821",
-                         finding_id="f821b",
-                         snippet="Undefined name `beta`"),
         ]
 
     monkeypatch.setattr(discovery_module, "_ast_scan_python_files", fake_ast)
@@ -297,26 +311,85 @@ def test_python_scope_runs_plugin_ruff_only_and_dedupes_catalog_codes(
     assert calls["config"] == {"plugin-python": {"ruff_only": True}}
 
     rules = [f.rule for f in findings]
-    # E501 is native-catalog-covered: the plugin duplicate is dropped and the
-    # native finding is the one that survives.
+    # Identical E501 diagnostics collapse to one (native preferred).
     assert rules.count("ruff-e501") == 1
-    assert "ruff-E501" not in rules
-    # Plugin-only code: both same-line F821 diagnostics are retained.
-    f821 = [f for f in findings if f.rule == "ruff-F821"]
-    assert [f.snippet for f in f821] == [
-        "Undefined name `alpha`", "Undefined name `beta`",
+    # Same line + same code, different messages: both diagnostics survive.
+    f811 = [f for f in findings if f.rule == "ruff-f811"]
+    assert sorted(f.snippet for f in f811) == [
+        "Redefinition of unused `x` from line 1",
+        "Redefinition of unused `y` from line 3",
     ]
+    # Plugin-only code kept.
+    f821 = [f for f in findings if f.rule == "ruff-f821"]
+    assert [f.snippet for f in f821] == ["Undefined name `alpha`"]
     # No outcome-counter rewrite: the plugin outcome reports its own scan.
-    assert outcomes["plugin:plugin-python"]["count"] == 3
+    assert outcomes["plugin:plugin-python"]["count"] == 4
     assert "dropped" not in outcomes["plugin:plugin-python"].get("reason", "")
+
+
+def test_python_scope_keeps_catalog_rule_plugin_finding_without_native_instance(
+    tmp_path, monkeypatch, make_finding
+):
+    # Dedupe is instance-level, not catalog-level: a catalog-covered rule
+    # (ruff-b904) emitted by the plugin at a location the native producer
+    # did NOT report must survive — only actual duplicate instances are
+    # dropped.
+    repo = _make_mixed_repo(tmp_path)
+
+    def fake_ast(repo_path, log_file, rule_meta, outcome=None):
+        outcome["ast-python"] = {"status": "ran", "count": 0}
+        return []
+
+    def fake_ruff(repo_path, log_file, outcome=None):
+        # Native ran and reported one E501 at line 10 — nothing else.
+        outcome["python-linter-ruff"] = {"status": "ran", "count": 1}
+        return [make_finding(finding_id="native-e501-10", path="app.py",
+                             line=10, rule="ruff-e501")]
+
+    def fake_plugin(repo_path, outcomes=None, discovery_scope=None,
+                    config=None, **kwargs):
+        outcomes["plugin:plugin-python"] = {"status": "ran", "count": 2}
+        return [
+            # Catalog rule, but no native instance at this location.
+            make_finding(finding_id="plugin-b904-6", path="app.py", line=6,
+                         rule="ruff-b904", snippet="raise without from"),
+            # Same rule as native but different location: also kept.
+            make_finding(finding_id="plugin-e501-other-3", path="other.py",
+                         line=3, rule="ruff-e501",
+                         snippet="plugin-only location"),
+        ]
+
+    monkeypatch.setattr(discovery_module, "_ast_scan_python_files", fake_ast)
+    monkeypatch.setattr(
+        discovery_module, "discover_python_linter_findings", fake_ruff
+    )
+    monkeypatch.setattr(discovery_module, "run_plugin_discovery", fake_plugin)
+
+    findings = discover_findings(
+        repo,
+        log_file=repo / "scan.log",
+        docs_index_file=repo / "docs.json",
+        outcomes={},
+        discovery_scope="python",
+    )
+    rules = [f.rule for f in findings]
+    assert rules.count("ruff-b904") == 1
+    assert rules.count("ruff-e501") == 2  # native instance + plugin location
+    # Distinct finding_ids on every fake, so only the identity-key dedupe
+    # (not the seen_ids shortcut) can drop anything — and neither plugin
+    # diagnostic duplicates a native instance, so both must survive.
+    assert {f.finding_id for f in findings} >= {
+        "native-e501-10", "plugin-b904-6", "plugin-e501-other-3",
+    }
 
 
 def test_python_scope_keeps_plugin_ruff_rules_when_core_ruff_not_ran(
     tmp_path, monkeypatch, make_finding
 ):
     # Exclusions are provenance-based, not blanket: with the native core ruff
-    # producer not having run, the plugin's raw rules — even catalog-covered
-    # ones — are the only ruff coverage and must not be dropped.
+    # producer not having run, the plugin's canonical rules — even
+    # catalog-covered ones — are the only ruff coverage and must not be
+    # dropped.
     repo = _make_mixed_repo(tmp_path)
 
     def fake_ast(repo_path, log_file, rule_meta, outcome=None):
@@ -333,7 +406,7 @@ def test_python_scope_keeps_plugin_ruff_rules_when_core_ruff_not_ran(
     def fake_plugin(repo_path, outcomes=None, discovery_scope=None,
                     config=None, **kwargs):
         outcomes["plugin:plugin-python"] = {"status": "ran", "count": 1}
-        return [make_finding(path="app.py", line=7, rule="ruff-E501")]
+        return [make_finding(path="app.py", line=7, rule="ruff-e501")]
 
     monkeypatch.setattr(discovery_module, "_ast_scan_python_files", fake_ast)
     monkeypatch.setattr(
@@ -348,7 +421,7 @@ def test_python_scope_keeps_plugin_ruff_rules_when_core_ruff_not_ran(
         outcomes={},
         discovery_scope="python",
     )
-    assert [f.rule for f in findings] == ["ruff-E501"]
+    assert [f.rule for f in findings] == ["ruff-e501"]
 
 
 def test_verify_fix_closed_python_scope_rejects_injected_discover_fn(
@@ -485,29 +558,31 @@ def test_plugin_ruff_only_mode_preserves_raw_rule_ids(tmp_path, monkeypatch):
                         lambda repo_path, extra_args=None: raw)
 
     findings = plugin.discover(tmp_path, {"ruff_only": True})
-    # No mapped internal names in this mode; same-line F821 diagnostics are
-    # distinct findings.
+    # Canonical lowercase identity in the raw lane; no internal rule names;
+    # same-line F821 diagnostics are distinct findings.
     assert [f.rule for f in findings] == [
-        "ruff-E501", "ruff-F821", "ruff-F821",
+        "ruff-e501", "ruff-f821", "ruff-f821",
     ]
-    assert [f.snippet for f in findings if f.rule == "ruff-F821"] == [
+    assert [f.snippet for f in findings if f.rule == "ruff-f821"] == [
         "Undefined name `a`", "Undefined name `b`",
     ]
-    # Default parse keeps mapping codes to internal rule names.
+    # The default parse lane now emits the same canonical rules — the
+    # raw_rule_ids flag remains only for signature compatibility.
     assert [f.rule for f in plugin.parse_output(raw, tmp_path)] == [
-        "trailing-whitespace", "ruff-F821", "ruff-F821",
+        "ruff-e501", "ruff-f821", "ruff-f821",
     ]
 
 
 def test_plugin_raw_f821_finding_id_is_verbatim_rule_hash(tmp_path):
-    # The actual F821 identity is unchanged: the deterministic id hashes the
-    # verbatim "ruff-F821" rule and the diagnostic message.
+    # The F821 identity: the deterministic id hashes the canonical
+    # "ruff-f821" rule and the (200-truncated) diagnostic message — the
+    # same material the native ruff producer hashes.
     plugin = _load_python_plugin(tmp_path)
     raw = _ruff_json(tmp_path, [("F821", 3, "Undefined name `ghost`")])
     finding = plugin.parse_output(raw, tmp_path, raw_rule_ids=True)[0]
-    assert finding.rule == "ruff-F821"
+    assert finding.rule == "ruff-f821"
     assert finding.finding_id == stable_finding_id(
-        str(tmp_path), "app.py", 3, "ruff-F821", "Undefined name `ghost`"
+        str(tmp_path), "app.py", 3, "ruff-f821", "Undefined name `ghost`"
     )
 
 
@@ -539,7 +614,7 @@ def test_python_scope_identical_f821_ids_are_deduplicated(tmp_path):
     (tmp_path / "setup.py").write_text("")
     (tmp_path / "app.py").write_text("value = ghost + ghost + other\n")
     findings = discover_findings(tmp_path, log_file=tmp_path / "scan.log", outcomes={}, discovery_scope="python")
-    undefined = [finding for finding in findings if finding.rule == "ruff-F821"]
+    undefined = [finding for finding in findings if finding.rule == "ruff-f821"]
     assert len(undefined) == 2
     assert {finding.snippet for finding in undefined} == {"Undefined name `ghost`", "Undefined name `other`"}
 
@@ -577,11 +652,11 @@ def test_python_scope_preserves_unmatched_ruff_e722_from_ast_skipped_file(tmp_pa
     assert outcomes["ast-python"]["status"] == "ran"
     assert outcomes["plugin:plugin-python"]["tool_outcome"] == "tool-ran"
     assert not any(f.rule == "broad-except" for f in findings)
-    raw = [f for f in findings if f.rule == "ruff-E722"]
+    raw = [f for f in findings if f.rule == "ruff-e722"]
     assert len(raw) == 1
     assert (raw[0].path, raw[0].line) == (".venv/extra.py", 3)
     assert raw[0].finding_id == stable_finding_id(
-        str(tmp_path), raw[0].path, raw[0].line, "ruff-E722", raw[0].snippet
+        str(tmp_path), raw[0].path, raw[0].line, "ruff-e722", raw[0].snippet
     )
 
 
@@ -620,7 +695,7 @@ def test_python_scope_keeps_both_f821_diagnostics_on_one_line(tmp_path):
         outcomes={},
         discovery_scope="python",
     )
-    f821 = [f for f in findings if f.rule == "ruff-F821"]
+    f821 = [f for f in findings if f.rule == "ruff-f821"]
     assert len(f821) == 2
     assert {f.line for f in f821} == {1}
     assert len({f.finding_id for f in f821}) == 2

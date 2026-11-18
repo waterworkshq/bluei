@@ -916,7 +916,7 @@ def _queue_item(work_id: str = "w-x", rule: str = "xo-complexity"):
 
 
 class TestProcessRefactorQueueBranches:
-    """Cover validation-failure (914-916) and exception (924-928) branches."""
+    """Stage1: failure branches are unreachable; refusal is not fake failure."""
 
     @patch(
         "bluei.engine.lifecycle.apply_claude_fix",
@@ -924,61 +924,28 @@ class TestProcessRefactorQueueBranches:
     )
     @patch("bluei.engine.verify.run_validation")
     @patch("bluei.engine.lifecycle.RefactorQueue")
-    def test_validation_failure_marks_item_failed(
+    def test_failure_branches_unreachable_no_fake_failures(
         self, mock_rq_cls, mock_validate, mock_claude, tmp_path
     ):
-        """Lines 914-916: Claude succeeds but validation.passed=False → fail."""
+        """Validation failure (incl. empty message) and processing exceptions
+        can no longer mark items failed — Stage1 refuses before those branches
+        exist. Consolidates the three obsolete branch tests.
+        """
         mock_queue = MagicMock()
         mock_rq_cls.return_value = mock_queue
         item = _queue_item("w-vf")
         mock_queue.list_items.side_effect = [[item], []]
+        mock_queue.start_execution.side_effect = RuntimeError("db locked")
 
-        # Validation returns passed=False with a message.
         mock_result = MagicMock()
         mock_result.passed = False
         mock_result.message = "regression detected"
         mock_validate.return_value = mock_result
 
         result = process_refactor_queue(tmp_path, tmp_path, dry_run=False)
-        assert "w-vf" in result["failed"]
-        mock_queue.fail.assert_called_once_with("w-vf", "regression detected")
-
-    @patch(
-        "bluei.engine.lifecycle.apply_claude_fix",
-        return_value=(0, "fixed", "/tmp/p"),
-    )
-    @patch("bluei.engine.verify.run_validation")
-    @patch("bluei.engine.lifecycle.RefactorQueue")
-    def test_validation_failure_with_empty_message_uses_default(
-        self, mock_rq_cls, mock_validate, mock_claude, tmp_path
-    ):
-        """Lines 914-916: empty validation.message falls back to default text."""
-        mock_queue = MagicMock()
-        mock_rq_cls.return_value = mock_queue
-        item = _queue_item("w-vf2")
-        mock_queue.list_items.side_effect = [[item], []]
-
-        mock_result = MagicMock()
-        mock_result.passed = False
-        mock_result.message = ""  # Empty → default fallback.
-        mock_validate.return_value = mock_result
-
-        result = process_refactor_queue(tmp_path, tmp_path, dry_run=False)
-        assert "w-vf2" in result["failed"]
-        mock_queue.fail.assert_called_once_with("w-vf2", "validation failed")
-
-    @patch("bluei.engine.lifecycle.RefactorQueue")
-    def test_exception_during_processing_marks_failed(self, mock_rq_cls, tmp_path):
-        """Lines 924-928: unexpected exception during processing → fail + record."""
-        mock_queue = MagicMock()
-        mock_rq_cls.return_value = mock_queue
-        item = _queue_item("w-exc")
-        mock_queue.list_items.side_effect = [[item], []]
-        # start_execution raises an unhandled exception.
-        mock_queue.start_execution.side_effect = RuntimeError("db locked")
-
-        result = process_refactor_queue(tmp_path, tmp_path, dry_run=False)
-        assert "w-exc" in result["failed"]
-        mock_queue.fail.assert_called_once()
-        # Error message preserved.
-        assert "exception" in mock_queue.fail.call_args[0][1]
+        assert result["failed"] == []
+        assert "unqualified" in result["unqualified"]
+        mock_queue.fail.assert_not_called()
+        mock_queue.start_execution.assert_not_called()
+        mock_validate.assert_not_called()
+        mock_claude.assert_not_called()

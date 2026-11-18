@@ -43,7 +43,14 @@ def run_refactor_cycle_command(
     log_file: Path,
     args: Any,
 ) -> Optional[int]:
-    """Handle --run-phase=refactor-cycle. Returns exit code or None to skip."""
+    """Handle --run-phase=refactor-cycle. Returns exit code or None to skip.
+
+    Compat wrapper only: the qualified structural consumer is
+    ``commands.refactor_cycle.run_refactor_cycle_phase`` on the normal ctx
+    route. This legacy direct entry delegates to the lifecycle
+    ``process_refactor_queue`` stub, which cannot perform unqualified
+    structural execution.
+    """
     if args.run_phase != "refactor-cycle":
         return None
 
@@ -64,6 +71,13 @@ def run_refactor_cycle_command(
     approved = result.get("approved", [])
     pending = result.get("pending", [])
     failed = result.get("failed", [])
+    unqualified = result.get("unqualified")
+    if unqualified:
+        # Stage2+ refusal: the legacy direct entry is unqualified and must
+        # not fake a DONE summary over an unprocessed queue.
+        print(f"[UNQUALIFIED] refactor-cycle: {unqualified}")
+        _append_text(log_file, f"refactor-cycle: unqualified reason={unqualified}")
+        return 2
     print(
         f"[DONE] refactor-cycle processed={len(processed)} "
         f"auto_approved={len(approved)} pending={len(pending)} failed={len(failed)}"

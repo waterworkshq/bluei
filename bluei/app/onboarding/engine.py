@@ -33,6 +33,45 @@ from .detection import detect_frameworks
 
 _logger = logging.getLogger(__name__)
 
+# RepoConfig fields that must survive a config upgrade/regeneration
+# verbatim: everything a private config can legitimately customize, plus
+# ``id`` (a fresh id would orphan existing baseline/state records).
+# Structural inference fields (name, path, language, framework, plugin_id,
+# discovery, meta) are regenerated fresh.
+_UPGRADE_PRESERVED_FIELDS = (
+    "id",
+    "enabled",
+    "rule_pack",
+    "rules_enabled",
+    "rules_disabled",
+    "fix_engine",
+    "fallback_engines",
+    "claude_template",
+    "opencode_template",
+    "review_claude_template",
+    "review_opencode_template",
+    "baseline_checks",
+    "limits",
+    "cooldowns",
+    "github",
+    "review_care",
+    "safety",
+    "notifications",
+)
+
+# meta keys owned by inference/regeneration. Everything else an operator
+# added to meta merges over the regenerated values on upgrade.
+_META_INFERENCE_KEYS = {
+    "onboarding_version",
+    "template",
+    "inferred_by",
+    "secondary_languages",
+    "detected_frameworks",
+    "framework_detection_date",
+    "python_runtime",
+    "upgraded_from",
+}
+
 
 def _prompt_rule_pack_confirmation(
     suggested: Optional[str],
@@ -228,6 +267,24 @@ class OnboardEngine:
                     category="config",
                 )
             )
+        python_runtime = (config.meta or {}).get("python_runtime") or {}
+        if python_runtime.get("source") and not python_runtime.get("available"):
+            items.append(
+                ReviewItem(
+                    message=(
+                        f"Local virtualenv '{python_runtime['source']}' was "
+                        "detected but its interpreter is unusable; Python "
+                        "baseline commands were not inferred against the host "
+                        "environment."
+                    ),
+                    severity="warn",
+                    category="tool",
+                    suggested_action=(
+                        python_runtime.get("unavailable_reason")
+                        or "Recreate the local virtualenv before live runs."
+                    ),
+                )
+            )
         # E4: Check if selected plugin requires a container
         plugin_id = config.plugin_id or ""
         if plugin_id:
@@ -419,6 +476,22 @@ class OnboardEngine:
             repo_path, language, framework
         )
 
+        meta: Dict[str, Any] = {
+            "onboarding_version": ONBOARDING_VERSION,
+            "template": template_name,
+            "rule_pack": rule_pack,
+            "inferred_by": "template" if template_name else "heuristic",
+            "secondary_languages": language.secondary_languages,
+            "detected_frameworks": detect_frameworks(repo_path, language.name),
+            "framework_detection_date": now_iso(),
+        }
+        if language.name == "python":
+            runtime = _inference.infer_python_runtime(repo_path)
+            if runtime["source"] is not None:
+                # Optional provenance on the existing meta dict — recorded
+                # whether or not the venv is usable so review can surface it.
+                meta["python_runtime"] = runtime
+
         render = self.registry.config.render_config_from_template
         merged = render(
             name=name,
@@ -439,15 +512,7 @@ class OnboardEngine:
                 "live_actions": False,
                 "auto_merge": False,
             },
-            meta={
-                "onboarding_version": ONBOARDING_VERSION,
-                "template": template_name,
-                "rule_pack": rule_pack,
-                "inferred_by": "template" if template_name else "heuristic",
-                "secondary_languages": language.secondary_languages,
-                "detected_frameworks": detect_frameworks(repo_path, language.name),
-                "framework_detection_date": now_iso(),
-            },
+            meta=meta,
         )
         merged.id = generate_id("repo")
         return merged
@@ -637,9 +702,32 @@ class OnboardEngine:
             framework,
             config.plugin_id,
             template_name=meta.get("template"),
+            rule_pack=meta.get("rule_pack"),
         )
-        new_config.safety = config.safety
-        new_config = self.apply_safety_profile(new_config)
+        # Copy operator-owned fields explicitly from the old config. The
+        # regenerated profile is NOT re-applied here: apply_safety_profile
+        # would clobber operator limits with profile defaults and could
+        # re-derive github.live_actions from safety.mode — upgrading must
+        # not silently grant authority the operator had turned off.
+        for field_name in _UPGRADE_PRESERVED_FIELDS:
+            setattr(new_config, field_name, getattr(config, field_name))
+        # Operator-added meta keys survive; inference-owned provenance keys
+        # stay fresh from the regeneration above.
+        for key, value in meta.items():
+            if key not in _META_INFERENCE_KEYS:
+                new_config.meta[key] = value
+        # Runtime provenance must describe the ACTUAL preserved baseline, not
+        # fresh inference: operator checks may carry a different (or no)
+        # explicit interpreter than a newly detected local venv. Bare
+        # preserved commands make no runtime claim — the runtime guard
+        # decides those instead of a venv-based claim.
+        actual_runtime = _inference.python_runtime_for_checks(
+            repo_path, new_config.baseline_checks
+        )
+        if actual_runtime is not None:
+            new_config.meta["python_runtime"] = actual_runtime
+        else:
+            new_config.meta.pop("python_runtime", None)
         new_config.meta["onboarding_version"] = ONBOARDING_VERSION
         new_config.meta["upgraded_from"] = old_version
         self.registry.config.save_repo_config(new_config)

@@ -7,18 +7,26 @@ given the current safety configuration. They are invoked before:
 - ``gh pr create`` — to honour the configured safety mode
 - ``gh pr merge`` — to honour the configured safety mode
 
-Backward-compatible contract
-----------------------------
-Every gate treats a falsy ``safety_config`` (``None`` or ``{}``) as
-"no policy provided" and ALLOWS the operation. Enforcement only activates
-when a non-empty safety config dict is explicitly supplied. This means
-existing callers and tests that do not pass ``safety_config`` are unaffected.
+Fail-closed contract
+--------------------
+Every gate FAILS CLOSED: a missing, empty (``None`` / ``{}``), or invalid
+runtime policy — including an absent, non-string, or unrecognized ``mode`` —
+BLOCKS the operation. Non-string modes are rejected outright (never coerced
+via ``str()``). Restrictive modes block both ``git push`` (including pushes
+that would update an existing PR's head branch) and PR creation; only an
+explicitly permissive mode allows the operation.
+
+The mode is normalized through :meth:`SafetyMode.from_brand`, so canonical
+(``observe``, ``issue-only``, ``pr``, ``merge``), brand (``watch-only``,
+``note only``, ``offer-fixes``, ``full care``, ...), and underscore
+(``issue_only``) spellings of the same care level behave identically.
 
 The expected shape of ``safety_config`` mirrors ``RepoConfig.safety``::
 
     {
         "mode": "observe" | "issue-only" | "pr" | "merge",
         "protected_branches": ["main", "master"],
+        "block_push": false,
         ...
     }
 
@@ -32,6 +40,8 @@ AttributeError at first live PR creation).
 """
 
 from typing import Any, Dict, List, Optional, Tuple
+
+from bluei.common.models import SafetyMode
 
 
 def _cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
@@ -50,11 +60,8 @@ def _cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
 # pre-enforcement behaviour where ``--base main`` was hardcoded.
 DEFAULT_BASE_BRANCH = "main"
 
-# Safety mode values (hyphen-form is canonical per ``SafetyMode`` enum, but we
-# accept underscore-form too for robustness against normalisation differences).
-_BLOCKING_PR_MODES = ("observe",)
-_BLOCKING_PR_MODES_ISSUE = ("issue-only", "issue_only")
-_BLOCKING_MERGE_MODES = ("observe", "issue-only", "issue_only", "pr")
+# Safety mode values are normalized to the ``SafetyMode`` enum (see
+# ``_resolve_mode``); care levels gate pushes/PRs/merges below.
 
 
 def is_protected_branch(branch: str, protected_branches: List[str]) -> bool:
@@ -85,11 +92,33 @@ def _get_protected_branches(safety_config: Optional[Dict[str, Any]]) -> List[str
     return ["main", "master"]
 
 
-def _normalise_mode(safety_config: Optional[Dict[str, Any]]) -> str:
-    """Return the lowercased, stripped safety mode (empty string if absent)."""
-    if not safety_config:
-        return ""
-    return str(safety_config.get("mode", "")).strip().lower()
+def _resolve_mode(
+    safety_config: Optional[Dict[str, Any]],
+) -> Tuple[Optional[SafetyMode], str]:
+    """Normalize the configured care mode to a :class:`SafetyMode`.
+
+    Reuses ``SafetyMode.from_brand`` so canonical (``pr``), brand
+    (``offer fixes``), and underscore (``issue_only``) spellings of the same
+    care level resolve identically (underscores map to hyphens first).
+
+    Returns ``(mode, denial_reason)``. ``mode`` is ``None`` when the policy
+    is missing/empty or the mode is absent, non-string (never ``str()``
+    coerced — a list/int/bool mode is invalid), or unrecognized; the
+    accompanying ``denial_reason`` explains the failure and callers MUST
+    fail closed on it. ``denial_reason`` is empty when a mode resolved.
+    """
+    if not isinstance(safety_config, dict) or not safety_config:
+        return None, "no safety policy provided (missing/empty) — fail closed"
+    raw = safety_config.get("mode")
+    if not isinstance(raw, str) or not raw.strip():
+        return None, (
+            f"safety mode missing or non-string ({type(raw).__name__}) — fail closed"
+        )
+    normalized = raw.strip().lower().replace("_", "-")
+    try:
+        return SafetyMode.from_brand(normalized), ""
+    except ValueError:
+        return None, f"unrecognized safety mode '{raw.strip()}' — fail closed"
 
 
 def check_push_allowed(
@@ -97,19 +126,31 @@ def check_push_allowed(
 ) -> Tuple[bool, str]:
     """Gate for ``git push``.
 
-    ``block_push`` forbids all pushes when registration lookup fails closed.
-    Otherwise bluei must NEVER push directly to a protected branch (main/master
-    by default) — only feature branches that become PR heads.
+    Fails closed: a missing/empty/invalid policy (including an absent,
+    non-string, or unrecognized mode) blocks the push. With a valid policy:
+
+    - ``block_push``      → blocked (registration lookup failed closed)
+    - ``observe``         → blocked ("observe mode forbids push")
+    - ``issue-only``      → blocked ("issue-only mode forbids push")
+    - protected branch    → blocked (main/master by default)
+
+    bluei must NEVER push directly to a protected branch — only feature
+    branches that become PR heads. Restrictive modes additionally block
+    pushes to feature branches, which covers pushes that would update an
+    existing PR's head branch.
 
     Returns:
-        ``(allowed, reason)``. ``reason`` is safe to surface in logs. When
-        ``safety_config`` is falsy the operation is always allowed
-        (``"no-safety-config"``).
+        ``(allowed, reason)``. ``reason`` is safe to surface in logs.
     """
-    if not safety_config:
-        return True, "no-safety-config"
+    mode, denial = _resolve_mode(safety_config)
+    if mode is None:
+        return False, denial
     if safety_config.get("block_push"):
         return False, "fail-closed safety policy forbids push"
+    if mode is SafetyMode.OBSERVE:
+        return False, "observe mode forbids push"
+    if mode is SafetyMode.ISSUE_ONLY:
+        return False, "issue-only mode forbids push"
     protected = _get_protected_branches(safety_config)
     if is_protected_branch(branch, protected):
         return (
@@ -122,32 +163,33 @@ def check_push_allowed(
 def check_pr_creation_allowed(
     base_branch: str, safety_config: Optional[Dict[str, Any]]
 ) -> Tuple[bool, str]:
-    """Gate for ``gh pr create``.
+    """Gate for ``gh pr create`` (and updates to existing PRs).
 
-    Honours the configured safety mode:
+    Honours the configured safety mode — canonical, brand, and underscore
+    spellings behave identically via ``SafetyMode.from_brand``:
 
-    - ``observe``     → blocked ("observe mode forbids PR creation")
-    - ``issue-only``  → blocked ("issue-only mode forbids PR creation")
-    - ``pr``/``merge`` → allowed
+    - ``observe``/``watch-only``            → blocked ("observe mode forbids PR creation")
+    - ``issue-only``/``issue_only``/``note-only`` → blocked ("issue-only mode forbids PR creation")
+    - ``pr``/``offer-fixes``/``merge``/``full-care`` → allowed
+
+    Fails closed: a missing/empty/invalid policy (including an absent,
+    non-string, or unrecognized mode) blocks PR creation.
 
     ``base_branch`` is accepted for symmetry and future checks (e.g. ensuring
     the PR targets a known protected branch) but does not itself gate
     creation — PRs are *expected* to target protected branches.
 
     Returns:
-        ``(allowed, reason)``. Falsy ``safety_config`` always allows.
+        ``(allowed, reason)``. ``reason`` is safe to surface in logs.
     """
-    if not safety_config:
-        return True, "no-safety-config"
-    mode = _normalise_mode(safety_config)
-    if mode in _BLOCKING_PR_MODES:
+    mode, denial = _resolve_mode(safety_config)
+    if mode is None:
+        return False, denial
+    if mode is SafetyMode.OBSERVE:
         return False, "observe mode forbids PR creation"
-    if mode in _BLOCKING_PR_MODES_ISSUE:
+    if mode is SafetyMode.ISSUE_ONLY:
         return False, "issue-only mode forbids PR creation"
-    if mode in ("pr", "merge"):
-        return True, "ok"
-    # Unknown / empty mode: allow but surface in reason for traceability.
-    return True, f"ok (unrecognized mode '{mode}' allowed by default)"
+    return True, "ok"  # SafetyMode.PR / SafetyMode.MERGE
 
 
 def check_merge_allowed(
@@ -155,29 +197,31 @@ def check_merge_allowed(
 ) -> Tuple[bool, str]:
     """Gate for ``gh pr merge``.
 
-    Honours the configured safety mode:
+    Honours the configured safety mode — canonical, brand, and underscore
+    spellings behave identically via ``SafetyMode.from_brand``:
 
-    - ``observe``     → blocked ("observe mode forbids merge")
-    - ``issue-only``  → blocked ("issue-only mode forbids merge")
-    - ``pr``          → blocked ("pr mode forbids auto-merge — use merge mode")
-    - ``merge``       → allowed
+    - ``observe``            → blocked ("observe mode forbids merge")
+    - ``issue-only``         → blocked ("issue-only mode forbids merge")
+    - ``pr``                 → blocked ("pr mode forbids auto-merge — use merge mode")
+    - ``merge``/``full-care`` → allowed
+
+    Fails closed: a missing/empty/invalid policy (including an absent,
+    non-string, or unrecognized mode) blocks the merge — higher stakes than
+    PR creation.
 
     Returns:
-        ``(allowed, reason)``. Falsy ``safety_config`` always allows.
+        ``(allowed, reason)``. ``reason`` is safe to surface in logs.
     """
-    if not safety_config:
-        return True, "no-safety-config"
-    mode = _normalise_mode(safety_config)
-    if mode in _BLOCKING_PR_MODES:
+    mode, denial = _resolve_mode(safety_config)
+    if mode is None:
+        return False, denial
+    if mode is SafetyMode.OBSERVE:
         return False, "observe mode forbids merge"
-    if mode in _BLOCKING_PR_MODES_ISSUE:
+    if mode is SafetyMode.ISSUE_ONLY:
         return False, "issue-only mode forbids merge"
-    if mode == "pr":
+    if mode is SafetyMode.PR:
         return False, "pr mode forbids auto-merge — use merge mode"
-    if mode == "merge":
-        return True, "ok"
-    # Unknown mode: fail closed for merges (higher stakes than PR creation).
-    return False, f"unrecognized safety mode '{mode}' forbids merge"
+    return True, "ok"  # SafetyMode.MERGE
 
 
 def resolve_base_branch(

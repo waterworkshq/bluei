@@ -502,7 +502,9 @@ def test_prepare_worktree_clean_worktree_not_removed(tmp_path):
 
 def test_apply_commit_push_git_add_commit_push_sequence(tmp_path):
     """Verify git add + commit + push command sequence."""
-    engine = _make_engine_with_mock_provider(tmp_path)
+    # Authorized push: RepoConfig.safety defaults to observe, which the
+    # fail-closed push gate denies — supply an explicit pr-mode policy.
+    engine = _make_engine_with_mock_provider(tmp_path, safety={"mode": "pr"})
     worktree_path = tmp_path / "wt"
     worktree_path.mkdir()
     snapshot = {"pr_number": 42, "branch": "qa/fix-42"}
@@ -586,7 +588,9 @@ def test_apply_commit_push_no_changes(tmp_path):
 
 def test_apply_commit_push_blocked_by_safety_gate_for_protected_branch(tmp_path):
     """F1 coverage: push to a protected branch (main) is blocked even when allow_review_push=True."""
-    engine = _make_engine_with_mock_provider(tmp_path)
+    # Push-authorized policy (pr mode): the block below must come from the
+    # protected-branch rule itself, not from the observe default.
+    engine = _make_engine_with_mock_provider(tmp_path, safety={"mode": "pr"})
     worktree_path = tmp_path / "wt"
     worktree_path.mkdir()
     snapshot = {"pr_number": 42, "branch": "main"}
@@ -621,7 +625,8 @@ def test_apply_commit_push_blocked_by_safety_gate_for_protected_branch(tmp_path)
 
 def test_apply_commit_push_allows_feature_branch(tmp_path):
     """F1 coverage: push to a feature branch proceeds normally."""
-    engine = _make_engine_with_mock_provider(tmp_path)
+    # Authorized push: explicit pr-mode policy (observe default forbids push).
+    engine = _make_engine_with_mock_provider(tmp_path, safety={"mode": "pr"})
     worktree_path = tmp_path / "wt"
     worktree_path.mkdir()
     snapshot = {"pr_number": 42, "branch": "qa/fix-42"}

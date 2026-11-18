@@ -104,7 +104,11 @@ class TestMergeGate:
         with patch("bluei.engine.gh.run_capture") as mock_rc:
             mock_rc.return_value = (0, "merged")
             success, reason = merge_pr(
-                "test/repo", 42, dry_run=False, cwd=repo_with_remote
+                "test/repo",
+                42,
+                dry_run=False,
+                cwd=repo_with_remote,
+                safety_config={"mode": "merge"},
             )
             assert success is True
             assert reason == "merged"
@@ -116,7 +120,11 @@ class TestMergeGate:
         with patch("bluei.engine.gh.run_capture") as mock_rc:
             mock_rc.return_value = (1, "conflict")
             success, reason = merge_pr(
-                "test/repo", 42, dry_run=False, cwd=repo_with_remote
+                "test/repo",
+                42,
+                dry_run=False,
+                cwd=repo_with_remote,
+                safety_config={"mode": "merge"},
             )
             assert success is False
 
@@ -196,6 +204,10 @@ class TestRebaseSweep:
             _make_pr(2, branch="fix-b"),
         ]
 
+        # The harness provides an inert gh availability shim (/tools/gh,
+        # exit 127; /usr/bin/gh stays masked), so the unstubbed real gh call
+        # in _fetch_sibling_prs degrades to a graceful rc!=0 → no siblings
+        # instead of PermissionError.
         with (
             patch("bluei.engine.gh.gh_json") as mock_gh_json,
             patch("bluei.engine.gh.run_capture") as mock_rc,

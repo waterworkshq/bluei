@@ -309,7 +309,22 @@ def _cmd_run(name: str, passthrough: list[str]):
     fix_engine = _parse_option(passthrough, "--fix-engine")
     discovery_scope = _parse_option(passthrough, "--discovery-scope") or "repository"
     finding_id = _parse_option(passthrough, "--finding-id")
-    for flag in ("--discovery-scope", "--finding-id"):
+    approve_refactor_item = _parse_option(passthrough, "--approve-refactor-item")
+    max_queue_value = _parse_option(passthrough, "--max-queue-items")
+    if _has_flag(passthrough, "--auto-approve"):
+        print("bluei: bulk refactor auto-approval is not supported; approve an explicit item", file=sys.stderr)
+        return 2
+    try:
+        max_queue_items = int(max_queue_value) if max_queue_value is not None else None
+        if max_queue_items is not None and max_queue_items < 1:
+            raise ValueError
+    except ValueError:
+        print("bluei: --max-queue-items requires a positive integer", file=sys.stderr)
+        return 2
+    if approve_refactor_item is not None and phase != "refactor-cycle":
+        print("bluei: --approve-refactor-item requires refactor-cycle", file=sys.stderr)
+        return 2
+    for flag in ("--discovery-scope", "--finding-id", "--approve-refactor-item", "--max-queue-items"):
         if flag in passthrough and (_parse_option(passthrough, flag) is None
                                     or _parse_option(passthrough, flag).startswith("--")
                                     or not _parse_option(passthrough, flag).strip()
@@ -350,7 +365,11 @@ def _cmd_run(name: str, passthrough: list[str]):
         result = engine.run(
             repo, RunOptions(phase=phase, dry_run=dry_run, fix_engine=fix_engine,
                              discovery_scope=discovery_scope, finding_id=finding_id,
-                             no_learning=_has_flag(passthrough, "--no-learning"))
+                             no_learning=_has_flag(passthrough, "--no-learning"),
+                             batch_pr_enabled=_has_flag(passthrough, "--batch-pr-enabled")
+                             and not _has_flag(passthrough, "--no-batch-pr"),
+                             max_queue_items=max_queue_items,
+                             approve_refactor_item=approve_refactor_item)
         )
     except ValueError as exc:
         print(f"bluei: {exc}", file=sys.stderr)

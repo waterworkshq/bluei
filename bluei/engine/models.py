@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import hashlib
+import re
 import uuid
 from dataclasses import dataclass, field, fields, asdict
 from datetime import datetime, timezone
@@ -71,6 +72,19 @@ def age_seconds(
 def stable_finding_id(repo: str, path: str, line: int, rule: str, snippet: str) -> str:
     material = f"{repo}|{path}|{line}|{rule}|{snippet.strip()}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+# Well-formed plugin-emitted Ruff rule id ("ruff-E501", "ruff-RUF028").
+# Same shape as cascade._RUFF_RULE_RE; case variants of the code are valid.
+_RUFF_RULE_ID_RE = re.compile(r"^ruff-[A-Za-z]+[0-9]{3,}$")
+
+
+def canonical_ruff_rule(rule: str) -> Optional[str]:
+    """Canonical lowercase ``ruff-<code>`` id, or None if not a Ruff rule."""
+    normalized = (rule or "").strip()
+    if not _RUFF_RULE_ID_RE.match(normalized):
+        return None
+    return normalized.lower()
 
 
 # ────────────────────────────────────────────────────────────────

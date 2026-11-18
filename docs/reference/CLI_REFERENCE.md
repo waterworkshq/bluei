@@ -219,6 +219,8 @@ bluei clean <project-name> [options]
 
 **Engine mapping:** `clean` dispatches to the engine as `run --repo <name> --phase pr-cycle --no-dry-run`.
 
+> **Batch execution:** grouping is opt-in via `--batch-pr-enabled` (off by default). Batches require configured execution-qualified checks, aggregate diff limits and closure of every member before retaining a patch or creating a PR. Local runs retain one shared patch, leave source issues open, and count no PRs; missing acceptance inputs still refuse. An explicit deterministic engine never invokes a model fallback. `--no-batch-pr` keeps sequential single-finding processing.
+
 **Examples:**
 
 ```bash
@@ -957,6 +959,8 @@ bluei run <project-name> [options]
 |------|------|---------|-------------|
 | `--dry-run` | flag | — | Preview without making changes |
 | `--fix-engine <engine>` | string | `auto` | Fix engine: `auto`, `deterministic`, `claude`, `opencode` |
+| `--no-learning` | flag | — | Disable pattern replay and learning evidence (forced on for selected repair) |
+| `--baseline-checks <json>` | string | `[]` | JSON list of baseline check command lists; overrides the workspace `baseline_validation_checks` config. Malformed JSON or a non-list is preserved as an invalid, unavailable check (no silent fallback) |
 
 **Engine mapping:** `run --repo <name> --phase orchestrated --no-dry-run`.
 
@@ -987,8 +991,9 @@ and does not recalculate repository-wide health/history; scoped findings are sti
 `claude` or `opencode` backend. Every attempt starts with fresh discovery; missing,
 ambiguous, suppressed, or ineligible IDs do not select another finding. The selected
 lane permits one model attempt, disables batching, replay/learning, GitHub publication,
-and merge, and does not process unrelated issues. `--no-learning` is also available
-for ordinary runs. F821 uses the model lane, never deterministic autofix.
+and merge, and does not process unrelated issues. The selected lane forces
+`--no-learning` on; the flag is also available for ordinary runs. F821 uses the
+model lane, never deterministic autofix.
 `lock-self-reentry` is also eligible through explicit selection only; ordinary
 repair keeps it diagnostic. Review the retained patch and independently validate
 application liveness, metric behavior, and synchronization. Diagnostic closure
@@ -999,7 +1004,18 @@ Obtain that authorization and configure backend-enforced spending limits separat
 bluei's token-cost estimates are not actual-spend enforcement. Default dry runs do
 not execute the selected repair.
 
-**Exit codes:** `0` (success), `1` (error or missing project name)
+**Ordinary repair lane:** an explicit `deterministic` fix engine (or `--deterministic-only`) never escalates to a model backend. Ordinary repair processes a queued finding only when fresh discovery confirms exactly one current instance whose responsible detector completed; absent, ambiguous, or incomplete fresh evidence leaves the issue open as unqualified. A retained patch already covering identical source is skipped rather than re-applied — no duplicate artifact or attempt.
+
+**Repair acceptance boundaries:**
+
+- Verification separates *passed* from *qualified*: a repair qualifies only when baseline checks were configured, every configured check actually executed in both baseline and post-fix results, and at least one configured check passed in both. Tolerated unchanged baseline failures are permitted only alongside that passing control, so an all-failing baseline stays unqualified; empty, unavailable, and all-failing check sets each block the repair with an explicit unqualified reason instead of silently assuming default checks. A passing check proves the commands launched and passed, not that the intended tests ran (wrapper and test-collection ambiguity remains) — independent behavior validation is still required.
+- A successful model exit alone records nothing learned. The fix-success record, success lesson, and pattern extraction are written only after the run ends with an accepted artifact — a retained verified patch or a created PR; pattern-replay misses and failures are recorded immediately. `--no-learning` and paused learning mode write no learning evidence at all. A zero-diff resolution (the finding no longer reproduces) is a verified no-op resolution of the finding, not an accepted repair — it records no learned evidence.
+- Local (non-live) and dry-run repairs retain a bounded tracked-file patch (`local-fix-*.patch` under repo state; selected repairs keep `selected-fix-*.patch`) instead of finalizing a PR. The source issue stays open — the patch is a candidate, not a fix applied to the source — and repairs that add new files are rejected; only tracked-file changes are represented.
+- `refactor-cycle` performs fresh discovery, keeps durable work under the repository's `state/refactor_queue/`, and uses the qualified single-finding executor. Safety-allowed `ready` work is distinct from `pending_review`; review-required work stays pending until `--approve-refactor-item <work-id>` explicitly approves that exact current finding. `--max-queue-items <positive-integer>` bounds dispatches; bulk `--auto-approve` is rejected. Interrupted executing work can continue under the same identity/approval after fresh evidence, and retained artifacts reconcile without another repair attempt. Local patches do not modify the source checkout or close its issues. New-file structural splits remain unqualified by the tracked-only patch format.
+- The bounded JavaScript `no-console` public cascade route requires completed external-tool evidence from `plugin:plugin-typescript` (`status: ran`, `tool_outcome: tool-ran`) for both fresh queue admission and post-fix closure. Unknown bare rule IDs do not inherit this provenance. Repository tools/configuration still require the existing explicit trust opt-in; the association is not permission to execute untrusted code or proof of model correctness.
+- Ordinary and structural retries use unique attempt worktrees. An interrupted worktree is retained, not silently deleted or overwritten. Configured cascade fallback preserves logical backend identity and receives private baseline statuses; positive candidate evidence waits for the final retained artifact or successful authorized PR.
+
+**Exit codes:** `0` (completed lifecycle), `1` (error, failed attempted repair, or missing project name), `2` (invalid options or refused structural approval/prerequisite). A completed lifecycle with only pending human-review items does not claim a repair.
 
 ---
 
@@ -1102,7 +1118,10 @@ bluei update
 ### 28. `upgrade-config`
 
 Upgrade a repository's configuration to the latest schema. Uses the
-`OnboardEngine.upgrade_config()` path.
+`OnboardEngine.upgrade_config()` path. Operator-owned fields (repo `id`,
+limits, cooldowns, baseline checks, safety and review policy, templates,
+GitHub and notification settings) are preserved verbatim; unknown top-level
+keys are rejected with a `ValueError`.
 
 **Syntax:**
 

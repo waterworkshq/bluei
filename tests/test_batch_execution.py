@@ -342,7 +342,7 @@ class TestCreateBatchPR:
         batch.worktree_path = Path("/tmp/wt")
         batch.branch = "qa/batch-c408-1234"
 
-        result = create_batch_pr(batch, "owner/repo", Path("/tmp/log"))
+        result = create_batch_pr(batch, "owner/repo", Path("/tmp/log"), {"mode": "pr"})
         assert result["number"] == 42
         assert "pull/42" in result["url"]
 
@@ -356,7 +356,7 @@ class TestCreateBatchPR:
         batch.branch = "qa/batch-c408-1234"
 
         with pytest.raises(RuntimeError, match="Failed to create batch PR"):
-            create_batch_pr(batch, "owner/repo", Path("/tmp/log"))
+            create_batch_pr(batch, "owner/repo", Path("/tmp/log"), {"mode": "pr"})
 
 
 # ── Test: link_issues_to_batch_pr ────────────────────────────────
@@ -437,133 +437,96 @@ class TestVerifyFindingClosed:
 
 
 class TestProcessBatch:
-    @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.worktree.hydrate_worktree")
-    @patch("bluei.engine.batch_pr._create_worktree")
-    @patch("bluei.engine.state._append_text")
-    def test_worktree_created_for_batch(
-        self, mock_append, mock_create_wt, mock_hydrate, mock_fixes
-    ):
-        """process_batch creates a shared worktree for all batch findings."""
-        mock_create_wt.return_value = True
-        mock_fixes.return_value = (2, 0)  # 2 successes, 0 failures
+    # Current contract (ACCEPTANCE-BOUNDARY-3ks3txvh): multi-finding batch
+    # repair is unqualified — process_batch refuses BEFORE any worktree,
+    # fix, git, or gh side effect and returns the detail below. The mocks
+    # below act as sentinels: each pins that its specific effectful
+    # entrypoint is never reached by the refusal.
+
+    def test_worktree_created_for_batch(self, tmp_path):
+        """current contract: no worktree is created for an unqualified batch."""
         batch = make_batch_group(n_findings=2)
         args = FakeArgs(dry_run=True)
-        log_file = Path("/tmp/test.log")
+        log_file = tmp_path / "test.log"
 
-        with (
-            patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
-            patch("bluei.engine.git_ops.git_push_branch", return_value=True),
-            patch("bluei.engine.utils.run_no_capture"),
-            patch("bluei.engine.worktree.run_no_capture"),
-        ):
-            success, detail = process_batch(batch, Path("/tmp/repo"), args, log_file)
-
-        assert success is True
-        assert batch.status == BatchStatus.DRY_RUN.value
-        # Verify worktree was created with batch ID in path
-        create_call = mock_create_wt.call_args
-        assert f"qa-batch-{batch.batch_id}" in str(create_call[0][1])
-
-    @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.worktree.hydrate_worktree")
-    @patch("bluei.engine.batch_pr._create_worktree")
-    @patch("bluei.engine.state._append_text")
-    def test_no_successes_returns_false(
-        self, mock_append, mock_create_wt, mock_hydrate, mock_fixes
-    ):
-        """process_batch returns False when no fixes succeed."""
-        mock_create_wt.return_value = True
-        mock_fixes.return_value = (0, 3)  # 0 successes, 3 failures
-        batch = make_batch_group(n_findings=3)
-        args = FakeArgs()
-        log_file = Path("/tmp/test.log")
-
-        with (
-            patch("bluei.engine.utils.run_no_capture"),
-            patch("bluei.engine.worktree.run_no_capture"),
-            patch("bluei.engine.worktree.run_no_capture"),
-        ):
+        with patch(
+            "bluei.engine.batch_pr._create_worktree", return_value=True
+        ) as mock_create_wt:
             success, detail = process_batch(batch, Path("/tmp/repo"), args, log_file)
 
         assert success is False
-        assert batch.status == BatchStatus.FAILED.value
+        assert detail == (
+            "batch repair unqualified: missing configured scope/validation/closure acceptance"
+        )
+        mock_create_wt.assert_not_called()
+        assert batch.worktree_path is None
+        assert batch.status == BatchStatus.OPEN.value  # never DRY_RUN
 
-    @patch("bluei.engine.batch_pr._create_worktree")
-    @patch("bluei.engine.state._append_text")
-    def test_worktree_failure_returns_false(self, mock_append, mock_create_wt):
-        """process_batch returns False when worktree creation fails."""
-        mock_create_wt.return_value = False
-        batch = make_batch_group(n_findings=2)
-        args = FakeArgs()
-        log_file = Path("/tmp/test.log")
-
-        success, detail = process_batch(batch, Path("/tmp/repo"), args, log_file)
-        assert success is False
-        assert "worktree" in detail
-
-    @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.worktree.hydrate_worktree")
-    @patch("bluei.engine.batch_pr._create_worktree")
-    @patch("bluei.engine.state._append_text")
-    def test_partial_success_still_creates_pr(
-        self, mock_append, mock_create_wt, mock_hydrate, mock_fixes
-    ):
-        """process_batch creates PR even with partial success."""
-        mock_create_wt.return_value = True
+    def test_no_successes_returns_false(self, tmp_path):
+        """current contract: fixes never run, so no zero-success outcome arises."""
         batch = make_batch_group(n_findings=3)
-        # Mock apply_batch_fixes to return tally AND populate fix_results
-        # (the real function does both, but mocking skips the real impl)
-        from bluei.engine.models import FixResult
+        args = FakeArgs()
+        log_file = tmp_path / "test.log"
 
-        for i, f in enumerate(batch.findings):
-            batch.fix_results[f.finding_id] = FixResult(
-                finding_id=f.finding_id,
-                status="success" if i < 2 else "failed",
-                diff_lines=1 if i < 2 else 0,
-                fix_method="autofix",
-            )
-        mock_fixes.return_value = (2, 1)  # 2 successes, 1 failure
-        args = FakeArgs(dry_run=True)
-        log_file = Path("/tmp/test.log")
-
-        with (
-            patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
-            patch("bluei.engine.git_ops.git_push_branch", return_value=True),
-            patch("bluei.engine.utils.run_no_capture"),
-            patch("bluei.engine.worktree.run_no_capture"),
-        ):
+        with patch(
+            "bluei.engine.batch_pr.apply_batch_fixes", return_value=(0, 3)
+        ) as mock_fixes:
             success, detail = process_batch(batch, Path("/tmp/repo"), args, log_file)
 
-        assert success is True
-        # Verify fix results are recorded
-        assert len(batch.fix_results) == 3
+        assert success is False
+        assert detail == (
+            "batch repair unqualified: missing configured scope/validation/closure acceptance"
+        )
+        mock_fixes.assert_not_called()
+        assert batch.status == BatchStatus.OPEN.value  # not FAILED
 
-    @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.worktree.hydrate_worktree")
-    @patch("bluei.engine.batch_pr._create_worktree")
-    @patch("bluei.engine.state._append_text")
-    def test_branch_naming_convention(
-        self, mock_append, mock_create_wt, mock_hydrate, mock_fixes
-    ):
-        mock_create_wt.return_value = True
-        mock_fixes.return_value = (2, 0)
+    def test_worktree_failure_returns_false(self, tmp_path):
+        """current contract: worktree creation is never attempted."""
+        batch = make_batch_group(n_findings=2)
+        args = FakeArgs()
+        log_file = tmp_path / "test.log"
+
+        with patch(
+            "bluei.engine.batch_pr._create_worktree", return_value=False
+        ) as mock_create_wt:
+            success, detail = process_batch(batch, Path("/tmp/repo"), args, log_file)
+
+        assert success is False
+        assert detail == (
+            "batch repair unqualified: missing configured scope/validation/closure acceptance"
+        )
+        assert "worktree" not in detail  # refusal, not worktree-creation-failed
+        mock_create_wt.assert_not_called()
+
+    def test_partial_success_still_creates_pr(self, tmp_path):
+        """current contract: no PR flow runs; fix_results stay unpopulated."""
+        batch = make_batch_group(n_findings=3)
+        args = FakeArgs(dry_run=True)
+        log_file = tmp_path / "test.log"
+
+        with patch(
+            "bluei.engine.batch_pr.apply_batch_fixes", return_value=(2, 1)
+        ) as mock_fixes:
+            success, detail = process_batch(batch, Path("/tmp/repo"), args, log_file)
+
+        assert success is False
+        assert detail == (
+            "batch repair unqualified: missing configured scope/validation/closure acceptance"
+        )
+        mock_fixes.assert_not_called()
+        # The real apply_batch_fixes populates fix_results; refusal must not.
+        assert len(batch.fix_results) == 0
+
+    def test_branch_naming_convention(self, tmp_path):
+        """current contract: no branch name is generated or assigned."""
         batch = make_batch_group(n_findings=2, rule="ruff-c408")
         args = FakeArgs(dry_run=True)
-        log_file = Path("/tmp/test.log")
+        log_file = tmp_path / "test.log"
 
-        with (
-            patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
-            patch("bluei.engine.git_ops.git_push_branch", return_value=True),
-            patch("bluei.engine.utils.run_no_capture"),
-            patch("bluei.engine.worktree.run_no_capture"),
-        ):
-            process_batch(batch, Path("/tmp/repo"), args, log_file)
+        process_batch(batch, Path("/tmp/repo"), args, log_file)
 
-        assert batch.branch is not None
-        assert batch.branch.startswith("qa/batch-c408-")
-        parts = batch.branch.split("-")
-        assert len(parts[-1]) == 6
+        assert batch.branch is None  # no qa/batch-* name minted
+        assert batch.status == BatchStatus.OPEN.value
 
 
 # ── Test: Batch disabled falls back ──────────────────────────────
@@ -655,82 +618,46 @@ class TestBatchIntegration:
 
 
 class TestB7PRCreationFailureSetsBatchFailed:
-    @patch("bluei.engine.batch_pr.link_issues_to_batch_pr")
-    @patch(
-        "bluei.engine.batch_pr.create_batch_pr",
-        side_effect=RuntimeError("gh pr create failed"),
-    )
-    @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.worktree.hydrate_worktree")
-    @patch("bluei.engine.batch_pr._create_worktree")
-    @patch("bluei.engine.state._append_text")
-    @patch("bluei.engine.gh.find_batch_pr_by_rule", return_value=None)
-    @patch("bluei.engine.gh.parse_github_repo", return_value=("owner", "repo"))
-    @patch(
-        "bluei.engine.gh.get_origin_url",
-        return_value="https://github.com/owner/repo.git",
-    )
-    @patch("bluei.engine.git_ops.git_push_branch", return_value=True)
-    @patch("bluei.engine.git_ops.git_commit_all", return_value="committed")
-    @patch("bluei.engine.utils.run_no_capture")
-    @patch("bluei.engine.worktree.run_no_capture")
-    def test_runtime_error_sets_batch_failed(
-        self,
-        mock_wt_run_no_capture,
-        mock_run,
-        mock_commit,
-        mock_push,
-        mock_origin,
-        mock_parse,
-        mock_find_dup,
-        mock_append,
-        mock_wt,
-        mock_hydrate,
-        mock_fixes,
-        mock_create_pr,
-        mock_link,
-    ):
-        mock_wt.return_value = True
-        mock_fixes.return_value = (2, 0)
+    def test_runtime_error_sets_batch_failed(self, tmp_path):
+        # current contract: create_batch_pr is unreachable — its RuntimeError
+        # can neither escape nor set FAILED; the refusal stands.
         batch = make_batch_group(n_findings=2)
         args = FakeArgs(dry_run=False)
-        log_file = Path("/tmp/test.log")
+        log_file = tmp_path / "test.log"
 
-        success, detail = process_batch(batch, Path("/tmp/repo"), args, log_file)
+        with patch(
+            "bluei.engine.batch_pr.create_batch_pr",
+            side_effect=RuntimeError("gh pr create failed"),
+        ) as mock_create_pr:
+            success, detail = process_batch(batch, Path("/tmp/repo"), args, log_file)
 
         assert success is False
-        assert detail == "pr-creation-failed"
-        assert batch.status == BatchStatus.FAILED.value
+        assert detail == (
+            "batch repair unqualified: missing configured scope/validation/closure acceptance"
+        )
+        assert detail != "pr-creation-failed"
+        assert batch.status == BatchStatus.OPEN.value  # not FAILED
+        mock_create_pr.assert_not_called()
 
 
 # ── Test: B9 — Branch name uniqueness ────────────────────────────
 
 
 class TestB9BranchNameUniqueness:
-    @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.worktree.hydrate_worktree")
-    @patch("bluei.engine.batch_pr._create_worktree")
-    @patch("bluei.engine.state._append_text")
-    def test_two_batches_same_second_get_different_branches(
-        self, mock_append, mock_create_wt, mock_hydrate, mock_fixes
-    ):
-        mock_create_wt.return_value = True
-        mock_fixes.return_value = (2, 0)
+    def test_two_batches_same_second_get_different_branches(self, tmp_path):
+        # current contract: neither batch mints a branch name — there is no
+        # collision surface because nothing is named; both refusals are
+        # logged independently.
         args = FakeArgs(dry_run=True)
-        log_file = Path("/tmp/test.log")
+        log_file = tmp_path / "test.log"
 
-        branches = []
         for i in range(2):
             batch = make_batch_group(n_findings=2, rule="ruff-c408")
-            with (
-                patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
-                patch("bluei.engine.git_ops.git_push_branch", return_value=True),
-                patch("bluei.engine.utils.run_no_capture"),
-                patch("bluei.engine.worktree.run_no_capture"),
-            ):
-                process_batch(batch, Path("/tmp/repo"), args, log_file)
-                branches.append(batch.branch)
+            success, detail = process_batch(batch, Path("/tmp/repo"), args, log_file)
+            assert success is False
+            assert detail == (
+                "batch repair unqualified: missing configured scope/validation/closure acceptance"
+            )
+            assert batch.branch is None  # no qa/batch-c408-* name minted
 
-        assert branches[0] != branches[1]
-        for b in branches:
-            assert b.startswith("qa/batch-c408-")
+        assert log_file.read_text().count("batch-refused") == 2

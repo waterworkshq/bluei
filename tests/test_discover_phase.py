@@ -1,5 +1,6 @@
 """Tests for bluei.engine.commands.discover — discovery routing, cooldown, refactor classification."""
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -179,11 +180,11 @@ class TestDiscoverPhaseRouting:
     @patch("bluei.engine.commands.discover.filter_findings_by_cooldown")
     @patch(
         "bluei.engine.commands.discover.guard_open_issues",
-        return_value=(False, "cap hit"),
+        return_value=(False, "guard-block: open issues=25 meets/exceeds issue cap=20"),
     )
     @patch("bluei.engine.commands.discover.count_actionable_issues", return_value=25)
     @patch("bluei.engine.commands.discover._append_text")
-    def test_cap_hit_blocks_discovery(
+    def test_cap_hit_still_runs_fresh_discovery(
         self,
         mock_log,
         mock_count,
@@ -193,8 +194,9 @@ class TestDiscoverPhaseRouting:
         mock_discover,
         mock_classify,
     ):
-        mock_discover.return_value = []
-        mock_filter.return_value = ([], [])
+        f1 = _finding(finding_id="f001")
+        mock_discover.return_value = [f1]
+        mock_filter.return_value = ([f1], [])
 
         result = run_discover_phase(
             repo_path=Path("/repo"),
@@ -208,9 +210,16 @@ class TestDiscoverPhaseRouting:
             run_pr_cycle=False,
         )
 
-        _, _, _, _, _, blocked, cap_ok = result
+        findings, written, eligible, suppressed, routed, blocked, cap_ok = result
+        # Cap gates new admissions only — the scan itself stays fresh.
+        mock_discover.assert_called_once()
+        assert findings == [f1] and written == 1
         assert cap_ok is False
-        assert len(blocked) == 1
+        assert blocked == [
+            "guard-block: open issues=25 meets/exceeds issue cap=20"
+        ]
+        # Findings still route so the existing backlog stays repairable.
+        assert eligible == [f1]
 
     @patch("bluei.engine.reforge.classify_finding")
     @patch("bluei.engine.utils.is_path_tracked")
@@ -281,3 +290,118 @@ class TestDiscoverPhaseRouting:
         _, _, eligible, suppressed, _, _, _ = result
         assert eligible == []
         assert len(suppressed) == 1
+
+
+def _issue_for(finding_id, status="open"):
+    return {"issue_id": f"QA-{finding_id}", "finding_id": finding_id, "status": status}
+
+
+def _ruff_alias_loader(group):
+    def _load(path, aliases=None):
+        for fid in group:
+            aliases[fid] = set(group)
+        return {}
+
+    return _load
+
+
+class TestRuffAliasIdentity:
+    """Ruff aliases reuse the Markdown routing logic with family labels."""
+
+    @patch("bluei.engine.commands.discover._load_ruff_identities")
+    @patch("bluei.engine.orchestrator.discover_findings")
+    @patch("bluei.engine.commands.discover.append_findings", return_value=1)
+    @patch("bluei.engine.commands.discover._append_text")
+    def test_ruff_multiple_active_aliases_fail_closed(
+        self, mock_log, mock_append, mock_discover, mock_ruff_load
+    ):
+        finding = _finding(finding_id="a1", rule="ruff-E501")
+        mock_discover.return_value = [finding]
+        mock_ruff_load.side_effect = _ruff_alias_loader({"a1", "a2"})
+        issues = {"issues": [_issue_for("a1"), _issue_for("a2")]}
+
+        result = run_discover_phase(
+            repo_path=Path("/repo"),
+            docs_index_file=Path("/docs.json"),
+            findings_file=Path("/findings.json"),
+            log_file=Path("/test.log"),
+            state={},
+            issues_data=issues,
+            args=_args(),
+            run_issue_cycle=True,
+            run_pr_cycle=False,
+        )
+
+        findings, written, eligible, suppressed, routed, blocked, cap_ok = result
+        assert eligible == [] and routed == []
+        assert suppressed == [finding]
+        assert cap_ok is True
+        assert any("Ruff alias conflict for a1" in reason for reason in blocked)
+
+    @patch("bluei.engine.reforge.classify_finding")
+    @patch("bluei.engine.commands.discover.filter_findings_by_cooldown")
+    @patch("bluei.engine.commands.discover._load_ruff_identities")
+    @patch("bluei.engine.orchestrator.discover_findings")
+    @patch("bluei.engine.commands.discover.append_findings", return_value=1)
+    @patch("bluei.engine.commands.discover._append_text")
+    def test_ruff_alias_rebinds_to_active_issue_id(
+        self, mock_log, mock_append, mock_discover, mock_ruff_load,
+        mock_filter, mock_classify,
+    ):
+        # Earliest-ID adoption bound the finding to a1, but the live issue
+        # tracks a2: routing must rebind so no duplicate is admitted below cap.
+        finding = _finding(finding_id="a1", rule="ruff-E501")
+        mock_discover.return_value = [finding]
+        mock_ruff_load.side_effect = _ruff_alias_loader({"a1", "a2"})
+        mock_filter.return_value = ([finding], [])
+        issues = {"issues": [_issue_for("a2")]}
+
+        result = run_discover_phase(
+            repo_path=Path("/repo"),
+            docs_index_file=Path("/docs.json"),
+            findings_file=Path("/findings.json"),
+            log_file=Path("/test.log"),
+            state={},
+            issues_data=issues,
+            args=_args(),
+            run_issue_cycle=True,
+            run_pr_cycle=False,
+        )
+
+        findings, written, eligible, suppressed, routed, blocked, cap_ok = result
+        assert finding.finding_id == "a2"
+        assert eligible == [finding]
+        assert not any("alias conflict" in reason for reason in blocked)
+
+    @patch("bluei.engine.commands.discover._load_markdown_identities")
+    @patch("bluei.engine.orchestrator.discover_findings")
+    @patch("bluei.engine.commands.discover.append_findings", return_value=1)
+    @patch("bluei.engine.commands.discover._append_text")
+    def test_markdown_conflict_outcome_keeps_compatibility_key(
+        self, mock_log, mock_append, mock_discover, mock_md_load, tmp_path
+    ):
+        finding = _finding(finding_id="m1", rule="md-MD009")
+        mock_discover.return_value = [finding]
+
+        def _load(path, aliases=None):
+            for fid in ("m1", "m2"):
+                aliases[fid] = {"m1", "m2"}
+            return {}
+
+        mock_md_load.side_effect = _load
+        from bluei.engine.commands.context import RunContext
+
+        ctx = RunContext(
+            args=_args(), repo_path=tmp_path, log_file=tmp_path / "run.log",
+            findings_file=tmp_path / "findings.jsonl",
+            docs_index_file=tmp_path / "docs.json",
+            status_file=tmp_path / "status.json", state={},
+            issues_data={"issues": [_issue_for("m1"), _issue_for("m2")]},
+            run_id="r1", run_issue_cycle=True, run_pr_cycle=False,
+        )
+        result = run_discover_phase(ctx)
+
+        assert any("Markdown alias conflict for m1" in r for r in result[5])
+        current = json.loads((tmp_path / "discovery-current.json").read_text())
+        assert current["detector_outcomes"]["markdown-identity"]["status"] == "failed"
+        assert current["detector_outcomes"]["finding-identity"]["status"] == "failed"

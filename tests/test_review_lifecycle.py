@@ -15,6 +15,7 @@ UNATTENDED PUSH POLICY:
 """
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -42,6 +43,31 @@ def make_repo(tmp_path: Path) -> Repo:
             },
         )
     )
+
+
+def _git_worktree(parent: Path, name: str) -> Path:
+    """Real clean git worktree so the HEAD precondition runs for real.
+
+    Deliberately per-test (not autouse) — head-negative tests must keep the
+    real fail-closed rev-parse path.
+    """
+    worktree = parent / name
+    worktree.mkdir()
+    for args in (
+        ["git", "init"],
+        ["git", "config", "user.email", "bluei@example.invalid"],
+        ["git", "config", "user.name", "bluei"],
+    ):
+        subprocess.run(args, cwd=worktree, capture_output=True, check=True)
+    (worktree / "README").write_text("init\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=worktree, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=worktree,
+        capture_output=True,
+        check=True,
+    )
+    return worktree
 
 
 def make_engine(repo: Repo, state: StateManager) -> ReviewCycleEngine:
@@ -113,8 +139,7 @@ def test_full_lifecycle_unattended_push_blocked(tmp_path):
         "fingerprint": "abc123def456",
     }
 
-    worktree_path = tmp_path / "worktree"
-    worktree_path.mkdir()
+    worktree_path = _git_worktree(tmp_path, "worktree")
 
     engine._prepare_worktree = lambda snapshot, dry_run: {
         "worktree_path": str(worktree_path),
@@ -233,8 +258,7 @@ def test_full_lifecycle_explicit_push_allowed(tmp_path):
         "fingerprint": "xyz789",
     }
 
-    worktree_path = tmp_path / "worktree-push"
-    worktree_path.mkdir()
+    worktree_path = _git_worktree(tmp_path, "worktree-push")
 
     engine._prepare_worktree = lambda snapshot, dry_run: {
         "worktree_path": str(worktree_path),
@@ -387,8 +411,9 @@ def test_lifecycle_pending_push_preserved_across_runs(tmp_path):
     state = StateManager(tmp_path / "repos")
     state._get_state_dir(repo.config.name).mkdir(parents=True, exist_ok=True)
 
-    worktree_path = tmp_path / "existing_worktree"
-    worktree_path.mkdir()
+    worktree_path = _git_worktree(tmp_path, "existing_worktree")
+    (worktree_path / "src").mkdir()
+    (worktree_path / "src" / "a.ts").write_text("validated change\n", encoding="utf-8")
 
     pre_existing_active = {
         "prs": {
@@ -703,6 +728,15 @@ def test_review_cycle_marks_unstable_snapshot_merge_ready_when_artifact_exists(
         "checks_summary_optional": None,
         "fingerprint": "merge-ready-77",
     }
+
+    def _fake_publish(pr_number, summary_text, publication_key, existing_review):
+        # Inert comment transport: the real _publish_review_cycle_comment
+        # shells out to `gh pr comment`, which is masked in this harness.
+        # Stubbed like the sibling artifact tests; managed-review state
+        # recording and artifact semantics stay fully real.
+        return existing_review["last_review_comment_url"]
+
+    engine._publish_review_cycle_comment = _fake_publish
 
     result = engine.run(dry_run=False, allow_review_push=False)
 

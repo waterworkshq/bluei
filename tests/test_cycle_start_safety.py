@@ -69,10 +69,12 @@ class TestCycleStartSafetyProjection:
         assert safety_config == safety
         assert isinstance(safety_config, dict)
 
-    def test_missing_repo_config_projects_none(self, tmp_path):
+    def test_missing_repo_config_fails_closed_observe(self, tmp_path):
+        """No matching registration projects the fail-closed observe policy
+        (design change: unregistered checkouts no longer keep a None policy)."""
         repo_config, safety_config = _resolve_cycle_configs(tmp_path, "absent")
         assert repo_config is None
-        assert safety_config is None
+        assert safety_config == {"mode": "observe", "block_push": True}
 
     def test_projection_matches_seam_semantics_on_ctx(self, tmp_path):
         """The lifted value lands on the same field the gates read."""
@@ -304,7 +306,8 @@ class TestMergeOnlySafetyProjection:
         ))
         repo, safety = _resolve_cycle_configs(tmp_path, "demo")
         assert repo is None
-        assert safety is None  # A truly unregistered checkout retains compatibility.
+        # An unregistered checkout fails closed (design change: no None policy).
+        assert safety == {"mode": "observe", "block_push": True}
 
     @pytest.mark.parametrize("problem", ["missing", "duplicate", "invalid-registry", "unreadable-registry"])
     def test_uncertain_registration_fails_closed(self, tmp_path, problem, caplog):
@@ -406,3 +409,48 @@ class TestMergeOnlySafetyProjection:
             _project_repo_safety(ctx)
         assert ctx.repo_config.name == "service-prod"
         assert ctx.safety_config == {"mode": "pr"}
+
+
+class TestProjectedPolicyDeniesAtRuntimeGates:
+    """Both cycle-start projection outcomes must DENY mutating operations.
+
+    - Fail-closed projection (unreadable/ambiguous config, uncertain
+      registration) yields ``{"mode": "observe", "block_push": True}``.
+    - A truly unregistered checkout ALSO yields the fail-closed observe
+      policy (design change: no more None policy for compatibility).
+    Runtime remediation must pass repo safety, never operate on ``None``.
+    """
+
+    def test_fail_closed_projection_blocks_push_pr_and_merge(self):
+        from bluei.engine.safety_gates import (
+            check_merge_allowed,
+            check_pr_creation_allowed,
+            check_push_allowed,
+        )
+
+        policy = {"mode": "observe", "block_push": True}
+        assert check_push_allowed("qa/fix", policy) == (
+            False, "fail-closed safety policy forbids push",
+        )
+        assert check_pr_creation_allowed("main", policy)[0] is False
+        assert check_merge_allowed(policy)[0] is False
+
+    def test_unregistered_checkout_fails_closed_at_gates(self, tmp_path):
+        from bluei.engine.safety_gates import (
+            check_merge_allowed,
+            check_pr_creation_allowed,
+            check_push_allowed,
+        )
+
+        # Same shape as the colliding-basename case: workspace registered,
+        # this checkout not — projection fails closed with observe+block_push.
+        ConfigManager(tmp_path).save_repo_config(RepoConfig(
+            id="other", name="demo", path=str(tmp_path / "other" / "demo"),
+            language="python", safety={"mode": "merge"},
+        ))
+        repo_config, safety_config = _resolve_cycle_configs(tmp_path, "demo")
+        assert repo_config is None
+        assert safety_config == {"mode": "observe", "block_push": True}
+        assert check_push_allowed("qa/fix", safety_config)[0] is False
+        assert check_pr_creation_allowed("main", safety_config)[0] is False
+        assert check_merge_allowed(safety_config)[0] is False

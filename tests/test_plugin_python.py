@@ -73,8 +73,10 @@ class TestParseOutput:
         )
         findings = plugin.parse_output(output, tmp_path)
         assert len(findings) == 2
-        assert findings[0].rule == "trailing-whitespace"
-        assert findings[1].rule == "broad-except"
+        # Canonical identity: lowercase ruff-<code>, never internal names
+        # (E501 is line-too-long, not trailing-whitespace).
+        assert findings[0].rule == "ruff-e501"
+        assert findings[1].rule == "ruff-e722"
 
     def test_unknown_code_uses_ruff_prefix(self, plugin, tmp_path):
         output = json.dumps(
@@ -88,7 +90,7 @@ class TestParseOutput:
             ]
         )
         findings = plugin.parse_output(output, tmp_path)
-        assert findings[0].rule == "ruff-F401"
+        assert findings[0].rule == "ruff-f401"
 
     def test_empty_code_skipped(self, plugin, tmp_path):
         output = json.dumps([{"code": "", "message": "skip me"}])
@@ -116,6 +118,51 @@ class TestParseOutput:
         )
         findings = plugin.parse_output(output, tmp_path)
         assert len(findings) == 1
+
+    def test_row_string_coerces_to_int_with_same_identity(self, plugin, tmp_path):
+        """Native parity: row "12" and row 12 must produce the same line
+        and the same finding id (native coerces via int())."""
+        int_out = json.dumps(
+            [{"code": "F401", "location": {"row": 12}, "path": "x.py",
+              "message": "m"}]
+        )
+        str_out = json.dumps(
+            [{"code": "F401", "location": {"row": "12"}, "path": "x.py",
+              "message": "m"}]
+        )
+        f_int = plugin.parse_output(int_out, tmp_path)[0]
+        f_str = plugin.parse_output(str_out, tmp_path)[0]
+        assert f_str.line == 12
+        assert f_str.finding_id == f_int.finding_id
+
+    def test_missing_row_defaults_to_line_zero_native_parity(self, plugin, tmp_path):
+        output = json.dumps(
+            [{"code": "F401", "location": {}, "path": "x.py", "message": "m"}]
+        )
+        assert plugin.parse_output(output, tmp_path)[0].line == 0
+
+    def test_non_dict_location_skips_only_that_diagnostic(self, plugin, tmp_path):
+        """A malformed location must skip one diagnostic, never abort the
+        whole run with an AttributeError — siblings still parse."""
+        output = json.dumps(
+            [
+                {"code": "F401", "location": "not-a-dict", "path": "a.py",
+                 "message": "m"},
+                {"code": "F821", "location": {"row": 3}, "path": "b.py",
+                 "message": "ok"},
+            ]
+        )
+        findings = plugin.parse_output(output, tmp_path)
+        assert [(f.rule, f.path, f.line) for f in findings] == [
+            ("ruff-f821", "b.py", 3)
+        ]
+
+    def test_malformed_row_value_skipped(self, plugin, tmp_path):
+        output = json.dumps(
+            [{"code": "F401", "location": {"row": "abc"}, "path": "x.py",
+              "message": "m"}]
+        )
+        assert plugin.parse_output(output, tmp_path) == []
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +233,7 @@ class TestDiscover:
         with patch.object(plugin, "_run_tool", return_value=mock_output):
             findings = plugin.discover(tmp_path, {})
         rules = {f.rule for f in findings}
-        assert "trailing-whitespace" in rules
+        assert "ruff-e501" in rules
         assert "debt-todo-marker" in rules
 
     def test_no_tool_falls_back_to_text_scan(self, plugin, tmp_path):
@@ -209,8 +256,13 @@ class TestDiscover:
         )
         with patch.object(plugin, "_run_tool", return_value=mock_output):
             findings = plugin.discover(tmp_path, {})
+        # The tool keeps its canonical ruff-e722 identity; the text scan
+        # keeps its internal broad-except identity — one of each, and the
+        # (path, line, rule) dedupe still collapses exact same-rule repeats.
         broad_except = [f for f in findings if f.rule == "broad-except"]
         assert len(broad_except) == 1
+        tool = [f for f in findings if f.rule == "ruff-e722"]
+        assert len(tool) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -248,19 +300,15 @@ class TestStableFindingId:
 
 
 class TestRuffRuleMapping:
-    """Verify all entries in _RUFF_RULE_MAP produce correct rule names."""
+    """Canonical rule identity: every well-formed code becomes lowercase
+    ``ruff-<code>`` — the semantic maps to internal names are gone."""
 
     @pytest.mark.parametrize(
-        "ruff_code,expected_rule",
-        [
-            ("E501", "trailing-whitespace"),
-            ("E722", "broad-except"),
-            ("B001", "broad-except"),
-            ("S108", "hardcoded-tmp-path"),
-        ],
+        "ruff_code",
+        ["E501", "E722", "B001", "S108"],
     )
-    def test_mapped_codes(self, plugin, tmp_path, ruff_code, expected_rule):
-        """Known ruff codes should map to internal rule names."""
+    def test_mapped_codes(self, plugin, tmp_path, ruff_code):
+        """Formerly mapped ruff codes keep canonical ruff identity."""
         output = json.dumps(
             [
                 {
@@ -273,14 +321,17 @@ class TestRuffRuleMapping:
         )
         findings = plugin.parse_output(output, tmp_path)
         assert len(findings) == 1
-        assert findings[0].rule == expected_rule
+        assert findings[0].rule == f"ruff-{ruff_code.lower()}"
+        assert findings[0].rule != "trailing-whitespace"
+        assert findings[0].rule != "broad-except"
+        assert findings[0].rule != "hardcoded-tmp-path"
 
     @pytest.mark.parametrize(
         "unknown_code",
         ["F401", "W291", "C901", "N801", "SIM101"],
     )
     def test_unknown_codes_get_ruff_prefix(self, plugin, tmp_path, unknown_code):
-        """Unknown ruff codes should become ruff-{code}."""
+        """Every well-formed ruff code becomes lowercase ruff-{code}."""
         output = json.dumps(
             [
                 {
@@ -292,31 +343,76 @@ class TestRuffRuleMapping:
             ]
         )
         findings = plugin.parse_output(output, tmp_path)
-        assert findings[0].rule == f"ruff-{unknown_code}"
+        assert findings[0].rule == f"ruff-{unknown_code.lower()}"
 
 
 class TestParseOutputQuickWinAutofix:
-    """Verify quick_win and safe_to_autofix based on ruff code prefix."""
+    """quick_win/safe_to_autofix follow the per-instance fix applicability
+    (same as the native ruff producer), not the rule code prefix."""
 
-    @pytest.mark.parametrize("code", ["E501", "E722", "W291", "W391"])
-    def test_e_w_codes_are_quick_win_and_autofix(self, plugin, tmp_path, code):
-        """E and W codes should have quick_win=True and safe_to_autofix=True."""
+    @pytest.mark.parametrize("applicability", ["safe", "generated"])
+    def test_safe_or_generated_fix_is_autofix(self, plugin, tmp_path, applicability):
         output = json.dumps(
-            [{"code": code, "location": {"row": 1}, "path": "x.py", "message": "msg"}]
+            [
+                {
+                    "code": "W291",
+                    "location": {"row": 1},
+                    "path": "x.py",
+                    "message": "msg",
+                    "fix": {"applicability": applicability},
+                }
+            ]
         )
         findings = plugin.parse_output(output, tmp_path)
         assert findings[0].quick_win is True
         assert findings[0].safe_to_autofix is True
 
-    @pytest.mark.parametrize("code", ["F401", "S108", "B001", "C901"])
-    def test_non_e_w_codes_are_not_quick_win(self, plugin, tmp_path, code):
-        """Non-E/W codes should have quick_win=False and safe_to_autofix=False."""
+    @pytest.mark.parametrize(
+        "code",
+        ["E501", "F401", "S108", "B904", "F821"],
+    )
+    def test_no_fix_is_not_autofix(self, plugin, tmp_path, code):
+        """Diagnostics without a fix (including all E/F unsupported here)
+        are never quick wins or autofix candidates."""
         output = json.dumps(
             [{"code": code, "location": {"row": 1}, "path": "x.py", "message": "msg"}]
         )
         findings = plugin.parse_output(output, tmp_path)
         assert findings[0].quick_win is False
         assert findings[0].safe_to_autofix is False
+
+    def test_unsafe_fix_is_not_autofix(self, plugin, tmp_path):
+        output = json.dumps(
+            [
+                {
+                    "code": "F401",
+                    "location": {"row": 1},
+                    "path": "x.py",
+                    "message": "msg",
+                    "fix": {"applicability": "unsafe"},
+                }
+            ]
+        )
+        findings = plugin.parse_output(output, tmp_path)
+        assert findings[0].safe_to_autofix is False
+
+    def test_c408_override_forces_no_autofix(self, plugin, tmp_path):
+        """Even a ruff-reported safe c408 fix must not autofix (native parity)."""
+        output = json.dumps(
+            [
+                {
+                    "code": "C408",
+                    "location": {"row": 1},
+                    "path": "x.py",
+                    "message": "msg",
+                    "fix": {"applicability": "safe"},
+                }
+            ]
+        )
+        findings = plugin.parse_output(output, tmp_path)
+        assert findings[0].rule == "ruff-c408"
+        assert findings[0].safe_to_autofix is False
+        assert findings[0].quick_win is False
 
     def test_all_fields_from_parse_output(self, plugin, tmp_path):
         """Verify all Finding fields are populated from ruff output."""
@@ -335,13 +431,53 @@ class TestParseOutputQuickWinAutofix:
         assert f.repo == str(tmp_path)
         assert f.path == "src/app.py"
         assert f.line == 42
-        assert f.rule == "trailing-whitespace"
+        assert f.rule == "ruff-e501"
         assert f.snippet == "line too long"
-        assert f.confidence == 0.88
+        # Catalog confidence for catalog codes (native parity); no fix
+        # object on this diagnostic, so no autofix.
+        assert f.confidence == 0.65
         assert f.severity == "medium"
         assert f.category == "lint"
-        assert f.quick_win is True
-        assert f.safe_to_autofix is True
+        assert f.quick_win is False
+        assert f.safe_to_autofix is False
+
+    def test_plugin_only_code_confidence_fallback(self, plugin, tmp_path):
+        """Codes outside the catalog keep the plugin-only 0.88 confidence."""
+        output = json.dumps(
+            [
+                {
+                    "code": "F821",
+                    "location": {"row": 1},
+                    "path": "x.py",
+                    "message": "undefined name",
+                }
+            ]
+        )
+        findings = plugin.parse_output(output, tmp_path)
+        assert findings[0].rule == "ruff-f821"
+        assert findings[0].confidence == 0.88
+
+    def test_message_truncated_before_hash(self, plugin, tmp_path):
+        """ID material truncates the message at 200 chars like the native
+        producer, so long messages hash identically across producers."""
+        from plugins.python.plugin import stable_finding_id
+
+        long_msg = "x" * 500
+        output = json.dumps(
+            [
+                {
+                    "code": "E501",
+                    "location": {"row": 1},
+                    "path": "x.py",
+                    "message": long_msg,
+                }
+            ]
+        )
+        f = plugin.parse_output(output, tmp_path)[0]
+        assert f.snippet == long_msg[:200]
+        assert f.finding_id == stable_finding_id(
+            str(tmp_path), "x.py", 1, "ruff-e501", long_msg[:200]
+        )
 
 
 class TestTextScanFieldValues:
@@ -444,11 +580,12 @@ class TestDiscoverMergeBehavior:
         with patch.object(plugin, "_run_tool", return_value=mock_output):
             findings = plugin.discover(tmp_path, {})
         rules = {f.rule for f in findings}
-        assert "trailing-whitespace" in rules  # from tool
+        assert "ruff-e501" in rules  # from tool, canonical identity
         assert "debt-todo-marker" in rules  # from text scan
 
     def test_overlapping_rules_deduped(self, plugin, tmp_path):
-        """Same rule at same path/line from both sources → only one finding."""
+        """Canonical tool rule and internal text-scan rule at the same line
+        are distinct identities: one of each, never a same-rule duplicate."""
         _write_files(tmp_path, {"setup.py": "", "test.py": "except:\n    pass\n"})
         mock_output = json.dumps(
             [
@@ -464,6 +601,8 @@ class TestDiscoverMergeBehavior:
             findings = plugin.discover(tmp_path, {})
         broad = [f for f in findings if f.rule == "broad-except"]
         assert len(broad) == 1
+        tool = [f for f in findings if f.rule == "ruff-e722"]
+        assert len(tool) == 1
 
     def test_no_tool_no_text_project(self, plugin, tmp_path):
         """No tool, no setup.py/pyproject.toml → empty findings."""
@@ -501,6 +640,6 @@ class TestDiscoverMergeBehavior:
             findings = plugin.discover(tmp_path, {})
         assert len(findings) == 3
         rules = {f.rule for f in findings}
-        assert "trailing-whitespace" in rules
-        assert "broad-except" in rules
-        assert "ruff-F401" in rules
+        assert "ruff-e501" in rules
+        assert "ruff-e722" in rules
+        assert "ruff-f401" in rules

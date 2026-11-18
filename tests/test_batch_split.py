@@ -677,49 +677,22 @@ class TestRecoverInterruptedBatch:
 
 
 class TestProcessBatchSplitWiring:
-    @patch("bluei.engine.batch_pr.handle_batch_failure")
-    @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.worktree.hydrate_worktree")
-    @patch("bluei.engine.batch_pr._create_worktree")
-    @patch("bluei.engine.state._append_text")
     def test_process_batch_calls_split_on_high_failure_rate(
         self,
-        mock_append,
-        mock_create_wt,
-        mock_hydrate,
-        mock_fixes,
-        mock_handle,
         make_finding,
         tmp_path,
     ):
-        """process_batch calls handle_batch_failure when failure_rate > 50%."""
-        mock_create_wt.return_value = True
-        # Two sub-batches: the first produces a PR (success), the second
-        # fails — the parent's "split-and-retried" is success only because
-        # at least one sub-batch produced a PR (result propagation).
-        sub_a = make_batch(
-            findings=[make_finding(finding_id=f"s{i}") for i in range(4)]
-        )
-        sub_a.batch_id = "batch-split-sub-a"
-        sub_b = make_batch(
-            findings=[make_finding(finding_id=f"t{i}") for i in range(6)]
-        )
-        sub_b.batch_id = "batch-split-sub-b"
-        mock_handle.return_value = [sub_a, sub_b]
+        """current contract: a high-failure batch is refused before split wiring.
+
+        With batch_pr_split_on_failure enabled and a failure rate that used to
+        warrant a split, process_batch must refuse the unqualified batch
+        without consulting should_split_batch/handle_batch_failure, without
+        recursing into sub-batches, and without mutating split state.
+        """
         batch = make_batch(
             findings=[make_finding(finding_id=f"f{i}") for i in range(10)]
         )
         batch.batch_id = "batch-split-test"
-
-        def _apply_fixes(batch, **kwargs):
-            for i, f in enumerate(batch.findings):
-                batch.fix_results[f.finding_id] = FixResult(
-                    finding_id=f.finding_id,
-                    status="success" if i < 4 else "failed",
-                )
-            return (4, 6)
-
-        mock_fixes.side_effect = _apply_fixes
 
         class FakeArgs:
             dry_run = True
@@ -731,14 +704,17 @@ class TestProcessBatchSplitWiring:
             max_loc_diff = 200
             live_github_actions = False
 
+        def _forbidden(*a, **k):
+            raise AssertionError("split wiring entered by refused batch")
+
         with (
-            patch("bluei.engine.utils.run_no_capture"),
-            patch("bluei.engine.worktree.run_no_capture"),
+            patch("bluei.engine.batch_pr.should_split_batch", side_effect=_forbidden),
+            patch("bluei.engine.batch_pr.handle_batch_failure", side_effect=_forbidden),
             patch(
-                # The recursive sub-batch calls hit the module-attribute
-                # mock; the outer call under test runs the real function.
+                # Recursive sub-batch calls must never happen; the mock fails
+                # the test if the refusal is bypassed.
                 "bluei.engine.batch_pr.process_batch",
-                side_effect=[(True, "dry-run-pr-simulated"), (False, "x")],
+                side_effect=_forbidden,
             ),
         ):
             safety = {"mode": "observe", "protected_branches": ["main"]}
@@ -748,27 +724,28 @@ class TestProcessBatchSplitWiring:
                 batch, Path("/tmp/repo"), args, log, safety_config=safety
             )
 
-        mock_handle.assert_called_once_with(
-            batch, Path("/tmp/repo"), args, log, safety_config=safety
+        assert ok is False
+        assert reason == (
+            "batch repair unqualified: missing configured scope/validation/closure acceptance"
         )
-        assert ok is True
-        assert reason.startswith("split-and-retried")
+        assert batch.status == "open"
+        assert batch.retry_count == 0
+        assert batch.split_history == []
+        log_text = log.read_text()
+        assert "batch-refused" in log_text
+        assert "split-and-retried" not in log_text
 
-    @patch("bluei.engine.batch_pr.apply_batch_fixes")
-    @patch("bluei.engine.worktree.hydrate_worktree")
-    @patch("bluei.engine.batch_pr._create_worktree")
-    @patch("bluei.engine.state._append_text")
     def test_process_batch_max_depth_aborts(
         self,
-        mock_append,
-        mock_create_wt,
-        mock_hydrate,
-        mock_fixes,
         make_finding,
+        tmp_path,
     ):
-        """process_batch aborts when max split depth is reached."""
-        mock_create_wt.return_value = True
-        mock_fixes.return_value = (4, 6)  # 4 successes, 6 failures = 60% failure rate
+        """current contract: refusal precedes the max-depth abort decision.
+
+        A batch already at max split depth with a high failure rate is
+        refused as unqualified — not aborted with
+        "max-split-depth-exceeded" — and its status is left untouched.
+        """
         batch = make_batch(
             findings=[make_finding(finding_id=f"f{i}") for i in range(10)],
             retry_count=3,
@@ -785,14 +762,12 @@ class TestProcessBatchSplitWiring:
             max_loc_diff = 200
             live_github_actions = False
 
-        with (
-            patch("bluei.engine.utils.run_no_capture"),
-            patch("bluei.engine.worktree.run_no_capture"),
-        ):
-            ok, reason = process_batch(
-                batch, Path("/tmp/repo"), FakeArgs(), Path("/tmp/batch.log")
-            )
+        log = tmp_path / "batch.log"
+        ok, reason = process_batch(batch, Path("/tmp/repo"), FakeArgs(), log)
 
         assert ok is False
-        assert reason == "max-split-depth-exceeded"
-        assert batch.status == BatchStatus.ABORTED.value
+        assert reason == (
+            "batch repair unqualified: missing configured scope/validation/closure acceptance"
+        )
+        assert batch.status == "open"  # not ABORTED
+        assert "batch-refused" in log.read_text()

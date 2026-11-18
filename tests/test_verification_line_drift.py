@@ -19,7 +19,7 @@ def test_unrelated_import_removal_does_not_close_undefined_name(tmp_path):
     log = tmp_path / "run.log"
     docs = tmp_path / "docs-index.json"
     findings = discover_findings(tmp_path, log_file=log, docs_index_file=docs)
-    finding = next(f for f in findings if f.rule == "ruff-F821" and f.path == "sample.py")
+    finding = next(f for f in findings if f.rule == "ruff-f821" and f.path == "sample.py")
 
     result = subprocess.run(
         [ruff, "check", "--isolated", "--no-cache", "--fix", "--select", "F401", "--", "sample.py"],

@@ -351,45 +351,26 @@ def apply_claude_fix(req: ClaudeFixRequest) -> Tuple[int, str, str]:
             f"finding_id={req.finding.finding_id} rc={res.returncode} output={(output or '<empty>')[:1000]}",
         )
 
-        # --- Directive seeding: record fix attempt outcome ---
+        # --- Directive seeding: record attempt/failure observations only ---
+        # A04 acceptance boundary: a bare rc0 from the provider transport is
+        # NOT acceptance. Positive emissions (fix_success record, success
+        # lesson, pattern extraction) live in record_accepted_fix(), invoked
+        # by the caller only at final acceptance — rc0 alone never learns.
+        success = res.returncode == 0
         if req.findings_file is not None:
-            success = res.returncode == 0
             increment_fix_attempt(
                 req.finding.finding_id,
                 req.findings_file,
                 error=None if success else (output or "fix failed")[:500],
             )
-            if success:
-                update_finding_record(
-                    req.finding.finding_id,
-                    req.findings_file,
-                    {"fix_success": True},
-                )
-        if req.lessons_file is not None:
+        if req.lessons_file is not None and not success:
             location = f"{req.finding.path}:{req.finding.line}"
-            if res.returncode == 0:
-                append_lesson(
-                    req.lessons_file,
-                    "fix",
-                    finding_id=req.finding.finding_id,
-                    what_changed=f"fix succeeded rule={req.finding.rule} path={location}",
-                )
-            else:
-                error_summary = (output or "fix failed")[:200].split("\n")[-1]
-                append_lesson(
-                    req.lessons_file,
-                    "fix",
-                    finding_id=req.finding.finding_id,
-                    what_broke=f"fix failed rc={res.returncode} rule={req.finding.rule} path={location}: {error_summary}",
-                )
-        if res.returncode == 0:
-            _extract_fix_pattern(
-                req.worktree_path,
-                req.finding,
-                "claude",
-                req.pattern_store_path,
-                req.log_file,
-                detected_frameworks=req.detected_frameworks,
+            error_summary = (output or "fix failed")[:200].split("\n")[-1]
+            append_lesson(
+                req.lessons_file,
+                "fix",
+                finding_id=req.finding.finding_id,
+                what_broke=f"fix failed rc={res.returncode} rule={req.finding.rule} path={location}: {error_summary}",
             )
 
         return res.returncode, output, str(prompt_path)
@@ -398,6 +379,58 @@ def apply_claude_fix(req: ClaudeFixRequest) -> Tuple[int, str, str]:
             prompt_path.unlink(missing_ok=True)
         except Exception:
             _logger.debug("Failed to unlink prompt temp file")
+
+
+def record_accepted_fix(req: ClaudeFixRequest, fix_source: str = "claude") -> None:
+    """Record the positive outcome of an accepted fix.
+
+    Call only after final acceptance; ``apply_claude_fix`` alone (including
+    a bare rc0) never emits these. Writes the ``fix_success`` finding-record
+    flag, the success lesson, and learned-pattern extraction — a ``None``
+    ``findings_file`` / ``lessons_file`` / ``pattern_store_path`` disables
+    the respective write, so paused learning suppresses the learning sinks
+    (lesson/pattern) while the accepted fix status may still be recorded.
+    ``fix_source`` labels the winning strategy in the pattern store. Sink
+    failures are best-effort (logged, skipped) since acceptance is already
+    durable; exactly-once invocation is the caller's contract.
+    """
+    if req.findings_file is not None:
+        try:
+            update_finding_record(
+                req.finding.finding_id,
+                req.findings_file,
+                {"fix_success": True},
+            )
+        except Exception as exc:
+            _logger.warning(
+                "record_accepted_fix: fix_success write failed finding_id=%s: %s",
+                req.finding.finding_id,
+                exc,
+            )
+    if req.lessons_file is not None:
+        location = f"{req.finding.path}:{req.finding.line}"
+        try:
+            append_lesson(
+                req.lessons_file,
+                "fix",
+                finding_id=req.finding.finding_id,
+                what_changed=f"fix succeeded rule={req.finding.rule} path={location}",
+            )
+        except Exception as exc:
+            _logger.warning(
+                "record_accepted_fix: success lesson write failed finding_id=%s: %s",
+                req.finding.finding_id,
+                exc,
+            )
+    if req.pattern_store_path is not None:
+        _extract_fix_pattern(
+            req.worktree_path,
+            req.finding,
+            fix_source,
+            req.pattern_store_path,
+            req.log_file,
+            detected_frameworks=req.detected_frameworks,
+        )
 
 
 def route_to_human_review(
@@ -494,6 +527,8 @@ def _tier_validate(
     finding: Finding,
     log_file: Path,
     state: Optional[Dict[str, Any]] = None,
+    checks: Optional[Dict[str, List[str]]] = None,
+    environment_repo: Optional[Path] = None,
 ) -> bool:
     """Run tiered validation and auto-rollback on failure.
 
@@ -503,12 +538,25 @@ def _tier_validate(
         finding: The Finding being validated.
         log_file: Path to the run log.
         state: Optional runner state dict for tier escalation checks.
+        checks: Optional configured check commands (tool → args). When
+            supplied the tiers run the caller's REAL checks instead of
+            validating against nothing; when None the legacy tier behavior
+            is unchanged (explicitly weaker — callers owe an outer
+            qualified gate).
+        environment_repo: Optional source repo whose local venv defines the
+            intended tool runtime (threaded to the T1 check runner's
+            existing shadow guard; None keeps existing default semantics).
 
     Returns:
         True if validation passed, False if rolled back or routed to human review.
     """
     result = _get_tiered_validator().validate(
-        tier, worktree_path, finding, log_file=log_file
+        tier,
+        worktree_path,
+        finding,
+        log_file=log_file,
+        checks=checks,
+        environment_repo=environment_repo,
     )
     if not result.passed:
         # Auto-rollback: revert the changed file since validation failed
@@ -829,6 +877,103 @@ def _get_or_create_shared_library(workspace: Path) -> Any:
     return lib
 
 
+def _deferred_candidate_record(
+    *,
+    origin: str,
+    backend: str,
+    finding: Finding,
+    stage_name: str,
+    pattern_id: Optional[str],
+    authorized_scope: Any,
+    telemetry: Any,
+    latency_ms: int,
+    model_attempt: bool,
+    deterministic_attempt: bool,
+    model_invocations: int,
+    deterministic_invocations: int,
+    model_request: Optional[Dict[str, Any]],
+    environment_repo: Optional[Path],
+    qualified: bool,
+    confirmations: List[Any],
+    log_file: Path,
+    outcome: Optional[str] = None,
+    error: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build one structured deferred-acceptance candidate record.
+
+    The record is honest evidence for the caller's outer acceptance gate
+    (attempt counters are recorded independently of acceptance).
+    ``model_invocations`` / ``deterministic_invocations`` are ACTUAL
+    invocation counts for this apply_cascade_fix call including failed
+    attempts (failed cascade stages, the model engine call); they are
+    never inferred from the outcome. ``model_request`` carries the model
+    request identity (backend + configured command template) and is None
+    when no model invocation happened. The
+    embedded one-shot ``confirm`` callable is the ONLY path by which the
+    deferred positive effects (replay HIT, composite success count,
+    savings, pattern extraction, ledger success emission) run. Each
+    confirmation is best-effort at confirm time — acceptance already
+    committed the source, so a failing record write must never roll it
+    back (records-must-match-tree rule); it logs instead.
+    """
+    done = {"confirmed": False}
+
+    def _confirm() -> None:
+        if done["confirmed"]:
+            return
+        done["confirmed"] = True
+        for fn in confirmations:
+            try:
+                fn()
+            except Exception as exc:
+                try:
+                    _append_text(
+                        log_file,
+                        f"cascade-deferred-confirm: confirmation error="
+                        f"{type(exc).__name__}: {exc}",
+                    )
+                except Exception:
+                    pass
+
+    return {
+        "kind": "cascade-attempt" if outcome is not None else "cascade-candidate",
+        "outcome": outcome,
+        "error": error,
+        "origin": origin,
+        "backend": backend,
+        "finding_id": finding.finding_id,
+        "rule": finding.rule,
+        "stage_name": stage_name,
+        "pattern_id": pattern_id,
+        "authorized_scope": (
+            sorted(authorized_scope)
+            if isinstance(authorized_scope, (set, frozenset, list))
+            else None
+        ),
+        "latency_ms": latency_ms,
+        "model_attempt": model_attempt,
+        "deterministic_attempt": deterministic_attempt,
+        "model_invocations": model_invocations,
+        "deterministic_invocations": deterministic_invocations,
+        "model_request": model_request,
+        "stages_tried": (
+            list(telemetry.stages_tried) if telemetry is not None else []
+        ),
+        "stages_failed": (
+            [dict(x) for x in telemetry.stages_failed]
+            if telemetry is not None
+            else []
+        ),
+        "stages_skipped": (
+            list(telemetry.stages_skipped) if telemetry is not None else []
+        ),
+        "telemetry": telemetry.to_dict() if telemetry is not None else None,
+        "environment_repo": str(environment_repo) if environment_repo else None,
+        "qualified": qualified,
+        "confirm": _confirm,
+    }
+
+
 def apply_cascade_fix(
     worktree_path: Path,
     finding: Finding,
@@ -843,12 +988,48 @@ def apply_cascade_fix(
     cost_tracker: Any = None,
     governance_state: Optional[Dict[str, str]] = None,
     attempted_pattern_ids: Optional[set] = None,
+    baseline_checks: Optional[Dict[str, List[str]]] = None,
+    baseline_results: Optional[Dict[str, Dict[str, Any]]] = None,
+    environment_repo: Optional[Path] = None,
+    claude_cmd_template: Optional[str] = None,
+    backend: str = "claude",
+    allow_unchanged_baseline_failures: bool = True,
+    deferred_acceptance: Optional[List[Dict[str, Any]]] = None,
+    max_files_changed: int = 5,
+    max_loc_diff: int = 200,
 ) -> bool:
     """Apply the deterministic cascade to fix a finding.
 
     ``attempted_pattern_ids`` carries pattern ids the caller already tried
     for this finding (standalone replay); the cascade's pattern stage
     excludes them so outcomes record exactly once per pattern.
+
+    Configured acceptance context (A03/A10): ``baseline_checks`` /
+    ``baseline_results`` / ``environment_repo`` /
+    ``claude_cmd_template`` / ``backend`` /
+    ``allow_unchanged_baseline_failures`` carry the caller's real checks,
+    source runtime, governed model template with explicit backend identity
+    and baseline failure policy. The tier gate runs the configured checks
+    (never an invented sample); the model fallback runs ONLY with a
+    configured ``claude_cmd_template`` — without one the fallback is an
+    explicit unqualified refusal, and the built-in default template and
+    sample baseline checks are never substituted. ``deterministic_only``
+    blocks the model fallback regardless, a cost tracker at its hard limit
+    blocks it before any invocation, and ``max_files_changed`` /
+    ``max_loc_diff`` bound the candidate diff handed to the model engine
+    (defaults 5/200 preserved for direct callers).
+
+    ``deferred_acceptance`` (a list supplied by the caller) switches the
+    success paths to candidate mode: instead of emitting the ledger record
+    and learned pattern here, a structured candidate record is appended
+    (origin/backend/stage/pattern/scope/latency, honest attempt counters
+    ``model_attempt`` / ``deterministic_attempt`` / stage lists, and a
+    one-shot ``confirm`` callable). Nothing positive — pattern HIT,
+    composite success count, replay savings, pattern extraction, ledger
+    success — persists until the caller's outer durable acceptance invokes
+    ``record["confirm"]()``. Negative outcomes (exhausted, rejected) are
+    recorded immediately and honestly. When ``deferred_acceptance`` is
+    None the legacy eager behavior is preserved for direct callers.
 
     Transactional: a worktree checkpoint spans the cascade AND the tier
     validation below. The acceptance checks (tier validation, scope
@@ -862,6 +1043,7 @@ def apply_cascade_fix(
     the tree), and rejection records an honest exhausted outcome instead.
     """
     from bluei.engine.cascade import (
+        CascadeAcceptanceContext,
         CascadeContext,
         DeterministicCascade,
         default_cascade_stages,
@@ -925,6 +1107,23 @@ def apply_cascade_fix(
             pass  # Preserve the checkpoint failure so dispatch cannot fall back.
         raise
 
+    acceptance = None
+    if (
+        baseline_checks
+        or baseline_results
+        or environment_repo is not None
+        or claude_cmd_template
+        or backend != "claude"
+    ):
+        acceptance = CascadeAcceptanceContext(
+            baseline_checks=baseline_checks or {},
+            baseline_results=baseline_results or {},
+            environment_repo=environment_repo,
+            claude_cmd_template=claude_cmd_template,
+            backend=backend,
+            allow_unchanged_baseline_failures=allow_unchanged_baseline_failures,
+        )
+
     context = CascadeContext(
         worktree=worktree_path,
         repo_path=worktree_path,
@@ -943,6 +1142,11 @@ def apply_cascade_fix(
         governance_state=governance_state or {},
         attempted_pattern_ids=attempted_pattern_ids,
         checkpoint=checkpoint,
+        # Real configured check commands for the replay stage (previously
+        # always {} — replay validated against nothing).
+        baseline_results=baseline_checks or {},
+        acceptance=acceptance,
+        defer_success_evidence=deferred_acceptance is not None,
     )
 
     cascade = DeterministicCascade(default_cascade_stages())
@@ -1020,6 +1224,56 @@ def apply_cascade_fix(
         restored = True
         _discard_checkpoint()
 
+    def _attempt_record(
+        *,
+        outcome: str,
+        origin: str,
+        stage_name: str,
+        model_invocations: int,
+        model_request: Optional[Dict[str, Any]],
+        error: Optional[str] = None,
+    ) -> None:
+        """Append one honest attempt/failure record in defer mode.
+
+        Every False return path in defer mode appends exactly one record so
+        the caller's counters reflect ACTUAL invocations — failed cascade
+        stages and failed model engine calls included — instead of a blanket
+        fallback count. Attempt records carry no positive confirmations
+        (``confirm`` is a one-shot no-op); negative ledger evidence stays
+        immediate.
+        """
+        if deferred_acceptance is None:
+            return
+        det = (
+            len(result.telemetry.stages_tried)
+            if result.telemetry is not None
+            and isinstance(getattr(result.telemetry, "stages_tried", None), list)
+            else (1 if result.success else 0)
+        )
+        deferred_acceptance.append(
+            _deferred_candidate_record(
+                origin=origin,
+                backend=backend,
+                finding=finding,
+                stage_name=stage_name,
+                pattern_id=None,
+                authorized_scope=None,
+                telemetry=result.telemetry,
+                latency_ms=result.latency_ms,
+                model_attempt=model_invocations > 0,
+                deterministic_attempt=det > 0,
+                model_invocations=model_invocations,
+                deterministic_invocations=det,
+                model_request=model_request,
+                environment_repo=environment_repo,
+                qualified=bool(baseline_checks),
+                confirmations=[],
+                log_file=log_file,
+                outcome=outcome,
+                error=error,
+            )
+        )
+
     if result.success:
         # Acceptance-phase guard: tier validation, scope recheck, and
         # learning roll back on ANY abort — the winning fix is already
@@ -1030,42 +1284,64 @@ def apply_cascade_fix(
         committed = False
         try:
             tier = resolve_tier(finding)
-            accepted = _tier_validate(tier, worktree_path, finding, log_file)
             reject_reason: Optional[str] = None
-            if not accepted:
-                reject_reason = f"tier validation rejected stage={result.stage_name}"
+            if (
+                deferred_acceptance is None
+                and acceptance is not None
+                and not baseline_checks
+            ):
+                # Production context with zero configured checks cannot
+                # earn legacy eager success: the tier gate would validate
+                # against nothing. Fail closed (restore + exhausted); the
+                # deferred lane instead records an honest unqualified
+                # candidate via its own contract.
+                reject_reason = (
+                    "unqualified: acceptance context supplied without "
+                    "configured baseline checks"
+                )
             else:
-                # Post-tier scope recheck: tier validation runs AFTER
-                # execute() verified the declared stage scope, and its
-                # checks can themselves edit undeclared files or the Git
-                # index. Re-verify the cascade's declared scope (carried on
-                # the result — never the stage's claimed diff). A missing
-                # carrier fails closed.
-                allowed = result.authorized_scope
-                if allowed is None:
-                    reject_reason = (
-                        f"scope carrier missing stage={result.stage_name}"
-                    )
+                accepted = _tier_validate(
+                    tier,
+                    worktree_path,
+                    finding,
+                    log_file,
+                    checks=baseline_checks,
+                    environment_repo=environment_repo,
+                )
+                if not accepted:
+                    reject_reason = f"tier validation rejected stage={result.stage_name}"
                 else:
-                    try:
-                        out_of_scope = cascade._out_of_scope_edits(
-                            worktree_path, allowed, checkpoint
-                        )
-                    except Exception as exc:
-                        # Ordinary check error (disk, permissions): honest
-                        # rejection. Interrupts are BaseException and fall
-                        # through to the guard below.
+                    # Post-tier scope recheck: tier validation runs AFTER
+                    # execute() verified the declared stage scope, and its
+                    # checks can themselves edit undeclared files or the Git
+                    # index. Re-verify the cascade's declared scope (carried on
+                    # the result — never the stage's claimed diff). A missing
+                    # carrier fails closed.
+                    allowed = result.authorized_scope
+                    if allowed is None:
                         reject_reason = (
-                            f"scope recheck failed stage={result.stage_name} "
-                            f"error={type(exc).__name__}: {exc}"
+                            f"scope carrier missing stage={result.stage_name}"
                         )
                     else:
-                        if out_of_scope is not None:
-                            reject_reason = (
-                                f"tier validation introduced out-of-scope "
-                                f"edits={sorted(out_of_scope)} "
-                                f"stage={result.stage_name}"
+                        try:
+                            out_of_scope = cascade._out_of_scope_edits(
+                                worktree_path, allowed, checkpoint
                             )
+                        except Exception as exc:
+                            # Ordinary check error (disk, permissions): honest
+                            # rejection. Interrupts are BaseException and fall
+                            # through to the guard below.
+                            reject_reason = (
+                                f"scope recheck failed stage={result.stage_name} "
+                                f"error={type(exc).__name__}: {exc}"
+                            )
+                        else:
+                            if out_of_scope is not None:
+                                reject_reason = (
+                                    f"tier validation introduced out-of-scope "
+                                    f"edits={sorted(out_of_scope)} "
+                                    f"stage={result.stage_name}"
+                                )
             if reject_reason is not None:
                 # Rejection: restore first (marking restored before cleanup),
                 # then log best-effort and record the honest outcome
@@ -1077,11 +1353,20 @@ def apply_cascade_fix(
                     f"cascade: {reject_reason} — restored pre-attempt state"
                 )
                 _emit_fallback_record("exhausted", result.stage_name)
+                _attempt_record(
+                    outcome="rejected",
+                    origin="deterministic",
+                    stage_name=result.stage_name,
+                    model_invocations=0,
+                    model_request=None,
+                )
                 return False
-            _extract_fix_pattern(
-                worktree_path, finding, result.stage_name, pattern_store_path,
-                log_file, detected_frameworks=detected_frameworks,
-            )
+            if deferred_acceptance is None:
+                _extract_fix_pattern(
+                    worktree_path, finding, result.stage_name,
+                    pattern_store_path, log_file,
+                    detected_frameworks=detected_frameworks,
+                )
             # Acceptance checks and learning passed: COMMIT. The applied
             # fix is final from here — cleanup and ledger emission run
             # past the guard so an interrupt there never rolls back
@@ -1103,6 +1388,70 @@ def apply_cascade_fix(
             _discard_checkpoint()
             raise
         _discard_checkpoint()
+        if deferred_acceptance is not None:
+            # Candidate mode: success is provisional. Hand the structured
+            # record (with honest attempt counters and the one-shot
+            # confirm) to the caller; no ledger emission, no learning,
+            # no positive store outcome until the caller's outer durable
+            # acceptance confirms.
+            confirmations: List[Any] = list(result.pending_confirmations)
+            if pattern_store_path is not None:
+                confirmations.append(
+                    lambda: _extract_fix_pattern(
+                        worktree_path, finding, result.stage_name,
+                        pattern_store_path, log_file,
+                        detected_frameworks=detected_frameworks,
+                    )
+                )
+            if result.telemetry is not None:
+                confirmations.append(
+                    lambda: cascade._emit_ledger_record(
+                        context, result.telemetry,
+                        outcome="resolved_deterministic",
+                    )
+                )
+            deferred_acceptance.append(
+                _deferred_candidate_record(
+                    origin="deterministic",
+                    backend=backend,
+                    finding=finding,
+                    stage_name=result.stage_name,
+                    pattern_id=result.pattern_id,
+                    authorized_scope=result.authorized_scope,
+                    telemetry=result.telemetry,
+                    latency_ms=result.latency_ms,
+                    model_attempt=False,
+                    deterministic_attempt=(
+                        bool(result.telemetry.stages_tried)
+                        if result.telemetry is not None
+                        and isinstance(
+                            getattr(result.telemetry, "stages_tried", None), list
+                        )
+                        else True
+                    ),
+                    # Actual invocation counts for this call: the winning
+                    # deterministic stages (failures included), no model run.
+                    model_invocations=0,
+                    deterministic_invocations=(
+                        len(result.telemetry.stages_tried)
+                        if result.telemetry is not None
+                        and isinstance(
+                            getattr(result.telemetry, "stages_tried", None), list
+                        )
+                        else 1
+                    ),
+                    model_request=None,
+                    environment_repo=environment_repo,
+                    qualified=bool(baseline_checks),
+                    confirmations=confirmations,
+                    log_file=log_file,
+                )
+            )
+            _log_best_effort(
+                f"cascade: candidate deferred finding_id={finding.finding_id} "
+                f"stage={result.stage_name} — awaiting outer acceptance"
+            )
+            return True
         # Committed: NOW persist the deterministic success (deferred from
         # the cascade so a tier rejection can never over-report).
         if result.telemetry is not None:
@@ -1117,36 +1466,217 @@ def apply_cascade_fix(
     _discard_checkpoint()
 
     if context.allow_llm:
+        # A10: the model fallback runs ONLY with a caller-configured
+        # command template carrying its explicit backend identity. The
+        # built-in default template and sample baseline checks are never
+        # substituted — an unconfigured fallback is an explicit refusal.
+        unqualified_fallback = None
+        if not claude_cmd_template:
+            unqualified_fallback = "no configured command template"
+        elif (
+            acceptance is not None
+            and not baseline_checks
+            and deferred_acceptance is None
+        ):
+            # Production context (any acceptance kwarg) with zero configured
+            # checks must not bypass honesty through an eager model success.
+            unqualified_fallback = (
+                "production context without configured baseline checks"
+            )
+        if unqualified_fallback:
+            _append_text(
+                log_file,
+                f"cascade: model fallback unqualified: {unqualified_fallback} "
+                f"backend={backend} finding_id={finding.finding_id}",
+            )
+            _emit_fallback_record("exhausted", "cascade_exhausted")
+            _attempt_record(
+                outcome="unqualified-fallback",
+                origin="deterministic",
+                stage_name="cascade_exhausted",
+                model_invocations=0,  # model never invoked: nothing to hide
+                model_request=None,
+            )
+            return False
+        if cost_tracker is not None and cost_tracker.exceeded_limit():
+            # Cost guard BEFORE the model: nothing is invoked, estimated or
+            # recorded — an honest unqualified attempt with zero counts.
+            _append_text(
+                log_file,
+                f"cascade: model fallback unqualified: cost limit exceeded "
+                f"backend={backend} finding_id={finding.finding_id}",
+            )
+            _emit_fallback_record("exhausted", "cascade_exhausted")
+            _attempt_record(
+                outcome="cost-limit",
+                origin="deterministic",
+                stage_name="cascade_exhausted",
+                model_invocations=0,
+                model_request=None,
+            )
+            return False
         _append_text(
             log_file,
-            f"cascade: falling to LLM finding_id={finding.finding_id} rule={finding.rule}",
+            f"cascade: falling to model finding_id={finding.finding_id} "
+            f"rule={finding.rule} backend={backend}",
         )
-        from bluei.engine.constants import (
-            BASELINE_VALIDATION_CHECKS,
-            DEFAULT_CLAUDE_CMD_TEMPLATE,
-        )
+        llm_baseline_statuses: Optional[List[Optional[int]]] = None
+        if baseline_results is not None:
+            # Private baseline statuses (rc per configured check) — the
+            # prompt never receives fabricated sample checks; the request's
+            # check dict is blanked inside apply_claude_fix for this path.
+            llm_baseline_statuses = [
+                record.get("rc") for record in baseline_results.values()
+            ]
 
-        rc, _output, _prompt = apply_claude_fix(
-            ClaudeFixRequest(
-                worktree_path=worktree_path,
-                finding=finding,
-                baseline_checks=dict(BASELINE_VALIDATION_CHECKS),
-                target_checks={},
-                claude_cmd_template=DEFAULT_CLAUDE_CMD_TEMPLATE,
-                max_files_changed=5,
-                max_loc_diff=200,
-                log_file=log_file,
-                pattern_store_path=pattern_store_path,
-                detected_frameworks=detected_frameworks,
-            ),
-        )
+        def _record_model_cost() -> None:
+            """Ledger accounting labeled by the backend identity with
+            nominal token estimates — never a billing claim. Best-effort:
+            a ledger write failure must not mask a repair outcome."""
+            if cost_tracker is None:
+                return
+            try:
+                cost_tracker.record_invocation(
+                    model=backend, input_tokens=3000, output_tokens=300
+                )
+            except Exception as exc:
+                _log_best_effort(
+                    f"cascade: cost ledger write failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+        rc: Optional[int] = None
+        model_error: Optional[str] = None
+        model_request = {
+            "backend": backend,
+            "claude_cmd_template": claude_cmd_template,
+        }
+        try:
+            rc, _output, _prompt = apply_claude_fix(
+                ClaudeFixRequest(
+                    worktree_path=worktree_path,
+                    finding=finding,
+                    baseline_checks=dict(baseline_checks or {}),
+                    target_checks={},
+                    claude_cmd_template=claude_cmd_template,
+                    max_files_changed=max_files_changed,
+                    max_loc_diff=max_loc_diff,
+                    log_file=log_file,
+                    pattern_store_path=pattern_store_path,
+                    detected_frameworks=detected_frameworks,
+                    baseline_statuses=llm_baseline_statuses,
+                    allow_unchanged_baseline_failures=(
+                        allow_unchanged_baseline_failures
+                    ),
+                ),
+            )
+        except Exception as exc:
+            # Ordinary engine failure (subprocess/OS/timeout): the model WAS
+            # invoked — count it and categorize the error honestly.
+            model_error = f"{type(exc).__name__}: {exc}"
+        except BaseException:
+            # Interrupts: the engine call was launched. Account for the
+            # invocation first so the caller's counters never lose it, then
+            # re-raise unchanged (caller's finally consumes the record).
+            _record_model_cost()
+            _attempt_record(
+                outcome="model-interrupted",
+                origin="llm",
+                stage_name="llm",
+                model_invocations=1,
+                model_request=model_request,
+            )
+            raise
+        _record_model_cost()
+        if model_error is not None:
+            _append_text(
+                log_file,
+                f"cascade: model engine error={model_error} "
+                f"finding_id={finding.finding_id}",
+            )
+            _emit_fallback_record("exhausted", "cascade_exhausted")
+            _attempt_record(
+                outcome="model-error",
+                origin="llm",
+                stage_name="llm",
+                model_invocations=1,
+                model_request=model_request,
+                error=model_error,
+            )
+            return False
         if rc == 0:
+            if deferred_acceptance is not None:
+                deferred_acceptance.append(
+                    _deferred_candidate_record(
+                        origin="llm",
+                        backend=backend,
+                        finding=finding,
+                        stage_name="llm",
+                        pattern_id=None,
+                        authorized_scope=None,
+                        telemetry=result.telemetry,
+                        latency_ms=result.latency_ms,
+                        model_attempt=True,
+                        deterministic_attempt=(
+                            bool(result.telemetry.stages_tried)
+                            if result.telemetry is not None
+                            and isinstance(
+                                getattr(result.telemetry, "stages_tried", None),
+                                list,
+                            )
+                            else False
+                        ),
+                        # Actual invocation counts for this call: every
+                        # failed deterministic stage plus the one model
+                        # engine invocation that produced the candidate.
+                        model_invocations=1,
+                        deterministic_invocations=(
+                            len(result.telemetry.stages_tried)
+                            if result.telemetry is not None
+                            and isinstance(
+                                getattr(result.telemetry, "stages_tried", None),
+                                list,
+                            )
+                            else 0
+                        ),
+                        model_request={
+                            "backend": backend,
+                            "claude_cmd_template": claude_cmd_template,
+                        },
+                        environment_repo=environment_repo,
+                        qualified=bool(baseline_checks),
+                        confirmations=[
+                            lambda: _emit_fallback_record("resolved_llm", "llm")
+                        ],
+                        log_file=log_file,
+                    )
+                )
+                return True
             _emit_fallback_record("resolved_llm", "llm")
         else:
             _emit_fallback_record("exhausted", "cascade_exhausted")
+            # Failed model invocation: the actual model call count (1)
+            # must not be hidden from the caller's deferred counters.
+            _attempt_record(
+                outcome="model-failed",
+                origin="llm",
+                stage_name="llm",
+                model_invocations=1,
+                model_request={
+                    "backend": backend,
+                    "claude_cmd_template": claude_cmd_template,
+                },
+            )
         return rc == 0
 
     _emit_fallback_record("exhausted", "cascade_exhausted")
+    _attempt_record(
+        outcome="exhausted",
+        origin="deterministic",
+        stage_name="cascade_exhausted",
+        model_invocations=0,
+        model_request=None,
+    )
     return False
 
 
@@ -1156,118 +1686,17 @@ def process_refactor_queue(
     dry_run: bool = False,
     max_items: Optional[int] = None,
     auto_approve: bool = False,
-) -> Dict[str, List[str]]:
-    """Process approved refactor-queue items through the Claude fix engine.
-
-    Args:
-        worktree_path: Path to the worktree for fix application.
-        repo_path: Path to the git repository (for validation).
-        dry_run: If True, report what would happen without executing.
-        max_items: Cap on number of items to process.
-        auto_approve: If True, move pending_review items to approved first.
-
-    Returns:
-        Dict with keys ``"processed"``, ``"approved"``, ``"pending"``, ``"failed"``,
-        each mapping to a list of work IDs.
-    """
-    result: Dict[str, List[str]] = {
+) -> Dict[str, Any]:
+    """Leave review items untouched until structural execution is qualified."""
+    # ponytail: no structural execution until configured scope, validation,
+    # closure and durable-artifact acceptance are shared with the solo lane.
+    return {
         "processed": [],
         "approved": [],
         "pending": [],
         "failed": [],
+        "unqualified": (
+            "structural repair unqualified: missing configured scope, validation, "
+            "closure and durable-artifact acceptance"
+        ),
     }
-
-    queue = RefactorQueue()
-    wt = Path(worktree_path)
-
-    # Auto-approve: move pending_review → approved
-    if auto_approve:
-        pending_items = queue.list_items(
-            status=QueueStatus.PENDING_REVIEW.value,
-            worktree_path=str(worktree_path),
-        )
-        for item in pending_items[:max_items] if max_items else pending_items:
-            if not dry_run:
-                queue.approve(item.work_id, "auto_approved")
-                result["approved"].append(item.work_id)
-            # In dry_run mode, skip both the actual approval and the result update
-
-    # Get items ready for execution (approved status).
-    # No worktree filter here because the queue is already scoped to the
-    # worktree being processed, and approved entries stored via
-    # enqueue_refactor_work carry worktree-rooted paths.
-    approved_items = queue.list_items(
-        status=QueueStatus.APPROVED.value,
-        worktree_path=None,
-    )
-
-    count = 0
-    for item in approved_items:
-        if max_items and count >= max_items:
-            break
-        count += 1
-
-        try:
-            if not dry_run:
-                queue.start_execution(item.work_id)
-
-                # Build the Finding from the stored finding_dict
-                finding = Finding.from_dict(item.finding_dict)
-
-                # Get the target checks for this rule
-                from bluei.engine.validation import build_target_checks
-
-                target_checks = build_target_checks(finding)
-
-                # Apply the fix via Claude fix engine
-                rc, output, _ = apply_claude_fix(
-                    ClaudeFixRequest(
-                        worktree_path=wt,
-                        finding=finding,
-                        baseline_checks=BASELINE_VALIDATION_CHECKS,
-                        target_checks=target_checks,
-                        claude_cmd_template=DEFAULT_CLAUDE_CMD_TEMPLATE,
-                        max_files_changed=20,
-                        max_loc_diff=500,
-                        log_file=Path("/dev/null"),
-                    ),
-                )
-
-                if rc == 0:
-                    from bluei.engine.verify import run_validation
-
-                    validation = run_validation(
-                        repo_path=repo_path,
-                        worktree_path=wt,
-                        checks=target_checks,
-                        allow_unchanged_baseline_failures=True,
-                        log_file=Path("/dev/null"),
-                    )
-                    if validation.passed:
-                        queue.complete(item.work_id)
-                        result["processed"].append(item.work_id)
-                    else:
-                        error_msg = validation.message or "validation failed"
-                        queue.fail(item.work_id, error_msg)
-                        result["failed"].append(item.work_id)
-                else:
-                    error_msg = output[:500] if output else f"Claude returned rc={rc}"
-                    queue.fail(item.work_id, error_msg)
-                    result["failed"].append(item.work_id)
-            else:
-                result["processed"].append(item.work_id)
-
-        except Exception as e:
-            error_msg = f"exception: {e}"
-            if not dry_run:
-                queue.fail(item.work_id, error_msg)
-            result["failed"].append(item.work_id)
-
-    # Collect remaining pending items (no worktree filter — queue is already scoped)
-    pending_items = queue.list_items(
-        status=QueueStatus.PENDING_REVIEW.value,
-        worktree_path=None,
-    )
-    result["pending"] = [item.work_id for item in pending_items]
-
-    return result

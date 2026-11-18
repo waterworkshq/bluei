@@ -15,6 +15,8 @@ This is the ADR-0022 scoped-locus guarantee: the Governor observes only the
 LLM-bound surface, never the deterministic cascade.
 """
 
+import subprocess
+import sys
 from contextlib import ExitStack, contextmanager
 from decimal import Decimal
 from pathlib import Path
@@ -28,6 +30,32 @@ from bluei.engine.commands.pr_cycle import _process_one_issue, _WorktreeSetup
 from bluei.engine.models import Finding
 from bluei.engine.pattern_store import FixPattern, FixPatternStore
 from bluei.engine.verify import VerificationResult
+
+# Stage1 qualification boundary: an explicit PER_REPO check that really
+# executes keeps the baseline gate passed AND qualified (an empty check set
+# never qualifies autonomous repair).
+BASELINE_CHECKS = {"baseline": [sys.executable, "-c", "pass"]}
+
+
+def _git_worktree(tmp_path, name="wt", content="except:\n    pass\n"):
+    """Real git repo standing in for the worktree.
+
+    Stage1 runs a real ``git rev-parse HEAD`` before dispatch and after the
+    fix, so worktree fixtures must be actual repositories; diff_stats also
+    runs the real ``git diff --numstat HEAD`` (clean repo → (0,0) → the
+    resolved-without-changes return)."""
+    wt = tmp_path / name
+    (wt / "src").mkdir(parents=True)
+    (wt / "src" / "main.py").write_text(content)
+    for git_args in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "test@bluei.dev"],
+        ["git", "config", "user.name", "Test"],
+        ["git", "add", "."],
+        ["git", "commit", "-qm", "initial"],
+    ):
+        subprocess.run(git_args, cwd=str(wt), check=True, capture_output=True)
+    return wt
 
 
 # ── helpers (mirror test_pr_cycle_ledger_wiring.py) ──────────────────────────
@@ -123,7 +151,7 @@ def _build_ctx(tmp_path, store, governor_ledger, baseline_checks=None, **ctx_ove
         pattern_store=store,
         governor_ledger_path=governor_ledger,
         PER_REPO_BASELINE_CHECKS=(
-            baseline_checks if baseline_checks is not None else {}
+            baseline_checks if baseline_checks is not None else BASELINE_CHECKS
         ),
         **ctx_overrides,
     )
@@ -131,11 +159,13 @@ def _build_ctx(tmp_path, store, governor_ledger, baseline_checks=None, **ctx_ove
 
 
 @contextmanager
-def _neutralize_post_fix(worktree_path: Path = Path("/tmp/wt")):
-    """Neutralize GitHub/worktree/post-fix phases so the function returns via
-    the 'verified without changes' path (diff_stats→(0,0) +
-    verify_fix_closed→closed). ``worktree_path`` lets a test point the flow at
-    a REAL prepared worktree when the replay itself must run for real."""
+def _neutralize_post_fix(worktree_path: Path):
+    """Neutralize GitHub/worktree/post-fix phases around a REAL git worktree.
+
+    Stage1 needs a real repository here (head guard + real diff_stats), and
+    the baseline gate runs the real PER_REPO check in it. Dry-replay
+    candidate collection is neutralized — counterfactual evidence is not
+    under test here; the mainline replay/cascade/governor wiring is."""
     with ExitStack() as stack:
         stack.enter_context(
             patch("bluei.engine.commands.pr_cycle._resolve_github", return_value=False)
@@ -147,9 +177,6 @@ def _neutralize_post_fix(worktree_path: Path = Path("/tmp/wt")):
                     worktree_path=worktree_path, worktree_branch="fix/f001"
                 ),
             )
-        )
-        stack.enter_context(
-            patch("bluei.engine.commands.pr_cycle.diff_stats", return_value=(0, 0))
         )
         stack.enter_context(
             patch(
@@ -165,6 +192,12 @@ def _neutralize_post_fix(worktree_path: Path = Path("/tmp/wt")):
         stack.enter_context(patch("bluei.engine.commands.pr_cycle.set_issue_status"))
         stack.enter_context(patch("bluei.engine.commands.pr_cycle._append_text"))
         stack.enter_context(patch("bluei.engine.commands.pr_cycle.remove_worktree"))
+        stack.enter_context(
+            patch(
+                "bluei.engine.dry_replay.collect_dry_replay_candidates",
+                return_value=[],
+            )
+        )
         yield
 
 
@@ -225,7 +258,7 @@ class TestGovernorCascadeScope:
             )
             return True
 
-        with _neutralize_post_fix():
+        with _neutralize_post_fix(_git_worktree(tmp_path)):
             with (
                 patch(
                     "bluei.engine.commands.pr_cycle.try_replay",
@@ -269,7 +302,7 @@ class TestGovernorCascadeScope:
             "rule": "broad-except",
         }
 
-        with _neutralize_post_fix():
+        with _neutralize_post_fix(_git_worktree(tmp_path)):
             with (
                 patch(
                     "bluei.engine.commands.pr_cycle.try_replay",
@@ -329,7 +362,7 @@ class TestGovernorCascadeScope:
             )
             return True
 
-        with _neutralize_post_fix():
+        with _neutralize_post_fix(_git_worktree(tmp_path, "wt-cascade")):
             with (
                 patch(
                     "bluei.engine.commands.pr_cycle.try_replay",
@@ -351,7 +384,7 @@ class TestGovernorCascadeScope:
         ctx_l.args = _args(fix_engine="claude")
         finding_l = _finding(rule="broad-except")  # no refactor_class
 
-        with _neutralize_post_fix():
+        with _neutralize_post_fix(_git_worktree(tmp_path, "wt-llm")):
             with (
                 patch(
                     "bluei.engine.commands.pr_cycle.try_replay",
@@ -413,7 +446,7 @@ class TestMainlineReplayGovernance:
             "rule": "broad-except",
         }
 
-        with _neutralize_post_fix():
+        with _neutralize_post_fix(_git_worktree(tmp_path)):
             with (
                 patch(
                     "bluei.engine.commands.pr_cycle.try_replay"
@@ -470,7 +503,7 @@ class TestMainlineReplayGovernance:
             "rule": "broad-except",
         }
 
-        with _neutralize_post_fix():
+        with _neutralize_post_fix(_git_worktree(tmp_path)):
             with (
                 patch(
                     "bluei.engine.commands.pr_cycle.try_replay"
@@ -508,7 +541,7 @@ class TestMainlineReplayGovernance:
             "rule": "broad-except",
         }
 
-        with _neutralize_post_fix():
+        with _neutralize_post_fix(_git_worktree(tmp_path)):
             with (
                 patch(
                     "bluei.engine.commands.pr_cycle.try_replay",
@@ -524,6 +557,9 @@ class TestMainlineReplayGovernance:
 
         mock_replay.assert_called_once()
         assert mock_replay.call_args.kwargs["record_outcome"] is True
+        # Mainline contract: the standalone replay never records its own
+        # positive HIT — acceptance owns that after outer validation.
+        assert mock_replay.call_args.kwargs["record_success"] is False
 
     def test_mainline_validation_failure_accrues_failure_count(self, tmp_path):
         """(b) Honest three-way outcomes: a literal match whose validation
@@ -555,11 +591,18 @@ class TestMainlineReplayGovernance:
         store._rebuild_from_disk()
 
         governor_ledger = tmp_path / "governor_recommendations.jsonl"
+        # Stage1 requires a passing control to qualify; the always-failing
+        # "lint" check rides alongside it as a tolerated stable failure. The
+        # replay's INTERNAL validation is all-checks-must-pass, so "lint"
+        # still fails it and the FAILURE outcome is recorded.
         ctx = _build_ctx(
             tmp_path,
             store,
             governor_ledger,
-            baseline_checks={"lint": "false"},  # always-failing check
+            baseline_checks={
+                "control": [sys.executable, "-c", "pass"],
+                "lint": ["false"],  # actual argv — a bare string is invalid-argv
+            },
         )
 
         finding = _finding(rule="broad-except", refactor_class="cascade_fix")
@@ -613,7 +656,7 @@ class TestMainlineReplayGovernance:
             "rule": "broad-except",
         }
 
-        with _neutralize_post_fix():
+        with _neutralize_post_fix(_git_worktree(tmp_path)):
             with (
                 patch(
                     "bluei.engine.commands.pr_cycle.try_replay",
@@ -629,6 +672,7 @@ class TestMainlineReplayGovernance:
 
         mock_replay.assert_called_once()
         assert mock_replay.call_args.kwargs["record_outcome"] is False
+        assert mock_replay.call_args.kwargs["record_success"] is False
 
     def test_paused_learning_mode_freezes_store_counts(self, tmp_path):
         """D5-F3 (store half, real try_replay): under learning_mode="paused"
@@ -644,12 +688,11 @@ class TestMainlineReplayGovernance:
             store._rebuild_from_disk()
             ctx.pattern_store = store
 
-            # Real worktree whose content does NOT contain the before snippet
-            # → try_replay resolves the pattern (literal rule+snippet match)
-            # then records a MISS (snippet_not_found_in_file) when told to.
-            wt = tmp_path / f"wt-{ctx.learning_mode}"
-            (wt / "src").mkdir(parents=True)
-            (wt / "src" / "main.py").write_text("x = 1\n")
+            # Real git worktree whose content does NOT contain the before
+            # snippet → try_replay resolves the pattern (literal rule+snippet
+            # match) then records a MISS (snippet_not_found_in_file) when
+            # told to. Stage1's head guard requires a real repository.
+            wt = _git_worktree(tmp_path, f"wt-{ctx.learning_mode}", content="x = 1\n")
 
             finding = _finding(rule="broad-except", refactor_class="cascade_fix")
             issue = {

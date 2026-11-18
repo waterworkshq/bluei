@@ -54,9 +54,9 @@ from bluei.engine.commands.parse_args import (  # noqa: E402
     resolve_baseline_checks,
 )
 from bluei.engine.commands.early_exits import (  # noqa: E402
+    run_refactor_cycle_command,  # Legacy import surface; contextual execution is below.
     run_clean_prs_command,
     run_docs_index_command,
-    run_refactor_cycle_command,
     run_smoke_test_command,
     validate_safety,
 )
@@ -213,15 +213,6 @@ def main() -> int:
     if rc is not None:
         return rc
 
-    rc = run_refactor_cycle_command(
-        repo_path=repo_path,
-        worktree_root=worktree_root,
-        log_file=log_file,
-        args=args,
-    )
-    if rc is not None:
-        return rc
-
     rc = run_smoke_test_command(
         repo_path=repo_path,
         log_file=log_file,
@@ -319,7 +310,7 @@ def main() -> int:
 
     _tiers_path = Path(state_file).parent / "model_tiers.yaml"
     _tier_config = load_model_tiers(_tiers_path)
-    _backend = "claude"  # the active fix backend (pr-cycle uses the claude path)
+    _backend = args.fix_engine  # Preserve the configured logical backend across lanes.
     _discovery = (
         BackendModelDiscovery(
             tier_config=_tier_config.get(_backend, {}), backend=_backend
@@ -365,12 +356,12 @@ def main() -> int:
         return run_reconcile_only(ctx)
 
     if (
-        args.run_phase in ("verify-only",) or ctx.run_issue_cycle
+        args.run_phase in ("verify-only", "refactor-cycle") or ctx.run_issue_cycle
     ) and not ctx.docs_index_file.exists():
         refresh_docs_index(ctx.repo_path, ctx.docs_index_file, ctx.log_file)
 
     cap_ok = True
-    if args.run_phase in ("verify-only",) or ctx.run_issue_cycle:
+    if args.run_phase in ("verify-only", "refactor-cycle") or ctx.run_issue_cycle:
         # Claim the status artifact for THIS run before discovery starts: a
         # crash or kill mid-scan must not leave the prior run's success
         # advertised as current. Health and other persisted fields stand.
@@ -458,6 +449,13 @@ def main() -> int:
 
     if args.run_phase == "verify-only":
         return run_verify_only(ctx)
+
+    if args.run_phase == "refactor-cycle":
+        from bluei.engine.commands.refactor_cycle import run_refactor_cycle_phase
+
+        refactor_rc = run_refactor_cycle_phase(ctx)
+        finalize_rc = run_finalize_phase(ctx)
+        return refactor_rc or finalize_rc
 
     if ctx.run_pr_cycle:
         pr_result = run_pr_cycle_phase(ctx)

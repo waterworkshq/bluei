@@ -52,14 +52,15 @@ def create_batch_pr(
 
     _append_text(log_file, f"batch-pr: creating PR for {batch.batch_id} title={title}")
 
-    if safety_config:
-        allowed, reason = check_pr_creation_allowed(base_branch, safety_config)
-        if not allowed:
-            _append_text(
-                log_file,
-                f"safety-block: batch PR creation blocked batch={batch.batch_id} reason={reason}",
-            )
-            raise RuntimeError(f"blocked-by-safety-mode: {reason}")
+    # Gate is ALWAYS consulted — the gate itself denies missing/empty/invalid
+    # policy (fail closed). Never skip enforcement on a falsy safety_config.
+    allowed, reason = check_pr_creation_allowed(base_branch, safety_config)
+    if not allowed:
+        _append_text(
+            log_file,
+            f"safety-block: batch PR creation blocked batch={batch.batch_id} reason={reason}",
+        )
+        raise RuntimeError(f"blocked-by-safety-mode: {reason}")
 
     rc, output = run_capture(
         [

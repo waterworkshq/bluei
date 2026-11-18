@@ -12,22 +12,22 @@ from bluei.app.registry import RepoRegistry
 
 
 @pytest.mark.parametrize("backend_name,backend_exit,missing_id,new_module,baseline_exit,rule,selected,scope_limit", [
-    ("claude", 0, False, False, 0, "ruff-F821", True, False),
-    ("claude", 9, False, False, 0, "ruff-F821", True, False),
-    ("claude", 0, True, False, 0, "ruff-F821", True, False),
-    ("opencode", 0, False, False, 0, "ruff-F821", True, False),
-    ("claude", 0, False, True, 0, "ruff-F821", True, False),
-    ("opencode-e2e", 0, False, False, 0, "ruff-F821", True, False),
-    ("claude", 0, False, False, 1, "ruff-F821", True, False),
+    ("claude", 0, False, False, 0, "ruff-f821", True, False),
+    ("claude", 9, False, False, 0, "ruff-f821", True, False),
+    ("claude", 0, True, False, 0, "ruff-f821", True, False),
+    ("opencode", 0, False, False, 0, "ruff-f821", True, False),
+    ("claude", 0, False, True, 0, "ruff-f821", True, False),
+    ("opencode-e2e", 0, False, False, 0, "ruff-f821", True, False),
+    ("claude", 0, False, False, 1, "ruff-f821", True, False),
     ("claude", 0, False, False, 0, "lock-self-reentry", True, False),
     ("opencode", 0, False, False, 0, "lock-self-reentry", True, False),
     ("claude", 9, False, False, 0, "lock-self-reentry", True, False),
     ("claude", 0, True, False, 0, "lock-self-reentry", True, False),
     ("claude", 0, False, False, 0, "lock-self-reentry", False, False),
-    ("claude", 0, False, False, 0, "ruff-F821", True, True),
-    ("opencode", 0, False, False, 0, "ruff-F821", True, True),
-    ("opencode-e2e", 0, False, False, 0, "ruff-F821", True, True),
-    ("claude", 0, False, False, 1, "ruff-F821", True, True),
+    ("claude", 0, False, False, 0, "ruff-f821", True, True),
+    ("opencode", 0, False, False, 0, "ruff-f821", True, True),
+    ("opencode-e2e", 0, False, False, 0, "ruff-f821", True, True),
+    ("claude", 0, False, False, 1, "ruff-f821", True, True),
     ("claude", 0, False, False, 0, "lock-self-reentry", True, True),
     ("opencode", 0, False, False, 0, "lock-self-reentry", True, True),
 ])
@@ -75,7 +75,10 @@ def test_selected_public_repair_is_bounded(tmp_path, backend_name, backend_exit,
         f"raise SystemExit({baseline_exit})"
     )
     secret = "inline-credential-must-not-reach-model"
-    repo.config.baseline_checks = [[sys.executable, "-c", check_code, "--password", secret]]
+    repo.config.baseline_checks = [
+        [sys.executable, "-c", check_code, "--password", secret],
+        [sys.executable, "-c", "import ast; from pathlib import Path; ast.parse(Path('app.py').read_text())"],
+    ]
     tools = tmp_path / "tools"
     tools.mkdir()
     calls = tmp_path / "backend-calls.jsonl"

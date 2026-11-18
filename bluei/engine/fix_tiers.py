@@ -204,6 +204,7 @@ class TieredValidator:
         checks: Optional[Dict[str, List[str]]] = None,
         log_file: Optional[Path] = None,
         repo_path: Optional[Path] = None,
+        environment_repo: Optional[Path] = None,
     ) -> TieredValidationResult:
         """Run the validation checks appropriate for the given tier.
 
@@ -215,6 +216,9 @@ class TieredValidator:
             checks: Named checks to run (tool → list of args).
             log_file: Append-only log file path.
             repo_path: Path to the original repo (may differ from worktree).
+            environment_repo: Optional source repo whose local venv defines
+                the intended tool runtime for the T1 check runner's existing
+                shadow guard. None keeps the existing default (repo_path).
 
         Returns:
             TieredValidationResult with pass/fail status and any regressions.
@@ -232,6 +236,7 @@ class TieredValidator:
                 checks,
                 baseline_results,
                 log_file,
+                environment_repo=environment_repo,
             )
         elif tier == FixTier.T2_VALIDATED:
             result = self._validate_t2(
@@ -240,6 +245,7 @@ class TieredValidator:
                 checks,
                 baseline_results,
                 log_file,
+                environment_repo=environment_repo,
             )
         elif tier == FixTier.T3_CONTEXTUAL:
             result = self._validate_t3(
@@ -249,6 +255,7 @@ class TieredValidator:
                 baseline_results,
                 finding,
                 log_file,
+                environment_repo=environment_repo,
             )
         elif tier == FixTier.T4_STRUCTURAL:
             result = self._validate_t4(
@@ -258,6 +265,7 @@ class TieredValidator:
                 baseline_results,
                 finding,
                 log_file,
+                environment_repo=environment_repo,
             )
         else:
             result = TieredValidationResult(
@@ -333,6 +341,7 @@ class TieredValidator:
         checks: Optional[Dict[str, List[str]]],
         baseline_results: Optional[Dict[str, Dict[str, Any]]],
         log_file: Path,
+        environment_repo: Optional[Path] = None,
     ) -> TieredValidationResult:
         """T1: Run baseline checks and confirm none fail.
 
@@ -342,6 +351,9 @@ class TieredValidator:
             checks: Named checks configuration.
             baseline_results: Pre-computed results (used directly if provided).
             log_file: Log file path.
+            environment_repo: Optional source repo whose local venv defines
+                the intended tool runtime (existing shadow-guard semantics;
+                None keeps the existing default).
 
         Returns:
             TieredValidationResult with pass/fail status.
@@ -359,11 +371,12 @@ class TieredValidator:
                 checks=checks,
                 log_file=log_file,
                 phase="validation-t1-baseline",
+                environment_repo=environment_repo,
             )
 
         for name, check_result in current_results.items():
-            rc = int(check_result.get("rc", 1))
-            if rc != 0:
+            rc = check_result.get("rc")
+            if rc is None or int(rc) != 0 or check_result.get("available") is False:
                 return TieredValidationResult(
                     passed=False,
                     message=f"baseline check failed: {name}",
@@ -379,6 +392,7 @@ class TieredValidator:
         checks: Optional[Dict[str, List[str]]],
         baseline_results: Optional[Dict[str, Dict[str, Any]]],
         log_file: Path,
+        environment_repo: Optional[Path] = None,
     ) -> TieredValidationResult:
         """T2: Full validation gate — baseline + target regression comparison.
 
@@ -388,17 +402,52 @@ class TieredValidator:
             checks: Named checks configuration.
             baseline_results: Pre-computed baseline results.
             log_file: Log file path.
+            environment_repo: Optional source repo whose local venv defines
+                the intended tool runtime. When supplied (G1) every check
+                execution this tier triggers runs with that runtime origin —
+                the gate never silently re-runs checks in a worktree-local
+                environment. Pre-computed caller results still win.
 
         Returns:
             TieredValidationResult including regressions and target failures.
         """
         from bluei.engine.verify import run_validation
+        from bluei.engine.validation import run_named_checks
 
+        postfix = target = None
+        if environment_repo is not None and checks:
+            # G1: own the check executions so all of them observe the
+            # caller's environment; the gate reuses runtime-marked results
+            # (its qualification math only trusts run_named_checks output).
+            if baseline_results is None:
+                baseline_results = run_named_checks(
+                    repo_path=repo_path,
+                    checks=checks,
+                    log_file=log_file,
+                    phase="validation-t2-baseline",
+                    environment_repo=environment_repo,
+                )
+            postfix = run_named_checks(
+                repo_path=repo_path,
+                checks=checks,
+                log_file=log_file,
+                phase="validation-t2-postfix",
+                environment_repo=environment_repo,
+            )
+            target = run_named_checks(
+                repo_path=repo_path,
+                checks=checks,
+                log_file=log_file,
+                phase="validation-t2-target",
+                environment_repo=environment_repo,
+            )
         result = run_validation(
             repo_path=repo_path,
             worktree_path=worktree_path,
             checks=checks,
             baseline_results=baseline_results,
+            post_fix_results=postfix,
+            target_results=target,
             log_file=log_file,
         )
         return TieredValidationResult(
@@ -416,6 +465,7 @@ class TieredValidator:
         baseline_results: Optional[Dict[str, Dict[str, Any]]],
         finding: Any,
         log_file: Path,
+        environment_repo: Optional[Path] = None,
     ) -> TieredValidationResult:
         """T3: T2 validation plus automated diff review (file count, diff size).
 
@@ -426,12 +476,19 @@ class TieredValidator:
             baseline_results: Pre-computed baseline results.
             finding: The finding being fixed.
             log_file: Log file path.
+            environment_repo: Optional source repo runtime origin (G1),
+                threaded into every T2 check execution below.
 
         Returns:
             TieredValidationResult with diff review outcome.
         """
         t2_result = self._validate_t2(
-            repo_path, worktree_path, checks, baseline_results, log_file
+            repo_path,
+            worktree_path,
+            checks,
+            baseline_results,
+            log_file,
+            environment_repo=environment_repo,
         )
         if not t2_result.passed:
             return t2_result
@@ -455,6 +512,7 @@ class TieredValidator:
         baseline_results: Optional[Dict[str, Dict[str, Any]]],
         finding: Any,
         log_file: Path,
+        environment_repo: Optional[Path] = None,
     ) -> TieredValidationResult:
         """T4: T3 validation plus mandatory human review flag.
 
@@ -465,12 +523,20 @@ class TieredValidator:
             baseline_results: Pre-computed baseline results.
             finding: The finding being fixed.
             log_file: Log file path.
+            environment_repo: Optional source repo runtime origin (G1),
+                threaded into every T2/T3 check execution below.
 
         Returns:
             TieredValidationResult with ``requires_human_review=True``.
         """
         t3_result = self._validate_t3(
-            repo_path, worktree_path, checks, baseline_results, finding, log_file
+            repo_path,
+            worktree_path,
+            checks,
+            baseline_results,
+            finding,
+            log_file,
+            environment_repo=environment_repo,
         )
         t3_result.requires_human_review = True
         return t3_result

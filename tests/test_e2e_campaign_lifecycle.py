@@ -329,6 +329,52 @@ def _failing_fix_runner(
     return runner
 
 
+def _qualified_baseline() -> Dict[str, Any]:
+    """Registered-style meaningful baseline check for a mutating run.
+
+    ``git diff --check HEAD`` validates the tracked-file diff for whitespace
+    errors and conflict markers — a real invariant that holds before and
+    after the fixes these tests inject.
+    """
+    return {"baseline-0": ["git", "diff", "--check", "HEAD", "--"]}
+
+
+def _mock_candidate_closure(monkeypatch) -> None:
+    """Mock per-fix closure verification for injected-runner acceptance.
+
+    Synthetic rules (alpha/beta/gamma/...) have no real responsible producer,
+    so closure is mocked here rather than weakened in the product.
+    """
+    from types import SimpleNamespace
+
+    from bluei.engine import repair_acceptance
+
+    monkeypatch.setattr(
+        repair_acceptance,
+        "verify_fix_closed",
+        lambda *args, **kwargs: SimpleNamespace(is_closed=True),
+    )
+
+
+def _materialize_finding_targets(worktree: Path, campaign) -> None:
+    """Commit every finding path as tracked original content first.
+
+    Accepted fixes must be tracked-file diffs: the retained patch would
+    otherwise be rejected for containing new files.
+    """
+    for snapshot in campaign.finding_snapshots.values():
+        target = worktree / str(snapshot["path"])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"original {snapshot['path']}\n")
+    subprocess.run(["git", "add", "."], cwd=worktree, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "finding targets"],
+        cwd=worktree,
+        capture_output=True,
+        check=True,
+    )
+
+
 @pytest.fixture
 def campaigns_dir(tmp_path) -> Path:
     return tmp_path / "state" / "campaigns"
@@ -381,7 +427,7 @@ class TestCampaignExecutorLifecycle:
     missing."""
 
     def test_full_lifecycle_plan_save_dryrun_execute_pause_resume(
-        self, campaign_store, campaigns_dir, worktree
+        self, campaign_store, campaigns_dir, git_worktree, monkeypatch
     ):
         """Plan → save → dry-run → execute → pause mid-phase → resume → complete.
 
@@ -406,7 +452,7 @@ class TestCampaignExecutorLifecycle:
         runner_a, call_log_a = _injectable_fix_runner()
         executor_a = CampaignExecutor(campaign_store, fix_runner=runner_a)
         dry = executor_a.run(
-            campaign_a.campaign_id, dry_run=True, worktree_path=worktree
+            campaign_a.campaign_id, dry_run=True, worktree_path=git_worktree
         )
 
         # Dry-run: everything skipped, fix_runner never invoked.
@@ -430,15 +476,19 @@ class TestCampaignExecutorLifecycle:
         )
         assert len(campaign_b.phases) == 2
         campaign_store.save(campaign_b)
+        _mock_candidate_closure(monkeypatch)
+        _materialize_finding_targets(git_worktree, campaign_b)
 
         # Succeed on phase 0's first finding, fail on its second → pause
         # mid-phase (one finding.fixed, then finding.failed).
         fail_id = campaign_b.phases[0].finding_ids[1]
         failing_executor = CampaignExecutor(
-            campaign_store, fix_runner=_failing_fix_runner(fail_on_finding_id=fail_id)
+            campaign_store,
+            fix_runner=_failing_fix_runner(fail_on_finding_id=fail_id, write_files=True),
+            baseline_checks=_qualified_baseline(),
         )
         paused = failing_executor.run(
-            campaign_b.campaign_id, dry_run=False, worktree_path=worktree
+            campaign_b.campaign_id, dry_run=False, worktree_path=git_worktree
         )
         assert paused["status"] == CampaignStatus.paused
 
@@ -453,10 +503,14 @@ class TestCampaignExecutorLifecycle:
 
         # Resume with a succeeding runner — paused phase re-runs and the
         # campaign walks to completion.
-        resume_runner, _ = _injectable_fix_runner()
-        resume_executor = CampaignExecutor(campaign_store, fix_runner=resume_runner)
+        resume_runner, _ = _injectable_fix_runner(write_files=True)
+        resume_executor = CampaignExecutor(
+            campaign_store,
+            fix_runner=resume_runner,
+            baseline_checks=_qualified_baseline(),
+        )
         done = resume_executor.run(
-            campaign_b.campaign_id, dry_run=False, worktree_path=worktree
+            campaign_b.campaign_id, dry_run=False, worktree_path=git_worktree
         )
         assert done["status"] == CampaignStatus.completed
 
@@ -476,7 +530,9 @@ class TestCampaignExecutorLifecycle:
         assert "phase.completed" in events_b
         assert "campaign.completed" in events_b
 
-    def test_multi_phase_with_rollback(self, campaign_store, git_worktree):
+    def test_multi_phase_with_rollback(
+        self, campaign_store, git_worktree, monkeypatch
+    ):
         """3-phase campaign → phase 1 fails → phase 0 changes preserved.
 
         With require_clean_worktree=True the executor snapshots each
@@ -493,6 +549,8 @@ class TestCampaignExecutorLifecycle:
         )
         assert len(campaign.phases) == 3
         campaign_store.save(campaign)
+        _mock_candidate_closure(monkeypatch)
+        _materialize_finding_targets(git_worktree, campaign)
 
         # Phase 0 (alpha) fully succeeds; phase 1 (beta) trips on its first finding.
         fail_id = campaign.phases[1].finding_ids[0]
@@ -501,6 +559,10 @@ class TestCampaignExecutorLifecycle:
             fix_runner=_failing_fix_runner(
                 fail_on_finding_id=fail_id, write_files=True
             ),
+            baseline_checks=_qualified_baseline(),
+            # Six tracked-file fixes accumulate in one worktree diff; the
+            # declared cap is raised (not removed) for this synthetic scale.
+            max_files_changed=10,
         )
         result = executor.run(
             campaign.campaign_id,
@@ -521,18 +583,15 @@ class TestCampaignExecutorLifecycle:
         assert loaded.pause_finding_id == fail_id
         assert loaded.pause_reason == "finding_failed"
 
-        # Observable on disk: phase 0's edits survive (NOT rolled back),
-        # and the failing finding's file was never created.
-        phase0_paths = [
-            loaded.finding_snapshots[fid]["path"]
-            for fid in loaded.phases[0].finding_ids
-        ]
-        for rel in phase0_paths:
-            assert (git_worktree / rel).exists(), (
+        # Observable on disk: phase 0's edits survive (NOT rolled back), and
+        # the failing finding's file was never modified by its fix.
+        for fid in loaded.phases[0].finding_ids:
+            rel = loaded.finding_snapshots[fid]["path"]
+            assert (git_worktree / rel).read_text() == f"fixed {fid}\n", (
                 f"phase 0 change at {rel} must persist after phase 1 failure"
             )
         fail_path = loaded.finding_snapshots[fail_id]["path"]
-        assert not (git_worktree / fail_path).exists()
+        assert (git_worktree / fail_path).read_text() == f"original {fail_path}\n"
 
         # Observable in the event log: rollback was scoped to the failing
         # phase only — phase 0 never appears in a rollback event.
@@ -548,7 +607,12 @@ class TestCampaignExecutorLifecycle:
         # the resume (the rollback contract under test is already proven
         # above; resume just needs to walk to completion).
         resume_runner, _ = _injectable_fix_runner(write_files=True)
-        resume_executor = CampaignExecutor(campaign_store, fix_runner=resume_runner)
+        resume_executor = CampaignExecutor(
+            campaign_store,
+            fix_runner=resume_runner,
+            baseline_checks=_qualified_baseline(),
+            max_files_changed=10,
+        )
         done = resume_executor.run(
             campaign.campaign_id, dry_run=False, worktree_path=git_worktree
         )
@@ -560,7 +624,9 @@ class TestCampaignExecutorLifecycle:
         assert all(p.status == PhaseStatus.completed for p in final.phases)
         assert final.pause_reason is None
 
-    def test_concurrent_execution_guard(self, campaign_store, campaigns_dir, worktree):
+    def test_concurrent_execution_guard(
+        self, campaign_store, campaigns_dir, git_worktree, monkeypatch
+    ):
         """A second run while the campaign lock is held raises RuntimeError.
 
         CampaignExecutor guards concurrent execution with an exclusive lock
@@ -577,8 +643,10 @@ class TestCampaignExecutorLifecycle:
             strategy=CampaignStrategy.rule_based,
         )
         campaign_store.save(campaign)
+        _mock_candidate_closure(monkeypatch)
+        _materialize_finding_targets(git_worktree, campaign)
 
-        runner, _ = _injectable_fix_runner()
+        runner, _ = _injectable_fix_runner(write_files=True)
 
         # Simulate another executor already holding the lock.
         lock_path = campaigns_dir / campaign.campaign_id / "campaign.lock"
@@ -586,10 +654,14 @@ class TestCampaignExecutorLifecycle:
         lock_path.touch()
         assert lock_path.exists()
 
-        blocked_executor = CampaignExecutor(campaign_store, fix_runner=runner)
+        blocked_executor = CampaignExecutor(
+            campaign_store,
+            fix_runner=runner,
+            baseline_checks=_qualified_baseline(),
+        )
         with pytest.raises(RuntimeError):
             blocked_executor.run(
-                campaign.campaign_id, dry_run=False, worktree_path=worktree
+                campaign.campaign_id, dry_run=False, worktree_path=git_worktree
             )
 
         # The blocked run must not have mutated any campaign state.
@@ -601,9 +673,13 @@ class TestCampaignExecutorLifecycle:
         # Release the lock (the simulated first run finishes) and retry.
         lock_path.unlink()
 
-        final_executor = CampaignExecutor(campaign_store, fix_runner=runner)
+        final_executor = CampaignExecutor(
+            campaign_store,
+            fix_runner=runner,
+            baseline_checks=_qualified_baseline(),
+        )
         result = final_executor.run(
-            campaign.campaign_id, dry_run=False, worktree_path=worktree
+            campaign.campaign_id, dry_run=False, worktree_path=git_worktree
         )
         assert result["status"] == CampaignStatus.completed
 

@@ -638,7 +638,7 @@ class TestContextGuardExcludesPattern:
                 type="rule_exact",
                 context_guard={"excludes_pattern": r"SKIP_THIS_FILE"},
             ),
-            replacement=RecipeReplacement(type="text"),
+            replacement=RecipeReplacement(type="text", value="before", replacement="after"),
         )
         engine = RecipeEngine([tmp_path])
         engine.recipes["my-rule"] = [recipe]
@@ -658,7 +658,7 @@ class TestContextGuardExcludesPattern:
                 type="rule_exact",
                 context_guard={"excludes_pattern": r"SKIP_THIS_FILE"},
             ),
-            replacement=RecipeReplacement(type="text"),
+            replacement=RecipeReplacement(type="text", value="before", replacement="after"),
         )
         engine = RecipeEngine([tmp_path])
         engine.recipes["my-rule"] = [recipe]
@@ -677,7 +677,7 @@ class TestContextGuardExcludesPattern:
                 type="rule_exact",
                 context_guard={"excludes_pattern": r"bad"},
             ),
-            replacement=RecipeReplacement(type="text"),
+            replacement=RecipeReplacement(type="text", value="before", replacement="after"),
         )
         engine = RecipeEngine([tmp_path])
         engine.recipes["my-rule"] = [recipe]
@@ -695,7 +695,7 @@ class TestContextGuardExcludesPattern:
                 type="rule_exact",
                 context_guard={"excludes_pattern": r"bad"},
             ),
-            replacement=RecipeReplacement(type="text"),
+            replacement=RecipeReplacement(type="text", value="before", replacement="after"),
         )
         engine = RecipeEngine([tmp_path])
         engine.recipes["my-rule"] = [recipe]
@@ -713,7 +713,7 @@ class TestContextGuardExcludesPattern:
                 type="rule_exact",
                 context_guard={},
             ),
-            replacement=RecipeReplacement(type="text"),
+            replacement=RecipeReplacement(type="text", value="before", replacement="after"),
         )
         engine = RecipeEngine([tmp_path])
         engine.recipes["my-rule"] = [recipe]
@@ -731,7 +731,7 @@ class TestContextGuardExcludesPattern:
                 type="rule_exact",
                 context_guard={"excludes_pattern": None},
             ),
-            replacement=RecipeReplacement(type="text"),
+            replacement=RecipeReplacement(type="text", value="before", replacement="after"),
         )
         engine = RecipeEngine([tmp_path])
         engine.recipes["my-rule"] = [recipe]
@@ -802,11 +802,11 @@ class TestReload:
 
         _write_recipe(
             dir_a / "r1.yaml",
-            "id: r1\nrule: rule-a\nlanguage: python\n",
+            "id: r1\nrule: rule-a\nlanguage: python\nreplacement:\n  type: text\n  value: \"a\"\n  replacement: \"b\"\n",
         )
         _write_recipe(
             dir_b / "r2.yaml",
-            "id: r2\nrule: rule-b\nlanguage: python\n",
+            "id: r2\nrule: rule-b\nlanguage: python\nreplacement:\n  type: text\n  value: \"a\"\n  replacement: \"b\"\n",
         )
 
         engine = RecipeEngine([dir_a, dir_b])
@@ -828,7 +828,7 @@ class TestReload:
 
         _write_recipe(
             tmp_path / "new.yaml",
-            "id: new-recipe\nrule: new-rule\nlanguage: python\n",
+            "id: new-recipe\nrule: new-rule\nlanguage: python\nreplacement:\n  type: text\n  value: \"a\"\n  replacement: \"b\"\n",
         )
         engine.reload()
         assert engine.recipe_count == 1
@@ -852,3 +852,154 @@ class TestReload:
         engine._wildcard_recipes.clear()
         engine.reload()
         assert len(engine._wildcard_recipes) == 1
+
+
+# ── Ruff canonical input + regex applicability (Stage2 identity) ──────────
+
+class TestRuffCanonicalMatchAndApplicability:
+    """Case-variant Ruff rule ids resolve recipes; regex_substitute recipes
+    must actually apply to the file text before they can be selected."""
+
+    B904_GENERIC_TEXT = "try:\n    pass\nexcept ValueError:\n    raise RuntimeError('boom')\n"
+    B904_FIXTURE_TEXT = "raise ValueError(\"oops\")"
+
+    def test_match_canonicalizes_ruff_rule_case(self):
+        engine = RecipeEngine([builtin_recipe_dir()])
+        r = engine.match("ruff-B904", "python")  # uppercase code input
+        assert r is not None
+        # Exact bucket now reached (previously only the ruff-* wildcard).
+        # Without file_text both foundry recipes tie at equal score and the
+        # stable sort keeps glob order: from-none loads first.
+        assert r.id == "foundry-ruff-b904-from-none"
+
+    def test_has_recipe_canonicalizes_ruff_rule_case(self):
+        engine = RecipeEngine([builtin_recipe_dir()])
+        assert engine.has_recipe("ruff-B904") is True
+        assert engine.has_recipe("ruff-b904") is True
+        assert engine.has_recipe("nonexistent-rule") is False
+
+    def test_non_ruff_rules_still_match_byte_exact(self):
+        engine = RecipeEngine([builtin_recipe_dir()])
+        assert engine.match("discount-math-sign", "python") is not None
+        assert engine.match("Discount-Math-Sign", "python") is None  # no folding
+
+    def test_b904_generic_selected_when_fixture_pattern_absent(self):
+        engine = RecipeEngine([builtin_recipe_dir()])
+        r = engine.match("ruff-b904", "python", file_text=self.B904_GENERIC_TEXT)
+        assert r is not None
+        assert r.id == "foundry-ruff-b904"  # from-none literal cannot occur
+
+    def test_b904_fixture_selected_when_only_literal_present(self):
+        engine = RecipeEngine([builtin_recipe_dir()])
+        r = engine.match("ruff-b904", "python", file_text=self.B904_FIXTURE_TEXT)
+        assert r is not None
+        assert r.id == "foundry-ruff-b904-from-none"
+
+    def test_match_without_file_text_keeps_pure_lookup(self, tmp_path):
+        engine = RecipeEngine([builtin_recipe_dir()])
+        # No file_text key at all: applicability gating must not apply.
+        assert engine.match("ruff-b904", "python") is not None
+
+        # Explicitly provided empty file_text gates: pattern can't occur.
+        _write_recipe(
+            tmp_path / "only.yaml",
+            textwrap.dedent("""\
+                id: only-recipe
+                rule: only-rule
+                language: python
+                replacement:
+                  type: regex_substitute
+                  pattern: TODO
+                  replacement: "DONE"
+            """),
+        )
+        only = RecipeEngine([tmp_path])
+        assert only.match("only-rule", "python", file_text="") is None
+
+    def test_custom_non_ruff_pattern_applicability(self, tmp_path):
+        _write_recipe(
+            tmp_path / "custom.yaml",
+            textwrap.dedent("""\
+                id: custom-todo
+                rule: my-custom-rule
+                language: python
+                replacement:
+                  type: regex_substitute
+                  pattern: TODO\\(.*\\)
+                  replacement: "DONE"
+            """),
+        )
+        engine = RecipeEngine([tmp_path])
+        hit = engine.match("my-custom-rule", "python", file_text="x = 1  # TODO(fixme)")
+        assert hit is not None and hit.id == "custom-todo"
+        miss = engine.match("my-custom-rule", "python", file_text="x = 1  # plain")
+        assert miss is None
+
+    def test_inert_text_recipe_cannot_shadow_valid_recipe(self, tmp_path):
+        _write_recipe(
+            tmp_path / "inert.yaml",
+            textwrap.dedent("""\
+                id: inert-seed
+                rule: shared-text-rule
+                language: python
+                priority: 100
+                replacement:
+                  type: text
+                  value: ""
+                  replacement: "x"
+            """),
+        )
+        _write_recipe(
+            tmp_path / "valid.yaml",
+            textwrap.dedent("""\
+                id: valid-text
+                rule: shared-text-rule
+                language: python
+                priority: 1
+                replacement:
+                  type: text
+                  value: "old"
+                  replacement: "new"
+            """),
+        )
+        engine = RecipeEngine([tmp_path])
+        r = engine.match("shared-text-rule", "python")  # no file_text: inert is inert for any file
+        assert r is not None and r.id == "valid-text"
+
+    def test_canonical_ruff_f401_selects_generic_command(self):
+        # foundry-ruff-f401 is an inert text seed (value: ""); the generic
+        # ruff-autofix command must be selected for both id cases.
+        engine = RecipeEngine([builtin_recipe_dir()])
+        assert engine.match("ruff-F401", "python").id == "ruff-autofix"
+        assert engine.match("ruff-f401", "python").id == "ruff-autofix"
+
+    def test_malformed_regex_recipe_skipped_applicable_one_selected(self, tmp_path):
+        _write_recipe(
+            tmp_path / "bad.yaml",
+            textwrap.dedent("""\
+                id: bad-pattern
+                rule: shared-rule
+                language: python
+                priority: 100
+                replacement:
+                  type: regex_substitute
+                  pattern: (
+                  replacement: "x"
+            """),
+        )
+        _write_recipe(
+            tmp_path / "good.yaml",
+            textwrap.dedent("""\
+                id: good-pattern
+                rule: shared-rule
+                language: python
+                priority: 1
+                replacement:
+                  type: regex_substitute
+                  pattern: "TODO"
+                  replacement: "DONE"
+            """),
+        )
+        engine = RecipeEngine([tmp_path])
+        r = engine.match("shared-rule", "python", file_text="# TODO cleanup")
+        assert r is not None and r.id == "good-pattern"  # malformed skipped, no crash

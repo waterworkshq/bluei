@@ -14,6 +14,65 @@ from bluei.campaigns.types import CampaignStatus, PhaseStatus
 from bluei.engine.models import Finding
 
 
+def _qualified_baseline() -> dict[str, list[str]]:
+    """Registered-style baseline checks that qualify a mutating run.
+
+    Stage 3 contract: a mutating campaign run without registered baseline
+    checks is refused as unqualified, so tests exercising the mutation path
+    must provide a real, passing, runtime-available check.
+    """
+    return {"baseline-0": [sys.executable, "-c", "pass"]}
+
+
+def _mock_candidate_closure(monkeypatch) -> None:
+    """Mock per-fix closure verification for injected-runner acceptance.
+
+    The per-fix candidate gate verifies detector closure (verify_fix_closed);
+    these tests inject synthetic findings whose rules have no real detector,
+    so closure is mocked rather than weakened in the product.
+    """
+    from types import SimpleNamespace
+
+    from bluei.engine import repair_acceptance
+
+    monkeypatch.setattr(
+        repair_acceptance,
+        "verify_fix_closed",
+        lambda *args, **kwargs: SimpleNamespace(is_closed=True),
+    )
+
+
+def _git_worktree(tmp_path):
+    """Create a real clean git worktree containing src/api/users.ts."""
+    worktree = tmp_path / "repo"
+    target = worktree / "src" / "api" / "users.ts"
+    target.parent.mkdir(parents=True)
+    target.write_text("let value: any\n", encoding="utf-8")
+    for args in (
+        ["git", "init"],
+        ["git", "config", "user.email", "bluei@example.invalid"],
+        ["git", "config", "user.name", "bluei"],
+    ):
+        subprocess.run(
+            args, cwd=worktree, text=True, capture_output=True, check=True
+        )
+    subprocess.run(
+        ["git", "add", "src/api/users.ts"],
+        cwd=worktree,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=worktree,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return worktree, target
+
+
 def test_campaign_executor_dry_run_walks_phases_and_records_events(tmp_path) -> None:
     campaign = CampaignPlanner().plan(
         [
@@ -250,7 +309,9 @@ def test_campaign_executor_resume_skips_completed_phases(tmp_path) -> None:
     assert started_phase_ids == [campaign.phases[1].phase_id]
 
 
-def test_campaign_executor_applies_findings_with_injected_runner(tmp_path) -> None:
+def test_campaign_executor_applies_findings_with_injected_runner(
+    tmp_path, monkeypatch
+) -> None:
     campaign = CampaignPlanner().plan(
         [
             Finding(
@@ -272,7 +333,9 @@ def test_campaign_executor_applies_findings_with_injected_runner(tmp_path) -> No
     )
     store = CampaignStateManager(tmp_path)
     store.save(campaign)
+    worktree, target = _git_worktree(tmp_path)
     calls: list[tuple[str, str, str]] = []
+    _mock_candidate_closure(monkeypatch)
 
     def fix_runner(
         *,
@@ -284,11 +347,14 @@ def test_campaign_executor_applies_findings_with_injected_runner(tmp_path) -> No
         **kwargs: Any,
     ) -> dict[str, Any]:
         calls.append((phase.phase_id, finding_id, finding["rule"]))
+        target.write_text("let value: string\n", encoding="utf-8")
         return {"status": "success", "method": "unit-test"}
 
-    result = CampaignExecutor(store, fix_runner=fix_runner).run(
+    result = CampaignExecutor(
+        store, fix_runner=fix_runner, baseline_checks=_qualified_baseline()
+    ).run(
         campaign.campaign_id,
-        worktree_path=tmp_path,
+        worktree_path=worktree,
     )
 
     assert result["status"] == "completed"
@@ -315,6 +381,7 @@ def test_campaign_executor_applies_findings_with_injected_runner(tmp_path) -> No
 
 def test_campaign_executor_real_run_validation_events_record_mutation_mode(
     tmp_path,
+    monkeypatch,
 ) -> None:
     campaign = CampaignPlanner().plan(
         [
@@ -339,14 +406,19 @@ def test_campaign_executor_real_run_validation_events_record_mutation_mode(
     campaign.phases[0].post_phase_checks = [[sys.executable, "-c", "print('post ok')"]]
     store = CampaignStateManager(tmp_path)
     store.save(campaign)
+    worktree, target = _git_worktree(tmp_path)
+    _mock_candidate_closure(monkeypatch)
 
     def fix_runner(**kwargs: Any) -> dict[str, Any]:
+        target.write_text("let value: string\n", encoding="utf-8")
         return {"status": "success", "method": "unit-test"}
 
-    result = CampaignExecutor(store, fix_runner=fix_runner).run(
+    result = CampaignExecutor(
+        store, fix_runner=fix_runner, baseline_checks=_qualified_baseline()
+    ).run(
         campaign.campaign_id,
         dry_run=False,
-        worktree_path=tmp_path,
+        worktree_path=worktree,
     )
 
     assert result["status"] == "completed"
@@ -419,7 +491,9 @@ def test_campaign_executor_requires_clean_git_worktree_for_guarded_real_run(
     assert events[0]["payload"]["reason"] == "clean_worktree_required"
 
 
-def test_campaign_executor_pauses_on_injected_runner_failure(tmp_path) -> None:
+def test_campaign_executor_pauses_on_injected_runner_failure(
+    tmp_path, monkeypatch
+) -> None:
     campaign = CampaignPlanner().plan(
         [
             Finding(
@@ -441,6 +515,8 @@ def test_campaign_executor_pauses_on_injected_runner_failure(tmp_path) -> None:
     )
     store = CampaignStateManager(tmp_path)
     store.save(campaign)
+    worktree, _target = _git_worktree(tmp_path)
+    _mock_candidate_closure(monkeypatch)
 
     def fix_runner(
         *,
@@ -454,9 +530,11 @@ def test_campaign_executor_pauses_on_injected_runner_failure(tmp_path) -> None:
         assert finding["path"] == "src/api/users.ts"
         return {"status": "failed", "error": "no fix available"}
 
-    result = CampaignExecutor(store, fix_runner=fix_runner).run(
+    result = CampaignExecutor(
+        store, fix_runner=fix_runner, baseline_checks=_qualified_baseline()
+    ).run(
         campaign.campaign_id,
-        worktree_path=tmp_path,
+        worktree_path=worktree,
     )
 
     assert result["status"] == "paused"
@@ -480,14 +558,16 @@ def test_campaign_executor_pauses_on_injected_runner_failure(tmp_path) -> None:
     assert [event["event"] for event in events] == [
         "campaign.started",
         "phase.started",
+        "phase.rollback.applied",
         "finding.failed",
         "campaign.paused",
     ]
-    assert events[2]["payload"]["error"] == "no fix available"
+    assert events[3]["payload"]["error"] == "no fix available"
 
 
 def test_campaign_executor_rolls_back_phase_files_when_later_finding_fails(
     tmp_path,
+    monkeypatch,
 ) -> None:
     campaign = CampaignPlanner().plan(
         [
@@ -557,6 +637,8 @@ def test_campaign_executor_rolls_back_phase_files_when_later_finding_fails(
         check=True,
     )
 
+    _mock_candidate_closure(monkeypatch)
+
     def fix_runner(
         *, finding_id: str, worktree_path: Any, **kwargs: Any
     ) -> dict[str, Any]:
@@ -565,7 +647,9 @@ def test_campaign_executor_rolls_back_phase_files_when_later_finding_fails(
             return {"status": "success", "method": "unit-test"}
         return {"status": "failed", "error": "second fix failed"}
 
-    result = CampaignExecutor(store, fix_runner=fix_runner).run(
+    result = CampaignExecutor(
+        store, fix_runner=fix_runner, baseline_checks=_qualified_baseline()
+    ).run(
         campaign.campaign_id,
         dry_run=False,
         worktree_path=worktree,
@@ -588,11 +672,12 @@ def test_campaign_executor_rolls_back_phase_files_when_later_finding_fails(
     ]
     rollback = [event for event in events if event["event"] == "phase.rollback.applied"]
     assert rollback[0]["payload"]["reason"] == "finding_failed"
-    assert rollback[0]["payload"]["paths"] == ["src/api/users.ts"]
+    assert rollback[0]["payload"]["mode"] == "source-checkpoint"
 
 
 def test_campaign_executor_rolls_back_phase_files_when_post_validation_fails(
     tmp_path,
+    monkeypatch,
 ) -> None:
     campaign = CampaignPlanner().plan(
         [
@@ -654,11 +739,15 @@ def test_campaign_executor_rolls_back_phase_files_when_post_validation_fails(
         check=True,
     )
 
+    _mock_candidate_closure(monkeypatch)
+
     def fix_runner(*, worktree_path: Any, **kwargs: Any) -> dict[str, Any]:
         target.write_text("let value: string\n", encoding="utf-8")
         return {"status": "success", "method": "unit-test"}
 
-    result = CampaignExecutor(store, fix_runner=fix_runner).run(
+    result = CampaignExecutor(
+        store, fix_runner=fix_runner, baseline_checks=_qualified_baseline()
+    ).run(
         campaign.campaign_id,
         dry_run=False,
         worktree_path=worktree,
@@ -681,11 +770,12 @@ def test_campaign_executor_rolls_back_phase_files_when_post_validation_fails(
     ]
     rollback = [event for event in events if event["event"] == "phase.rollback.applied"]
     assert rollback[0]["payload"]["reason"] == "validation_failed"
-    assert rollback[0]["payload"]["paths"] == ["src/api/users.ts"]
+    assert rollback[0]["payload"]["mode"] == "source-checkpoint"
 
 
 def test_campaign_executor_can_resume_after_rollback_and_complete_phase(
     tmp_path,
+    monkeypatch,
 ) -> None:
     campaign = CampaignPlanner().plan(
         [
@@ -754,6 +844,7 @@ def test_campaign_executor_can_resume_after_rollback_and_complete_phase(
         capture_output=True,
         check=True,
     )
+    _mock_candidate_closure(monkeypatch)
     attempts: list[str] = []
 
     def fix_runner(
@@ -773,7 +864,9 @@ def test_campaign_executor_can_resume_after_rollback_and_complete_phase(
             )
         return {"status": "success", "method": "unit-test"}
 
-    first = CampaignExecutor(store, fix_runner=fix_runner).run(
+    first = CampaignExecutor(
+        store, fix_runner=fix_runner, baseline_checks=_qualified_baseline()
+    ).run(
         campaign.campaign_id,
         dry_run=False,
         worktree_path=worktree,
@@ -786,7 +879,9 @@ def test_campaign_executor_can_resume_after_rollback_and_complete_phase(
     loaded.status = "planning"
     loaded.phases[0].status = "pending"
     store.save(loaded)
-    second = CampaignExecutor(store, fix_runner=fix_runner).run(
+    second = CampaignExecutor(
+        store, fix_runner=fix_runner, baseline_checks=_qualified_baseline()
+    ).run(
         campaign.campaign_id,
         dry_run=False,
         worktree_path=worktree,
@@ -1027,6 +1122,12 @@ class TestAutofixFixRunnerSnapshotErrors:
 
 class TestAutofixFixRunnerPatternReplay:
     def test_pattern_replay_success(self, tmp_path):
+        """Stage 3 removed ungoverned replay from the campaign fix runner.
+
+        Name kept for history: a high-confidence matching pattern must NOT
+        be applied — the store is never even constructed, and the file is
+        left untouched.
+        """
         src_file = tmp_path / "src" / "app.py"
         src_file.parent.mkdir(parents=True)
         src_file.write_text("old_code()\n")
@@ -1045,7 +1146,7 @@ class TestAutofixFixRunnerPatternReplay:
 
         with patch.object(
             campaign_executor, "FixPatternStore", return_value=mock_store
-        ):
+        ) as store_cls:
             result = autofix_fix_runner(
                 campaign=MagicMock(),
                 phase=MagicMock(),
@@ -1054,9 +1155,9 @@ class TestAutofixFixRunnerPatternReplay:
                 worktree_path=tmp_path,
                 pattern_store_path=store_path,
             )
-        assert result["status"] == "success"
-        assert result["method"] == "pattern_replay"
-        assert src_file.read_text() == "new_code()\n"
+        assert store_cls.call_count == 0
+        assert result.get("method") != "pattern_replay"
+        assert src_file.read_text() == "old_code()\n"
 
     def test_pattern_replay_skipped_when_confidence_low(self, tmp_path):
         src_file = tmp_path / "src" / "app.py"
@@ -1278,19 +1379,31 @@ class TestCampaignExecutorRun:
         assert result["findings_skipped"] >= 0
         assert result["status"] == CampaignStatus.completed
 
-    def test_run_live_with_successful_fixes(self, tmp_path):
+    def test_run_live_with_successful_fixes(self, tmp_path, monkeypatch):
         store, campaign = _make_campaign_data(tmp_path, findings_count=1)
-        fix_runner = MagicMock(return_value={"status": "success", "method": "autofix"})
-        exe = CampaignExecutor(store, fix_runner=fix_runner)
-        result = exe.run(campaign.campaign_id, dry_run=False)
+        worktree, target = _git_worktree(tmp_path)
+        _mock_candidate_closure(monkeypatch)
+
+        def fix_runner(**kwargs):
+            target.write_text("let value: string\n", encoding="utf-8")
+            return {"status": "success", "method": "autofix"}
+
+        exe = CampaignExecutor(
+            store, fix_runner=fix_runner, baseline_checks=_qualified_baseline()
+        )
+        result = exe.run(campaign.campaign_id, dry_run=False, worktree_path=worktree)
         assert result["status"] == CampaignStatus.completed
         assert result["findings_fixed"] >= 1
 
-    def test_run_live_fix_failure_pauses(self, tmp_path):
+    def test_run_live_fix_failure_pauses(self, tmp_path, monkeypatch):
         store, campaign = _make_campaign_data(tmp_path, findings_count=2)
+        worktree, _target = _git_worktree(tmp_path)
+        _mock_candidate_closure(monkeypatch)
         fix_runner = MagicMock(return_value={"status": "failed", "error": "bad"})
-        exe = CampaignExecutor(store, fix_runner=fix_runner)
-        result = exe.run(campaign.campaign_id, dry_run=False)
+        exe = CampaignExecutor(
+            store, fix_runner=fix_runner, baseline_checks=_qualified_baseline()
+        )
+        result = exe.run(campaign.campaign_id, dry_run=False, worktree_path=worktree)
         assert result["status"] == CampaignStatus.paused
         assert result["findings_failed"] >= 1
 
@@ -1344,24 +1457,36 @@ class TestCampaignExecutorRun:
 
 
 class TestCampaignExecutorValidation:
-    def test_pre_phase_check_failure_pauses(self, tmp_path):
+    def test_pre_phase_check_failure_pauses(self, tmp_path, monkeypatch):
         store, campaign = _make_campaign_data(tmp_path, findings_count=1)
         for phase in campaign.phases:
             phase.pre_phase_checks = [["false"]]
         store.save(campaign)
+        worktree, _target = _git_worktree(tmp_path)
+        _mock_candidate_closure(monkeypatch)
         fix_runner = MagicMock(return_value={"status": "success", "method": "autofix"})
-        exe = CampaignExecutor(store, fix_runner=fix_runner)
-        result = exe.run(campaign.campaign_id, dry_run=False)
+        exe = CampaignExecutor(
+            store, fix_runner=fix_runner, baseline_checks=_qualified_baseline()
+        )
+        result = exe.run(campaign.campaign_id, dry_run=False, worktree_path=worktree)
         assert result["status"] == CampaignStatus.paused
 
-    def test_post_phase_check_failure_pauses(self, tmp_path):
+    def test_post_phase_check_failure_pauses(self, tmp_path, monkeypatch):
         store, campaign = _make_campaign_data(tmp_path, findings_count=1)
         for phase in campaign.phases:
             phase.post_phase_checks = [["false"]]
         store.save(campaign)
-        fix_runner = MagicMock(return_value={"status": "success", "method": "autofix"})
-        exe = CampaignExecutor(store, fix_runner=fix_runner)
-        result = exe.run(campaign.campaign_id, dry_run=False)
+        worktree, target = _git_worktree(tmp_path)
+        _mock_candidate_closure(monkeypatch)
+
+        def fix_runner(**kwargs):
+            target.write_text("let value: string\n", encoding="utf-8")
+            return {"status": "success", "method": "autofix"}
+
+        exe = CampaignExecutor(
+            store, fix_runner=fix_runner, baseline_checks=_qualified_baseline()
+        )
+        result = exe.run(campaign.campaign_id, dry_run=False, worktree_path=worktree)
         assert result["status"] == CampaignStatus.paused
 
     def test_validation_checks_pass_returns_none(self, tmp_path):

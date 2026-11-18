@@ -56,6 +56,7 @@ def test_route_findings_with_intent_persists_refactor_work_for_small_refactor(
     make_finding,
 ):
     from bluei.engine.orchestrator import route_findings_with_intent
+    from bluei.engine.refactor_queue import QueueStatus, RefactorQueue
     from bluei.engine.state import load_refactor_work
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -66,6 +67,7 @@ def test_route_findings_with_intent_persists_refactor_work_for_small_refactor(
         target = worktree / "src" / "big.ts"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("\n".join(f"line {i}" for i in range(200)), encoding="utf-8")
+        queue_dir = tmp / "refactor_queue"
 
         finding = make_finding(
             finding_id="refactor-1",
@@ -82,12 +84,22 @@ def test_route_findings_with_intent_persists_refactor_work_for_small_refactor(
             confidence_threshold=0.8,
             findings_file=findings_file,
             worktree_path=worktree,
+            queue_dir=queue_dir,
         )
 
         assert len(routed["refactor_queue"]) == 1
         queue_item = routed["refactor_queue"][0]
-        assert queue_item["queued_work_id"] is None
+        # Stage 3 semantics: a safety-allowed structural finding is durably
+        # queued in the READY execution lane (eligibility, not approval).
+        assert queue_item["queued_work_id"]
+        assert queue_item["lane"] == "execution"
+        assert queue_item["reason"] == "safety-allowed"
         assert queue_item["refactor_work"].phase.value == "planning"
+
+        entry = RefactorQueue(queue_dir).get(queue_item["queued_work_id"])
+        assert entry is not None
+        assert entry.status == QueueStatus.READY
+        assert entry.finding_id == "refactor-1"
 
         persisted = load_refactor_work("refactor-1", findings_file)
         assert persisted is not None

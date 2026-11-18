@@ -4,6 +4,7 @@ Pure functions — no class, no constructor deps.
 """
 
 import logging
+import os
 import re
 import shlex
 import shutil
@@ -39,6 +40,10 @@ def infer_baseline_checks(repo_path: Path, language: LanguageInfo) -> List[List[
     for lang in [language.name] + language.secondary_languages:
         lang_commands = _infer_baseline_checks_for_language(repo_path, lang)
         if not lang_commands:
+            if lang == "python" and _python_checks_unavailable(repo_path):
+                # Keep the deliberate empty result; the plugin manifest
+                # fallback would reintroduce default bare checks.
+                continue
             lang_commands = _infer_plugin_baseline_fallback(repo_path, lang)
         commands.extend(lang_commands)
 
@@ -322,6 +327,98 @@ def _infer_github_workflow_checks(repo_path: Path) -> List[List[str]]:
     return commands
 
 
+def infer_python_runtime(repo_path: Path) -> Dict[str, Any]:
+    """Find an available local interpreter in ``.venv``/``venv`` (fs checks only).
+
+    A venv directory proves nothing; availability is the interpreter binary
+    existing and being executable. The path stays leaf-symlink-unresolved so
+    a venv ``python`` stays scoped to the venv. Says nothing about imports.
+
+    ponytail: POSIX layout only; Windows ``Scripts\\python.exe`` unhandled.
+    """
+    repo_path = Path(repo_path).resolve()
+    for source, venv_dir in ((".venv", ".venv"), ("venv", "venv")):
+        venv_path = repo_path / venv_dir
+        if not venv_path.is_dir():
+            continue
+        interpreter = None
+        for bin_name in ("python", "python3"):
+            candidate = venv_path / "bin" / bin_name
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                interpreter = str(candidate)
+                break
+        if interpreter is None:
+            return {
+                "interpreter": None,
+                "source": source,
+                "available": False,
+                "unavailable_reason": (
+                    f"local virtualenv '{venv_dir}/bin/python' is missing or "
+                    "not executable; recreate it before relying on inferred checks"
+                ),
+            }
+        return {
+            "interpreter": interpreter,
+            "source": source,
+            "available": True,
+            "unavailable_reason": None,
+        }
+    return {
+        "interpreter": None,
+        "source": None,
+        "available": False,
+        "unavailable_reason": None,
+    }
+
+
+def _python_checks_unavailable(repo_path: Path) -> bool:
+    """Python inference must stay empty: broken local venv, or a poetry/uv
+    wrapper-managed env inference cannot qualify (uv run may install)."""
+    runtime = infer_python_runtime(repo_path)
+    if runtime["source"] is not None and not runtime["available"]:
+        return True
+    return (
+        runtime["interpreter"] is None
+        and _detection.detect_package_manager(repo_path, "python")
+        in ("poetry", "uv")
+    )
+
+
+_INTERPRETER_TOKEN_RE = re.compile(r"/python3?(\.\d+)?$")
+
+
+def python_runtime_for_checks(
+    repo_path: Path, baseline_checks: List[List[str]]
+) -> Optional[Dict[str, Any]]:
+    """Runtime meta for the ACTUAL baseline: first explicit interpreter
+    command wins (fs checks only). Bare/wrapper commands → None (no claim).
+    """
+    repo_path = Path(repo_path).resolve()
+    for cmd in baseline_checks or []:
+        if not cmd:
+            continue
+        token = str(cmd[0])
+        if not _INTERPRETER_TOKEN_RE.search(token):
+            continue
+        available = Path(token).is_file() and os.access(token, os.X_OK)
+        source = None
+        for name in (".venv", "venv"):
+            if token.startswith(str(repo_path / name) + os.sep):
+                source = name
+                break
+        return {
+            "interpreter": token if available else None,
+            "source": source,
+            "available": available,
+            "unavailable_reason": (
+                None
+                if available
+                else f"configured interpreter '{token}' is missing or not executable"
+            ),
+        }
+    return None
+
+
 def _infer_baseline_checks_for_language(
     repo_path: Path, language_name: str, package_manager: Optional[str] = None
 ) -> List[List[str]]:
@@ -378,22 +475,30 @@ def _infer_baseline_checks_for_language(
             or (repo_path / ".mypy.ini").exists()
             or (repo_path / "pyproject.toml").exists()
         )
+        runtime = infer_python_runtime(repo_path)
 
-        if pkg_mgr == "poetry":
+        if runtime["source"] is not None and not runtime["available"]:
+            # Broken local venv: fail closed BEFORE wrappers — `uv run` can
+            # resolve/install from the network; no silent runtime/deps fix.
+            return commands
+        if runtime["interpreter"] is not None:
+            # Pin the interpreter, not source-import provenance; editable
+            # installs and PYTHONPATH can still change what the checks import.
+            py = [runtime["interpreter"], "-m"]
             if has_tests:
-                commands.append(["poetry", "run", "pytest", "-q"])
+                commands.append(py + ["pytest", "-q"])
             if has_ruff:
-                commands.append(["poetry", "run", "ruff", "check", "."])
+                commands.append(py + ["ruff", "check", "."])
             if has_mypy:
-                commands.append(["poetry", "run", "mypy", "."])
-        elif pkg_mgr == "uv":
-            if has_tests:
-                commands.append(["uv", "run", "pytest", "-q"])
-            if has_ruff:
-                commands.append(["uv", "run", "ruff", "check", "."])
-            if has_mypy:
-                commands.append(["uv", "run", "mypy", "."])
+                commands.append(py + ["mypy", "."])
+        elif pkg_mgr in ("poetry", "uv"):
+            # Wrapper-managed env: inference cannot qualify the runtime
+            # (uv run may install). Operator provides commands explicitly.
+            return commands
         else:
+            # Bounded ceiling: bare host commands when no local venv is
+            # declared and no wrapper manages the env. No runtime-identity
+            # claim; the runtime guard decides these.
             if has_tests:
                 commands.append(["pytest", "-q"])
             if has_ruff:
@@ -572,7 +677,10 @@ def apply_safety_profile(config: RepoConfig) -> RepoConfig:
             {
                 "open_issues_cap": 30,
                 "open_prs_cap": 8,
-                "max_prs_per_run": 3,
+                # Engine safety hard-locks max-prs-per-run to 1-2
+                # (engine/commands/early_exits.py validate_safety); a profile
+                # value of 3 made the generated config fail its own contract.
+                "max_prs_per_run": 2,
                 "max_issues_per_run": 15,
                 "max_files_changed": 8,
                 "max_loc_diff": 350,

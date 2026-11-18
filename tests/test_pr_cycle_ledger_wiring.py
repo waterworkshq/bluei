@@ -12,6 +12,8 @@ real replay/cascade wiring and asserts on ``ctx.ledger_records`` + the pattern
 store — exactly the surfaces this slice changed.
 """
 
+import subprocess
+import sys
 from contextlib import ExitStack, contextmanager
 from decimal import Decimal
 from pathlib import Path
@@ -25,6 +27,36 @@ from bluei.engine.commands.pr_cycle import _process_one_issue, _WorktreeSetup
 from bluei.engine.models import Finding
 from bluei.engine.pattern_store import FixPattern, FixPatternStore, ReplayOutcome
 from bluei.engine.verify import VerificationResult
+
+# Stage1 qualification boundary: an explicit PER_REPO check that really
+# executes (available=True evidence) keeps both validation gates passed AND
+# qualified; an empty check set never qualifies autonomous repair.
+BASELINE_CHECKS = {"baseline": [sys.executable, "-c", "pass"]}
+
+
+def _git_worktree(tmp_path, name="wt", content="except:\n    pass\n", modified=False):
+    """Real git repo standing in for the worktree.
+
+    Stage1 runs a real ``git rev-parse HEAD`` before dispatch and after the
+    fix and a real ``git diff --numstat HEAD``, so worktree fixtures must be
+    actual repositories. With ``modified=True`` the tracked file carries an
+    uncommitted change so the flow passes the no-op check and reaches real
+    patch retention — the acceptance boundary that owns positive HIT,
+    savings and ledger recording."""
+    wt = tmp_path / name
+    (wt / "src").mkdir(parents=True)
+    (wt / "src" / "main.py").write_text(content)
+    for git_args in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "test@bluei.dev"],
+        ["git", "config", "user.name", "Test"],
+        ["git", "add", "."],
+        ["git", "commit", "-qm", "initial"],
+    ):
+        subprocess.run(git_args, cwd=str(wt), check=True, capture_output=True)
+    if modified:
+        (wt / "src" / "main.py").write_text("except Exception:\n    pass\n")
+    return wt
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -118,17 +150,20 @@ def _build_ctx(tmp_path, store, **ctx_overrides):
         worktree_root=tmp_path / "worktrees",
         cost_tracker=_cost_tracker(),
         pattern_store=store,
-        PER_REPO_BASELINE_CHECKS={},
+        PER_REPO_BASELINE_CHECKS=BASELINE_CHECKS,
         **ctx_overrides,
     )
     return ctx
 
 
 @contextmanager
-def _neutralize_post_fix():
-    """Neutralize GitHub/worktree/post-fix phases so the replay block runs and
-    the function returns via the 'verified without changes' path (diff_stats→(0,0)
-    + verify_fix_closed→closed)."""
+def _neutralize_post_fix(worktree_path: Path):
+    """Neutralize GitHub/worktree/post-fix phases around a REAL git worktree.
+
+    Stage1 needs a real repository here (head guard + real diff_stats +
+    real patch retention); the baseline gate runs the real PER_REPO check in
+    it. Dry-replay candidate collection is neutralized — counterfactual
+    evidence is not under test; the standalone/cascade ledger wiring is."""
     with ExitStack() as stack:
         stack.enter_context(
             patch("bluei.engine.commands.pr_cycle._resolve_github", return_value=False)
@@ -137,12 +172,9 @@ def _neutralize_post_fix():
             patch(
                 "bluei.engine.commands.pr_cycle._setup_worktree",
                 return_value=_WorktreeSetup(
-                    worktree_path=Path("/tmp/wt"), worktree_branch="fix/f001"
+                    worktree_path=worktree_path, worktree_branch="fix/f001"
                 ),
             )
-        )
-        stack.enter_context(
-            patch("bluei.engine.commands.pr_cycle.diff_stats", return_value=(0, 0))
         )
         stack.enter_context(
             patch(
@@ -158,6 +190,12 @@ def _neutralize_post_fix():
         stack.enter_context(patch("bluei.engine.commands.pr_cycle.set_issue_status"))
         stack.enter_context(patch("bluei.engine.commands.pr_cycle._append_text"))
         stack.enter_context(patch("bluei.engine.commands.pr_cycle.remove_worktree"))
+        stack.enter_context(
+            patch(
+                "bluei.engine.dry_replay.collect_dry_replay_candidates",
+                return_value=[],
+            )
+        )
         yield
 
 
@@ -194,26 +232,22 @@ def test_standalone_hit_emits_one_ledger_record_and_records_hit(tmp_path):
     assert before is not None
     succ_before = before.success_count
 
-    def _replay_record_hit(**kwargs):
-        # Mimic record_outcome=True semantics: internal three-way recording
-        # is authoritative — a successful replay records its own HIT.
-        if kwargs.get("record_outcome", True):
-            store.record_replay_outcome(pid, ReplayOutcome.HIT)
-        return (True, pid)
-
-    with _neutralize_post_fix():
+    with _neutralize_post_fix(_git_worktree(tmp_path, "wt-hit", modified=True)):
         with (
             patch(
                 "bluei.engine.commands.pr_cycle.try_replay",
-                side_effect=lambda **kw: _replay_record_hit(**kw),
+                return_value=(True, pid),
             ) as mock_replay,
             patch("bluei.engine.lifecycle.apply_cascade_fix") as mock_cascade,
         ):
             _process_one_issue(ctx, 0, issue, finding, {})
 
-    # record_outcome=True passed to standalone try_replay — internal
-    # three-way recording (HIT/MISS/FAILURE per ADR-0004) is authoritative.
+    # Mainline call-site contract: negative outcomes stay recorded per
+    # record_outcome=True, but the positive HIT is deferred (record_success
+    # False) — the acceptance boundary owns it after outer validation,
+    # closure and the retained patch artifact.
     assert mock_replay.call_args.kwargs["record_outcome"] is True
+    assert mock_replay.call_args.kwargs["record_success"] is False
 
     # exactly one ledger record, standalone-replay shape
     assert len(ctx.ledger_records) == 1
@@ -225,7 +259,13 @@ def test_standalone_hit_emits_one_ledger_record_and_records_hit(tmp_path):
     assert rec["finding_id"] == "f001"
     assert rec["cycle"] == "pr-cycle"
 
-    # HIT recorded exactly once on the pattern store (success_count +1, verified stamp)
+    # The retained artifact backs the positive record: a real local-fix
+    # patch exists for this issue before the HIT was counted.
+    assert Path(issue["verified_fix_patch"]).exists()
+    assert ctx.cost_tracker.record_pattern_replay_savings.call_count == 1
+
+    # HIT recorded exactly once on the pattern store (success_count +1,
+    # verified stamp) — only the acceptance block records it.
     pattern = store.get_pattern(pid)
     assert pattern is not None
     assert pattern.success_count == succ_before + 1
@@ -249,7 +289,7 @@ def test_standalone_hit_short_circuits_cascade_one_record_total(tmp_path):
         "rule": "broad-except",
     }
 
-    with _neutralize_post_fix():
+    with _neutralize_post_fix(_git_worktree(tmp_path, "wt-short", modified=True)):
         with (
             patch(
                 "bluei.engine.commands.pr_cycle.try_replay", return_value=(True, pid)
@@ -260,7 +300,7 @@ def test_standalone_hit_short_circuits_cascade_one_record_total(tmp_path):
 
     # cascade never runs — the `if not replay_succeeded` short-circuit
     mock_cascade.assert_not_called()
-    # exactly one record for this Finding
+    # exactly one record for this Finding (accepted standalone HIT)
     assert len(ctx.ledger_records) == 1
     assert ctx.ledger_records[0]["via"] == "standalone-replay"
 
@@ -318,7 +358,7 @@ def test_standalone_miss_defers_to_cascade_exactly_once(tmp_path):
             store.record_replay_outcome(pid, ReplayOutcome.MISS)
         return (False, None)
 
-    with _neutralize_post_fix():
+    with _neutralize_post_fix(_git_worktree(tmp_path, "wt-miss")):
         with (
             patch(
                 "bluei.engine.commands.pr_cycle.try_replay",
@@ -332,7 +372,9 @@ def test_standalone_miss_defers_to_cascade_exactly_once(tmp_path):
             _process_one_issue(ctx, 0, issue, finding, {})
 
     # standalone used internal three-way recording with record_outcome=True
+    # (MISS recording is not gated by record_success — only positives are)
     assert mock_replay.call_args.kwargs["record_outcome"] is True
+    assert mock_replay.call_args.kwargs["record_success"] is False
 
     # cascade received the shared accumulator + ledger_path + cycle
     call_kwargs = mock_cascade.call_args.kwargs
@@ -404,7 +446,7 @@ def test_standalone_fail_then_cascade_records_exactly_once_on_store(tmp_path):
         )
         return True
 
-    with _neutralize_post_fix():
+    with _neutralize_post_fix(_git_worktree(tmp_path, "wt-failthen")):
         with (
             patch(
                 "bluei.engine.commands.pr_cycle.try_replay", return_value=(False, None)
@@ -455,7 +497,7 @@ def test_standalone_and_cascade_record_shapes_are_field_identical(tmp_path):
         "timestamp": "2026-06-26T00:00:00+00:00",
     }
 
-    with _neutralize_post_fix():
+    with _neutralize_post_fix(_git_worktree(tmp_path, "wt-shape", modified=True)):
         with (
             patch(
                 "bluei.engine.commands.pr_cycle.try_replay", return_value=(True, pid)
@@ -489,21 +531,23 @@ def test_standalone_hit_record_carries_measured_latency(tmp_path):
     }
 
     # Warm the resolver cache so the governance gate's _resolve_pattern (run
-    # before the timed replay) is a cache hit consuming exactly ONE
-    # time.monotonic call. pr_cycle.time IS the global time module, so the
-    # patch below sees every monotonic call in the flow.
+    # before the timed replay) resolves from cache. Only pr_cycle.time is
+    # faked (the replay t0/latency pair); pattern_replay keeps the real
+    # clock, so no other in-flow call can consume the side effects.
     _pr._clear_pattern_cache()
     _pr._resolve_pattern(finding, store, tmp_path / "warmup.log")
 
-    with _neutralize_post_fix():
+    with _neutralize_post_fix(_git_worktree(tmp_path, "wt-latency", modified=True)):
         with (
             patch(
                 "bluei.engine.commands.pr_cycle.try_replay", return_value=(True, pid)
             ),
             patch("bluei.engine.lifecycle.apply_cascade_fix"),
             patch(
-                "bluei.engine.commands.pr_cycle.time.monotonic",
-                side_effect=[100.0, 100.0, 100.25],
+                "bluei.engine.commands.pr_cycle.time",
+                new=SimpleNamespace(
+                    monotonic=MagicMock(side_effect=[100.0, 100.25])
+                ),
             ),
         ):
             _process_one_issue(ctx, 0, issue, finding, {})
@@ -534,7 +578,7 @@ def test_resolve_failure_fails_closed_skips_standalone_replay(tmp_path):
         "rule": "broad-except",
     }
 
-    with _neutralize_post_fix():
+    with _neutralize_post_fix(_git_worktree(tmp_path, "wt-resolvefail")):
         with (
             # pr_cycle imports _resolve_pattern function-locally from
             # pattern_replay — patch the source-module attribute.
@@ -584,7 +628,7 @@ def test_governance_skip_excludes_unattempted_candidate_from_cascade_set(tmp_pat
         "rule": "broad-except",
     }
 
-    with _neutralize_post_fix():
+    with _neutralize_post_fix(_git_worktree(tmp_path, "wt-govskip")):
         with (
             patch("bluei.engine.commands.pr_cycle.try_replay") as mock_replay,
             patch(

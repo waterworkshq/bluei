@@ -477,9 +477,11 @@ def test_bluei_campaign_run_allow_mutate_applies_autofix_in_clean_worktree(tmp_p
     state_dir = repos_dir / "demo" / "state"
     state_dir.mkdir(parents=True)
     worktree = tmp_path / "worktree"
-    src_dir = worktree / "src"
-    src_dir.mkdir(parents=True)
-    target = src_dir / "app.py"
+    worktree.mkdir()
+    # price.py is a configured string-detector input: only then does the
+    # repository-scope rescan actually produce closure evidence for the
+    # trailing-whitespace rule (an unconfigured path is unverifiable).
+    target = worktree / "price.py"
     target.write_text("value = 1  \n", encoding="utf-8")
     subprocess.run(["git", "init"], cwd=worktree, text=True, capture_output=True, check=True)
     subprocess.run(
@@ -496,7 +498,7 @@ def test_bluei_campaign_run_allow_mutate_applies_autofix_in_clean_worktree(tmp_p
         capture_output=True,
         check=True,
     )
-    subprocess.run(["git", "add", "src/app.py"], cwd=worktree, text=True, capture_output=True, check=True)
+    subprocess.run(["git", "add", "price.py"], cwd=worktree, text=True, capture_output=True, check=True)
     subprocess.run(
         ["git", "commit", "-m", "initial"],
         cwd=worktree,
@@ -504,12 +506,24 @@ def test_bluei_campaign_run_allow_mutate_applies_autofix_in_clean_worktree(tmp_p
         capture_output=True,
         check=True,
     )
+    # Qualified registered route: a mutating campaign needs configured,
+    # meaningful baseline checks (AST parse of the target — no artifacts
+    # written into the worktree, passes before and after the fix).
+    (repos_dir / "demo" / "config.yaml").write_text(
+        "id: demo\n"
+        "name: demo\n"
+        f"path: {worktree}\n"
+        "language: python\n"
+        "baseline_checks:\n"
+        f"  - [{sys.executable}, -c, \"import ast; ast.parse(open('price.py').read())\"]\n",
+        encoding="utf-8",
+    )
     (state_dir / "findings.jsonl").write_text(
         json.dumps(
             {
                 "finding_id": "f-1",
                 "repo": "demo",
-                "path": "src/app.py",
+                "path": "price.py",
                 "line": 1,
                 "rule": "trailing-whitespace",
                 "snippet": "value = 1  ",
@@ -532,7 +546,7 @@ def test_bluei_campaign_run_allow_mutate_applies_autofix_in_clean_worktree(tmp_p
             "--rules",
             "trailing-whitespace",
             "--paths",
-            "src/**",
+            "price.py",
             "--state-root",
             str(repos_dir),
             "--save",

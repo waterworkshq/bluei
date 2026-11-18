@@ -11,6 +11,8 @@ from bluei.engine.commands.parse_args import (
     parse_args,
     resolve_baseline_checks,
 )
+from bluei.engine.constants import clear_validation_config_cache
+from bluei.engine.validation import RC_UNAVAILABLE, run_named_checks
 
 
 def _parse(args_list):
@@ -68,7 +70,7 @@ class TestParseArgsDefaults:
 
     def test_batch_pr_enabled_default(self):
         args = _parse([])
-        assert args.batch_pr_enabled is True
+        assert args.batch_pr_enabled is False
 
     def test_no_batch_pr_flag(self):
         args = _parse(["--no-batch-pr"])
@@ -84,17 +86,60 @@ class TestResolveBaselineChecks:
             "baseline-1": ["npm", "run", "build"],
         }
 
-    def test_empty_commands_filtered(self):
-        args = _parse(["--baseline-checks", '[["npm","test"],[],["make"]]'])
-        result = resolve_baseline_checks(args)
-        assert "baseline-1" not in result
-        assert len(result) == 2
-
-    def test_invalid_json_returns_defaults(self):
+    def test_malformed_json_returns_invalid_sentinel(self):
+        # An operator typo is preserved as unavailable evidence; no silent
+        # fallback to a different workspace configuration.
         args = _parse(["--baseline-checks", "not-json"])
-        result = resolve_baseline_checks(args)
-        assert isinstance(result, dict)
-        assert len(result) > 0
+        assert resolve_baseline_checks(args) == {"baseline-invalid": []}
+
+    def test_non_list_json_returns_invalid_sentinel(self):
+        args = _parse(["--baseline-checks", '{"baseline-0": ["make"]}'])
+        assert resolve_baseline_checks(args) == {"baseline-invalid": []}
+
+    def test_malformed_json_does_not_consult_workspace_config(self):
+        with patch(
+            "bluei.engine.commands.parse_args.load_validation_config",
+            return_value={
+                "baseline_validation_checks": {"cfg-0": ["make", "check"]}
+            },
+        ) as mock_cfg:
+            args = _parse(["--baseline-checks", "not-json"])
+            assert resolve_baseline_checks(args) == {"baseline-invalid": []}
+            mock_cfg.assert_not_called()
+
+    def test_empty_list_uses_workspace_config_default_empty(self):
+        # A02 control: explicit empty list defers to workspace config, which
+        # is {} for an ordinary repo without config.yaml (no sandbox fallback).
+        clear_validation_config_cache()
+        args = _parse(["--baseline-checks", "[]"])
+        assert resolve_baseline_checks(args) == {}
+
+    def test_empty_list_uses_explicit_workspace_config(self):
+        with patch(
+            "bluei.engine.commands.parse_args.load_validation_config",
+            return_value={
+                "baseline_validation_checks": {"cfg-0": ["make", "check"]}
+            },
+        ):
+            args = _parse(["--baseline-checks", "[]"])
+            assert resolve_baseline_checks(args) == {"cfg-0": ["make", "check"]}
+
+    def test_mixed_entries_all_retained_and_unqualified_when_run(self, tmp_path):
+        # Every entry is preserved — including None/[] — so the trust
+        # boundary (not the parser) rejects them as unavailable evidence.
+        args = _parse(
+            ["--baseline-checks", '[["true"], null, []]'],
+        )
+        resolved = resolve_baseline_checks(args)
+        assert resolved == {"baseline-0": ["true"], "baseline-1": None, "baseline-2": []}
+        log = tmp_path / "resolve-run.log"
+        results = run_named_checks(tmp_path, resolved, log, "baseline")
+        assert results["baseline-0"]["available"] is True
+        assert results["baseline-0"]["rc"] == 0
+        for bad in ("baseline-1", "baseline-2"):
+            assert results[bad]["available"] is False
+            assert results[bad]["unavailable_reason"] == "invalid-argv"
+            assert results[bad]["rc"] == RC_UNAVAILABLE
 
 
 class TestNormalizeRunPhase:

@@ -249,7 +249,10 @@ def test_explicit_template_override(onboard_env):
     assert loaded.config.meta["onboarding_version"] == 2
 
 
-def test_python_baseline_checks_respect_poetry(onboard_env):
+def test_poetry_wrapper_not_inferred_without_local_venv(onboard_env):
+    """Wrapper-managed envs are explicitly unsupported: inference cannot
+    qualify the poetry runtime, so no python commands (and no plugin
+    manifest fallback) are inferred — the operator provides them."""
     repo = onboard_env["repo_path"]
     (repo / "pyproject.toml").write_text(
         '[tool.poetry]\nname = "demo"\nversion = "0.1.0"\n'
@@ -258,7 +261,7 @@ def test_python_baseline_checks_respect_poetry(onboard_env):
     (repo / "tests").mkdir()
     language = onboard_env["engine"].detect_language(repo)
     checks = onboard_env["engine"].infer_baseline_checks(repo, language)
-    assert ["poetry", "run", "pytest", "-q"] in checks
+    assert checks == []
 
 
 def test_safety_policy_inference_and_profile(onboard_env):
@@ -278,7 +281,10 @@ def test_safety_policy_inference_and_profile(onboard_env):
     assert config.safety["profile"] == "aggressive"
     assert config.github["live_actions"] is True
     assert config.github["auto_merge"] is False
-    assert config.limits["max_prs_per_run"] >= 3
+    # Engine safety hard-locks max-prs-per-run to 1-2
+    # (engine/commands/early_exits.py validate_safety); even the aggressive
+    # profile must stay inside that contract (A08).
+    assert config.limits["max_prs_per_run"] == 2
     assert config.safety["allow_live_on_dirty_tree"] is True
 
 
@@ -583,16 +589,13 @@ def test_build_system_checks_merged_with_language_checks(onboard_env):
     from bluei.app.models import LanguageInfo
 
     repo = onboard_env["repo_path"]
-    (repo / "pyproject.toml").write_text(
-        '[tool.poetry]\nname = "demo"\nversion = "0.1.0"\n'
-    )
-    (repo / "poetry.lock").write_text("# lock\n")
+    (repo / "pyproject.toml").write_text('[project]\nname = "demo"\n')
     (repo / "tests").mkdir()
     (repo / "Makefile").write_text("test:\n\tpytest -q\nlint:\n\truff check .\n")
     language = LanguageInfo(name="python")
     checks = onboard_env["engine"].infer_baseline_checks(repo, language)
-    # Poetry-detected
-    assert ["poetry", "run", "pytest", "-q"] in checks
+    # Language-inferred (bare host, no venv/wrapper declared)
+    assert ["pytest", "-q"] in checks
     # Makefile-detected
     assert ["make", "test"] in checks
     assert ["make", "lint"] in checks
@@ -1569,3 +1572,346 @@ def test_upgrade_config_preserves_safety_policy(onboard_env):
     post = onboard_env["registry"].read("safety-preserved").config.safety
     assert post["mode"] == pre["mode"]
     assert post["profile"] == pre["profile"]
+
+
+# ── A08: local venv runtime inference (explicit interpreter, no guessing) ──
+
+
+def _make_stub_venv(repo_path, name=".venv"):
+    """Create a fake executable local venv interpreter.
+
+    Inference only stats the file (existence + X_OK); it is never executed.
+    """
+    bin_dir = repo_path / name / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    py = bin_dir / "python"
+    py.write_text("#!/bin/sh\nexit 0\n")
+    py.chmod(0o755)
+    return py
+
+
+def test_infer_uses_local_venv_interpreter(onboard_env):
+    """A qualified local .venv yields explicit absolute ``-m`` commands."""
+    repo = onboard_env["repo_path"]
+    (repo / "main.py").write_text("x = 1\n")
+    (repo / "tests").mkdir()
+    py = _make_stub_venv(repo)
+
+    language = onboard_env["engine"].detect_language(repo)
+    checks = onboard_env["engine"].infer_baseline_checks(repo, language)
+
+    assert [str(py), "-m", "pytest", "-q"] in checks
+    assert not any(cmd[:1] == ["pytest"] for cmd in checks)
+
+
+def test_generate_config_records_python_runtime_provenance(onboard_env):
+    """meta carries plain runtime provenance when a venv directory exists."""
+    repo = onboard_env["repo_path"]
+    (repo / "main.py").write_text("x = 1\n")
+    (repo / "tests").mkdir()
+    py = _make_stub_venv(repo)
+
+    language = onboard_env["engine"].detect_language(repo)
+    config = onboard_env["engine"].generate_config(
+        repo, "venv-repo", language, None, "plugin-python"
+    )
+
+    assert config.meta["python_runtime"] == {
+        "interpreter": str(py),
+        "source": ".venv",
+        "available": True,
+        "unavailable_reason": None,
+    }
+    assert [str(py), "-m", "pytest", "-q"] in config.baseline_checks
+
+
+def test_infer_prefers_venv_over_poetry_wrapper(onboard_env):
+    """An available local interpreter outranks the poetry wrapper case."""
+    repo = onboard_env["repo_path"]
+    (repo / "pyproject.toml").write_text('[tool.poetry]\nname = "d"\n')
+    (repo / "poetry.lock").write_text("# lock")
+    (repo / "tests").mkdir()
+    _make_stub_venv(repo)
+
+    language = onboard_env["engine"].detect_language(repo)
+    checks = onboard_env["engine"].infer_baseline_checks(repo, language)
+
+    assert ["poetry", "run", "pytest", "-q"] not in checks
+    assert any(
+        c[0].endswith("/.venv/bin/python") and c[1] == "-m" for c in checks
+    )
+
+
+def test_uv_wrapper_not_inferred_without_local_venv(onboard_env):
+    """uv-managed envs are never inferred (uv run may install from the
+    network); no python commands and no plugin manifest fallback."""
+    repo = onboard_env["repo_path"]
+    (repo / "pyproject.toml").write_text('[project]\nname = "d"\n')
+    (repo / "uv.lock").write_text("# lock")
+    (repo / "tests").mkdir()
+
+    language = onboard_env["engine"].detect_language(repo)
+    checks = onboard_env["engine"].infer_baseline_checks(repo, language)
+
+    assert checks == []
+
+
+def test_broken_venv_fails_closed_without_host_fallthrough(onboard_env):
+    """A venv directory without a usable interpreter yields NO python
+    commands — no bare host commands and no plugin-manifest fallback."""
+    repo = onboard_env["repo_path"]
+    (repo / "main.py").write_text("x = 1\n")
+    (repo / "tests").mkdir()
+    (repo / ".venv" / "bin").mkdir(parents=True)  # venv dir, no python
+
+    language = onboard_env["engine"].detect_language(repo)
+    checks = onboard_env["engine"].infer_baseline_checks(repo, language)
+
+    assert checks == []
+
+
+def test_broken_venv_provenance_and_review_warning(onboard_env):
+    """Broken venv is recorded in meta and surfaced as a warn review item."""
+    repo = onboard_env["repo_path"]
+    (repo / "main.py").write_text("x = 1\n")
+    (repo / "tests").mkdir()
+    (repo / ".venv" / "bin").mkdir(parents=True)
+
+    language = onboard_env["engine"].detect_language(repo)
+    config = onboard_env["engine"].generate_config(
+        repo, "broken-venv", language, None, "plugin-python"
+    )
+
+    runtime = config.meta["python_runtime"]
+    assert runtime["source"] == ".venv"
+    assert runtime["available"] is False
+    assert runtime["interpreter"] is None
+    assert runtime["unavailable_reason"]
+
+    items = onboard_env["engine"].build_review_items(repo, language, config)
+    assert any(
+        i.severity == "warn" and i.category == "tool" and ".venv" in i.message
+        for i in items
+    )
+
+
+def test_broken_venv_blocks_wrapper_commands(onboard_env):
+    """A broken local venv fails closed BEFORE wrappers: `uv run`/wrapper
+    commands are not inferred (no implicit install or runtime fix)."""
+    repo = onboard_env["repo_path"]
+    (repo / "pyproject.toml").write_text('[tool.poetry]\nname = "d"\n')
+    (repo / "poetry.lock").write_text("# lock")
+    (repo / "tests").mkdir()
+    (repo / ".venv" / "bin").mkdir(parents=True)
+
+    language = onboard_env["engine"].detect_language(repo)
+    checks = onboard_env["engine"].infer_baseline_checks(repo, language)
+
+    assert checks == []
+
+
+def test_preflight_runs_same_commands_as_generated_config(onboard_env, monkeypatch):
+    """One derivation: preflight's actual validation commands must be exactly
+    the inferred checks that land in config.baseline_checks."""
+    import bluei.app.preflight as preflight_mod
+
+    repo = onboard_env["repo_path"]
+    (repo / "main.py").write_text("x = 1\n")
+    (repo / "tests").mkdir()
+    _make_stub_venv(repo)
+
+    language = onboard_env["engine"].detect_language(repo)
+    config = onboard_env["engine"].generate_config(
+        repo, "preflight-consistency", language, None, "plugin-python"
+    )
+
+    captured = []
+
+    class FakeCompleted:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured.append(list(cmd))
+        return FakeCompleted()
+
+    monkeypatch.setattr(preflight_mod.subprocess, "run", fake_run)
+    result = preflight_mod.run_preflight(repo, run_validation=True)
+
+    assert captured == [list(c) for c in config.baseline_checks]
+    assert [list(vc.command) for vc in result.validation_checks] == [
+        list(c) for c in config.baseline_checks
+    ]
+
+
+# ── A08: upgrade preserves operator-owned config verbatim ───────
+
+
+def test_upgrade_config_preserves_operator_fields_and_limits(onboard_env):
+    """Regeneration must not clobber operator checks/limits/cooldowns/
+    templates/github, must not re-enable live actions, and keeps the id."""
+    import yaml
+    from bluei.app.models import ONBOARDING_VERSION
+
+    repo = onboard_env["repo_path"]
+    (repo / "test.txt").write_text("test")
+    onboard_env["engine"].onboard(
+        repo,
+        OnboardOptions(
+            name="op-repo",
+            language="test",
+            mode="pr",
+            profile="balanced",
+            capture_baseline=False,
+            skip_preflight=True,
+        ),
+    )
+    pre_id = onboard_env["registry"].read("op-repo").config.id
+
+    config_path = onboard_env["config"].get_repo_config_path("op-repo")
+    data = yaml.safe_load(config_path.read_text())
+    data["baseline_checks"] = [["/opt/private/validate.sh", "--strict"]]
+    data["limits"] = {
+        "open_issues_cap": 11,
+        "open_prs_cap": 3,
+        "max_prs_per_run": 1,
+        "max_issues_per_run": 4,
+        "max_files_changed": 2,
+        "max_loc_diff": 50,
+        "max_fix_attempts": 1,
+    }
+    data["cooldowns"] = {"finding_seconds": 100, "merge_minutes": 5, "staleness_seconds": 60}
+    # Operator keeps live actions off even though safety.mode is "pr".
+    data["github"] = {"live_actions": False, "auto_merge": False}
+    data["claude_template"] = "claude --model opus {prompt_file}"
+    data["rule_pack"] = "operator-pack"
+    data["meta"]["onboarding_version"] = 1
+    config_path.write_text(yaml.dump(data, default_flow_style=False))
+
+    onboard_env["engine"].upgrade_config("op-repo")
+
+    cfg = onboard_env["registry"].read("op-repo").config
+    assert cfg.baseline_checks == [["/opt/private/validate.sh", "--strict"]]
+    assert cfg.limits["max_prs_per_run"] == 1
+    assert cfg.limits["open_issues_cap"] == 11
+    assert cfg.cooldowns == {"finding_seconds": 100, "merge_minutes": 5, "staleness_seconds": 60}
+    assert cfg.github["live_actions"] is False
+    assert cfg.github["auto_merge"] is False
+    assert cfg.claude_template == "claude --model opus {prompt_file}"
+    assert cfg.rule_pack == "operator-pack"
+    assert cfg.safety["mode"] == "pr"
+    assert cfg.id == pre_id
+    assert cfg.meta["onboarding_version"] == ONBOARDING_VERSION
+    assert cfg.meta["upgraded_from"] == 1
+
+
+def test_upgrade_merges_operator_meta_and_reflects_actual_runtime(onboard_env):
+    """Operator meta keys merge over regenerated provenance, and runtime
+    meta reflects the ACTUAL preserved baseline's first interpreter."""
+    import yaml
+    from bluei.app.models import ONBOARDING_VERSION
+
+    repo = onboard_env["repo_path"]
+    (repo / "main.py").write_text("x = 1\n")
+    (repo / "tests").mkdir()
+    py = _make_stub_venv(repo)
+
+    onboard_env["engine"].onboard(
+        repo,
+        OnboardOptions(name="meta-merge", language="test", capture_baseline=False,
+                       skip_preflight=True),
+    )
+
+    config_path = onboard_env["config"].get_repo_config_path("meta-merge")
+    data = yaml.safe_load(config_path.read_text())
+    data["baseline_checks"] = [[str(py), "-m", "pytest", "-q"]]
+    data.setdefault("meta", {})["onboarding_version"] = 1
+    data["meta"]["team"] = "platform"
+    config_path.write_text(yaml.dump(data, default_flow_style=False))
+
+    onboard_env["engine"].upgrade_config("meta-merge")
+
+    cfg = onboard_env["registry"].read("meta-merge").config
+    assert cfg.baseline_checks == [[str(py), "-m", "pytest", "-q"]]
+    assert cfg.meta["python_runtime"] == {
+        "interpreter": str(py),
+        "source": ".venv",
+        "available": True,
+        "unavailable_reason": None,
+    }
+    assert cfg.meta["team"] == "platform"
+    assert cfg.meta["onboarding_version"] == ONBOARDING_VERSION
+    assert cfg.meta["upgraded_from"] == 1
+
+
+def test_upgrade_bare_operator_checks_make_no_runtime_claim(onboard_env):
+    """A locally known venv must not be claimed for preserved bare checks;
+    the runtime guard decides bare commands instead."""
+    import yaml
+
+    repo = onboard_env["repo_path"]
+    (repo / "main.py").write_text("x = 1\n")
+    (repo / "tests").mkdir()
+    _make_stub_venv(repo)  # fresh inference alone would claim this venv
+
+    onboard_env["engine"].onboard(
+        repo,
+        OnboardOptions(name="bare-keep", language="test", capture_baseline=False,
+                       skip_preflight=True),
+    )
+
+    config_path = onboard_env["config"].get_repo_config_path("bare-keep")
+    data = yaml.safe_load(config_path.read_text())
+    data["baseline_checks"] = [["pytest", "-q"]]
+    data.setdefault("meta", {})["onboarding_version"] = 1
+    config_path.write_text(yaml.dump(data, default_flow_style=False))
+
+    onboard_env["engine"].upgrade_config("bare-keep")
+
+    cfg = onboard_env["registry"].read("bare-keep").config
+    assert cfg.baseline_checks == [["pytest", "-q"]]
+    assert "python_runtime" not in cfg.meta
+
+
+def test_upgrade_preserves_operator_cap_above_engine_hardcap(onboard_env):
+    """An operator max_prs_per_run=3 survives verbatim; the engine run gate
+    reports the invalid override — upgrade never silently corrects it."""
+    import yaml
+
+    repo = onboard_env["repo_path"]
+    (repo / "test.txt").write_text("test")
+    onboard_env["engine"].onboard(
+        repo,
+        OnboardOptions(name="cap-keep", language="test", capture_baseline=False,
+                       skip_preflight=True),
+    )
+
+    config_path = onboard_env["config"].get_repo_config_path("cap-keep")
+    data = yaml.safe_load(config_path.read_text())
+    data["limits"] = dict(data["limits"], max_prs_per_run=3)
+    data.setdefault("meta", {})["onboarding_version"] = 1
+    config_path.write_text(yaml.dump(data, default_flow_style=False))
+
+    onboard_env["engine"].upgrade_config("cap-keep")
+
+    cfg = onboard_env["registry"].read("cap-keep").config
+    assert cfg.limits["max_prs_per_run"] == 3
+
+
+def test_upgrade_noop_leaves_current_config_untouched(onboard_env):
+    """Version-current configs are not migrated or rewritten; upgrade does
+    not force a regeneration by bumping anything unrequested."""
+    repo = onboard_env["repo_path"]
+    (repo / "test.txt").write_text("test")
+    onboard_env["engine"].onboard(
+        repo,
+        OnboardOptions(name="current-repo", language="test", capture_baseline=False,
+                       skip_preflight=True),
+    )
+    config_path = onboard_env["config"].get_repo_config_path("current-repo")
+    before = config_path.read_text()
+
+    result = onboard_env["engine"].upgrade_config("current-repo")
+
+    assert result["upgraded"] is False
+    assert config_path.read_text() == before

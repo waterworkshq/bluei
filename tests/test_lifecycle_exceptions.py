@@ -186,9 +186,10 @@ class TestDiffStatsErrorPaths:
     def test_no_git_repo(self, tmp_path):
         non_repo = tmp_path / "not-a-repo"
         non_repo.mkdir()
-        files, loc = diff_stats(non_repo)
-        assert files == 0
-        assert loc == 0
+        # Fail-closed contract: an uninspectable candidate raises instead of
+        # reporting a false (0, 0).
+        with pytest.raises(ValueError, match="inspected"):
+            diff_stats(non_repo)
 
 
 class TestBuildTargetChecks:

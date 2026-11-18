@@ -61,6 +61,19 @@ def run_issue_creation_phase(*args, **kwargs) -> IssueCreationResult:
     for routed_item in refactor_routed_items:
         finding = routed_item["finding"]
         existing_issue = find_issue_for_finding(issues_data, finding.finding_id)
+        if existing_issue is None:
+            # The cap gates new admissions only; refreshing refactor
+            # metadata on an existing issue is never blocked.
+            ok, reason = guard_open_issues(
+                count_actionable_issues(issues_data), args.open_issues_cap
+            )
+            if not ok:
+                blocked_reasons.append(reason)
+                _append_text(
+                    log_file,
+                    f"refactor-admission-blocked: finding={finding.finding_id} {reason}",
+                )
+                continue
         issue = ensure_issue_for_finding(
             issues_data=issues_data,
             finding=finding,
@@ -143,11 +156,12 @@ def run_issue_creation_phase(*args, **kwargs) -> IssueCreationResult:
             reopened += 1
             open_issues += 1
 
-    actionable_issue_count = count_actionable_issues({"issues": [
-        issue for issue in issues_data.get("issues", []) if issue.get("status") != "closed"
-    ]})
-
     for _ in range(args.max_issues_per_run - reopened):
+        # Recomputed per batch: create_issues_for_findings appends into
+        # issues_data in place, so this count reflects prior admissions.
+        actionable_issue_count = count_actionable_issues({"issues": [
+            issue for issue in issues_data.get("issues", []) if issue.get("status") != "closed"
+        ]})
         ok, reason = guard_open_issues(actionable_issue_count, args.open_issues_cap)
         _append_text(log_file, reason)
         if not ok:

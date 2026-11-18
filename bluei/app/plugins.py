@@ -176,6 +176,21 @@ class ToolWrapperPlugin(DiscoveryPlugin):
                         _validate_markdownlint_output(parsed)
                     elif not isinstance(parsed, list):
                         raise ValueError("expected JSON array")
+                elif tool == "xo":
+                    parsed = json.loads(output)
+                    if not isinstance(parsed, list):
+                        raise ValueError("expected XO JSON array")
+                    for record in parsed:
+                        if (not isinstance(record, dict) or not isinstance(record.get("filePath"), str)
+                                or not record["filePath"] or not isinstance(record.get("messages"), list)):
+                            raise ValueError("invalid XO file result")
+                        for message in record["messages"]:
+                            if (not isinstance(message, dict) or not isinstance(message.get("ruleId"), str)
+                                    or not message["ruleId"].strip() or not isinstance(message.get("message"), str)
+                                    or type(message.get("line")) is not int or message["line"] < 1):
+                                raise ValueError("invalid XO diagnostic")
+                    if result.returncode == 1 and not any(record["messages"] for record in parsed):
+                        raise ValueError("XO failure without diagnostics")
                 elif tool in ("staticcheck", "cargo"):
                     for line in result.stdout.splitlines():
                         if line.strip() and not isinstance(json.loads(line), dict):

@@ -130,6 +130,9 @@ class RunOptions:
     discovery_scope: str = "repository"
     finding_id: Optional[str] = None
     no_learning: bool = False
+    batch_pr_enabled: bool = False
+    max_queue_items: Optional[int] = None
+    approve_refactor_item: Optional[str] = None
 
 
 @dataclass
@@ -354,7 +357,7 @@ class RunEngine:
             str(config.cooldowns.get("staleness_seconds", 7200)),
             # Fix engine
             "--fix-engine",
-            str(backend["logical_backend"] if options.finding_id is not None else backend["runner_engine"]),
+            str(backend["logical_backend"]),
         ]
 
         # Dry run
@@ -373,6 +376,16 @@ class RunEngine:
             args.extend(["--finding-id", options.finding_id])
         if options.no_learning or options.finding_id is not None:
             args.append("--no-learning")
+        if options.batch_pr_enabled:
+            args.append("--batch-pr-enabled")
+        if options.max_queue_items is not None:
+            if isinstance(options.max_queue_items, bool) or options.max_queue_items < 1:
+                raise ValueError("max queue items must be a positive integer")
+            args.extend(["--max-queue-items", str(options.max_queue_items)])
+        if options.approve_refactor_item is not None:
+            if options.phase != "refactor-cycle" or not options.approve_refactor_item.strip():
+                raise ValueError("refactor approval requires refactor-cycle and an item ID")
+            args.extend(["--approve-refactor-item", options.approve_refactor_item])
 
         # Scoped runs never publish or merge.
         if config.github.get("live_actions", False) and options.discovery_scope == "repository":
@@ -750,7 +763,7 @@ class RunEngine:
                 if result.returncode == 0
                 else None
             )
-            scanning_phase = options.phase in {"issue-cycle", "orchestrated", "verify-only", "detect-only", "e2e"}
+            scanning_phase = options.phase in {"issue-cycle", "orchestrated", "verify-only", "detect-only", "e2e", "refactor-cycle"}
             detector_outcomes = completed_metrics.get("detector_outcomes", {}) if completed_metrics else {}
             detector_statuses = [record.get("status") for record in detector_outcomes.values()
                                  if isinstance(record, dict)]

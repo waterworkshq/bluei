@@ -32,6 +32,32 @@ except ImportError:
     PhaseStatus = None
 
 
+def _load_campaign_check_source(config_manager, repo: str):
+    """Load the registered baseline checks and limits for a mutating run.
+
+    Registered repo config only — no inference, no samples (Stage 3 A10:
+    a mutating run without these is refused as unqualified downstream).
+    The registered ``limits`` propagate to the executor's scope caps;
+    absent entries fall back to the explicit product defaults only.
+
+    Returns:
+        Tuple (named checks dict, source repo path or None, limits dict).
+    """
+    try:
+        repo_config = config_manager.load_repo_config(repo)
+    except Exception:
+        repo_config = None
+    if repo_config is None:
+        return {}, None, {}
+    checks = {
+        f"baseline-{index}": list(command)
+        for index, command in enumerate(repo_config.baseline_checks or [])
+        if command
+    }
+    source = Path(repo_config.path) if repo_config.path else None
+    return checks, source, dict(getattr(repo_config, "limits", None) or {})
+
+
 def _cmd_campaign(rest: list[str]) -> int:
     """Handle campaign planning commands."""
     if not rest or rest[0] in ("-h", "--help"):
@@ -70,7 +96,13 @@ def _cmd_campaign(rest: list[str]) -> int:
     from bluei.app.state import StateManager
 
     state_root = _parse_option(sub_rest, "--state-root")
-    repos_dir = Path(state_root) if state_root else ConfigManager().repos_dir
+    # The registered check source must follow --state-root too: with an
+    # explicit repos root the effective workspace is its parent (standard
+    # layout <workspace>/repos/<repo>/config.yaml).
+    config_manager = ConfigManager(
+        workspace=Path(state_root).parent if state_root else None
+    )
+    repos_dir = Path(state_root) if state_root else config_manager.repos_dir
     state = StateManager(repos_dir)
     campaign_store = CampaignStateManager(state.get_campaigns_dir(repo))
 
@@ -158,11 +190,26 @@ def _cmd_campaign(rest: list[str]) -> int:
             pass
         try:
             if allow_mutate:
+                # A03/A10: registered repo config is the actual check source
+                # for a mutating run (no inference, no samples). An empty or
+                # unregistered check set leaves the executor to refuse the
+                # run as unqualified before any file effect.
+                baseline_checks, source_repo, registered_limits = (
+                    _load_campaign_check_source(config_manager, repo)
+                )
                 result = CampaignExecutor(
                     campaign_store,
                     fix_runner=autofix_fix_runner,
                     pattern_store_path=_psp,
                     emergent_evidence_consumer=_emergent_consumer,
+                    baseline_checks=baseline_checks,
+                    source_repo=source_repo,
+                    # F2: registered limits are the real caps — the defaults
+                    # are explicit fallbacks for absent entries only.
+                    max_files_changed=int(
+                        registered_limits.get("max_files_changed", 5)
+                    ),
+                    max_loc_diff=int(registered_limits.get("max_loc_diff", 200)),
                 ).run(
                     campaign_id,
                     dry_run=False,

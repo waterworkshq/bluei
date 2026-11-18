@@ -28,6 +28,8 @@ version: '1.0'
 | `offer-fixes` | Yes | Yes | No | Issues and PRs, no auto-merge. |
 | `full-care` | Yes | Yes | Yes | Full autonomy. |
 
+Enforcement fails closed: a missing, empty, or invalid policy — including an absent, non-string, or unrecognized mode — blocks mutating pushes (including pushes that would update an existing PR's head branch), PR creation, and PR merges. Canonical (`observe`, `issue-only`, `pr`, `merge`), brand (`watch-only`, `note only`, `offer fixes`, `full care`), and underscore spellings of a care level are equivalent.
+
 ## Care Profiles
 
 | Profile | Description |
@@ -35,6 +37,8 @@ version: '1.0'
 | `conservative` | Minimal changes. Small file sets, low diff limits. Prefer safe fixes. |
 | `balanced` | Moderate changes. Default limits. Mix of safe and proactive fixes. |
 | `aggressive` | Maximum coverage. Higher limits, more file changes. |
+
+`aggressive` generates `max_prs_per_run: 2`; the engine enforces a 1–2 hard limit on this key regardless of profile. This bounds PR creation, not local (non-live) repair attempts.
 
 ## Per-Repo Config (`config.yaml`)
 
@@ -57,15 +61,28 @@ limits:
   max_files_changed: 3       # max files modified per fix
   max_loc_diff: 150          # max lines-of-code changed per fix
   max_fix_attempts: 2        # max retry attempts per finding
-  open_issues_cap: 10        # max open issues
+  open_issues_cap: 10        # max open issues; gates new admissions only
   open_prs_cap: 2            # max open PRs
 
 # Safety
 safety:
-  mode: observe              # observe, review, fix
+  mode: observe              # observe, issue-only, pr, merge (brand spellings accepted)
   profile: conservative       # conservative, balanced, aggressive
 
-# Learning governance (alpha.2+)
+# GitHub integration
+github:
+  live_actions: false        # enable live PR/issue creation
+  auto_merge: false          # enable auto-merge
+```
+
+Unknown top-level keys are rejected with a `ValueError` naming the unsupported keys. `bluei upgrade-config` preserves operator-owned fields verbatim (repo `id`, limits, cooldowns, baseline checks, safety and review policy, templates, GitHub and notification settings); inference-owned metadata is regenerated. At the `open_issues_cap`, the existing queue is still processed without admitting new issues; a retained repair patch does not reduce the source issue count until applied.
+
+## Workspace Config (`config.yaml`)
+
+Read from the workspace root, not per-repo. Consulted keys:
+
+```yaml
+# Learning governance (see "Learning Governance" below for semantics)
 learning:
   mode: active                # active | audit_only | paused
   sprt:
@@ -86,11 +103,21 @@ learning:
     emergent_rule:
       state_transition: gate_open_audit  # TENTATIVE→ACTIVE
 
-# GitHub integration
-github:
-  live_actions: false        # enable live PR/issue creation
-  auto_merge: false           # enable auto-merge
+# Repair validation checks — name → command list
+baseline_validation_checks:
+  baseline-0: ["python3", "run_lint.py"]
+rule_target_checks:
+  my-rule:
+    check: ["python3", "test_rule.py"]
 ```
+
+### Repair Validation Checks
+
+Public registered-repository runs use the repository's explicit `baseline_checks` (command lists); campaign mutation and review remediation use that same registered check source without inference fallback. Campaign and review candidates also honor repository `limits.max_files_changed` and `limits.max_loc_diff`. Source runtime context is retained when checks run in a repair worktree; an interpreter path alone is not universal import-origin proof.
+
+For direct engine execution, `baseline_validation_checks` names the commands a repair must pass before acceptance; `--baseline-checks` (a JSON list of command lists) overrides them per invocation. An absent key means **no** baseline checks — there is no implicit fallback to built-in sandbox check scripts. A check whose executable or script is missing, whose command is invalid, or that times out is recorded as unavailable evidence and never counts as an executed pass or an unchanged baseline failure. A repair qualifies only when checks were configured, every configured check actually executed in both baseline and post-fix results, and at least one configured check passed in both — a passing control. Tolerated unchanged baseline failures are allowed only alongside a passing control, so an all-failing baseline stays unqualified; empty, unavailable, and all-failing check sets each block the repair with an explicit unqualified reason. An invalid `--baseline-checks` value (malformed JSON or a non-list) is preserved as an invalid, unavailable check rather than silently falling back to this workspace key, and list entries are kept verbatim so a null command is rejected rather than dropped. A passing control proves the commands launched and passed — not that the intended tests ran; independent behavior validation is still required.
+
+Python check inference uses a known local virtualenv (`.venv`/`venv`) absolute interpreter when one exists and is executable; poetry/uv wrapper-managed or unknown interpreters infer no Python checks and nothing is installed automatically. A known venv with a missing or broken interpreter rejects bare host commands; explicitly configured absolute commands are probed and their availability distinguished. This identifies the interpreter path only — it verifies no imports (`.pth` files, edited packages) and isolates nothing.
 
 ## CLI Options
 
@@ -161,7 +188,7 @@ bluei emergent list --repo <repo>
 
 ## Learning Governance
 
-The learning subsystem (`learning:` config key) controls how bluei governs learned automation — Patterns, Recipes, AST transforms, and Emergent Rules. Added in v0.2.0-alpha.2.
+The learning subsystem is configured through the `learning:` key of the [workspace-root `config.yaml`](#workspace-config-configyaml) — not per-repo config — and controls how bluei governs learned automation — Patterns, Recipes, AST transforms, and Emergent Rules. Added in v0.2.0-alpha.2.
 
 ### Safe-Mode (`learning.mode`)
 

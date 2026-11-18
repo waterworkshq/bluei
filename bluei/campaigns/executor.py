@@ -1,8 +1,10 @@
 """Campaign execution engine with phase-by-phase finding resolution.
 
-Runs campaigns end-to-end with support for dry-run mode, file rollback on
-failure, validation gates between phases, and pause/resume semantics via
-a filesystem lock.
+Runs campaigns end-to-end with support for dry-run mode, rollback on
+failure, qualified validation gates (registered baseline checks only —
+no inference fallback), per-fix candidate acceptance, durable patch
+retention before counting fixes, and pause/resume semantics via a
+filesystem lock.
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ import logging
 import os
 import subprocess
 from pathlib import Path
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 _logger = logging.getLogger(__name__)
 
@@ -22,6 +24,18 @@ from bluei.engine.lifecycle import apply_autofix
 from bluei.engine.pattern_store import FixPatternStore
 from bluei.engine.dry_replay import run_dry_replay
 from bluei.engine.rule_family import derive_rule_family
+from bluei.engine.cascade import default_checkpoint_dir
+from bluei.engine.repair_acceptance import (
+    prepare_baseline,
+    retain_candidate_patch,
+    validate_candidate,
+)
+from bluei.engine.validation import run_named_checks, run_validation_gate
+from bluei.engine.worktree_checkpoint import (
+    CheckpointError,
+    capture_checkpoint,
+    restore_checkpoint,
+)
 
 
 def autofix_fix_runner(
@@ -33,10 +47,13 @@ def autofix_fix_runner(
     worktree_path: Path,
     pattern_store_path: Path | None = None,
 ) -> Dict[str, Any]:
-    """Apply a single finding fix via pattern replay (high-confidence) or deterministic autofix.
+    """Apply a single finding fix via deterministic autofix only.
 
-    Tries FixPatternStore lookup first when a pattern_store_path is provided;
-    falls back to the sandbox autofix pipeline.
+    Pattern replay is deliberately NOT attempted here: campaign execution
+    has no governance (ACTIVE-pattern) projection, so replaying stored
+    patterns would bypass the governance gate the solo lane enforces
+    (ADR-0008). Until campaign replay has durable acceptance of its own,
+    fixes go through ``apply_autofix`` with no pattern store attached.
 
     Args:
         campaign: Parent Campaign object (passed through to fix_runner).
@@ -44,15 +61,11 @@ def autofix_fix_runner(
         finding_id: Unique identifier of the finding to fix.
         finding: Finding snapshot dict from campaign.finding_snapshots.
         worktree_path: Path to the git worktree where fixes are applied.
-        pattern_store_path: Optional path to a FixPatternStore file.
+        pattern_store_path: Ignored (kept for the fix_runner protocol).
 
     Returns:
         Dict with "status" ("success"/"failed") and "method" or "error" keys.
-        Additive keys (Campaign Lab, alpha.5): "deterministic" (always True —
-        pattern_replay + apply_autofix never invoke the LLM), "matched_asset"
-        (pattern_id when method=="pattern_replay", else None), "cascade_stage"
-        (None in alpha.5 — apply_autofix returns bool). Existing readers that
-        only consult "status"/"method"/"error" are unaffected.
+        "deterministic" is always True (apply_autofix never invokes the LLM).
     """
     try:
         snapshot = {**finding, "finding_id": finding.get("finding_id") or finding_id}
@@ -65,32 +78,6 @@ def autofix_fix_runner(
             "matched_asset": None,
             "cascade_stage": None,
         }
-
-    if pattern_store_path is not None and pattern_store_path.exists():
-        try:
-            store = FixPatternStore(pattern_store_path)
-            pattern = store.lookup(
-                finding.get("rule", ""),
-                finding.get("snippet", ""),
-            )
-            if pattern is not None and pattern.confidence >= 0.9:
-                target_file = Path(worktree_path) / finding.get("path", "")
-                if target_file.exists() and pattern.before_snippet:
-                    content = target_file.read_text()
-                    if pattern.before_snippet in content:
-                        new_content = content.replace(
-                            pattern.before_snippet, pattern.after_snippet, 1
-                        )
-                        target_file.write_text(new_content)
-                        return {
-                            "status": "success",
-                            "method": "pattern_replay",
-                            "deterministic": True,
-                            "matched_asset": pattern.pattern_id,
-                            "cascade_stage": None,
-                        }
-        except Exception:
-            _logger.debug("Failed to replay campaign fix pattern")
 
     log_file = Path(worktree_path) / ".bluei" / "campaign-autofix.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -135,12 +122,16 @@ class CampaignExecutor:
         dry_replay_path: Path | None = None,
         baseline_checks: Dict[str, Any] | None = None,
         run_id: str = "",
+        source_repo: Path | None = None,
+        max_files_changed: int = 5,
+        max_loc_diff: int = 200,
     ):
         """
         Args:
             campaign_store: State manager for loading/saving campaign data.
             fix_runner: Callable that applies a single fix; required when dry_run=False.
-            pattern_store_path: Optional path to a FixPatternStore file for pattern replay.
+            pattern_store_path: Optional path to a FixPatternStore file (evidence
+                for dry replay only — never a replay source for fixes).
             emergent_evidence_consumer: Optional app-layer callable (defined in
                 ``bluei/app/campaign_evidence.py``, wired at
                 ``bin/cmd_campaign.py``) that advances the target emergent
@@ -151,8 +142,17 @@ class CampaignExecutor:
                 objectives are a no-op.
             dry_replay_path: Optional path to a dry_replay.jsonl file. Required
                 for pattern-family learning objectives (evidence store).
-            baseline_checks: Validation command map consumed by Dry Replay.
+            baseline_checks: Registered baseline validation checks
+                (name -> command list) from the repo config. A mutating run
+                without these is refused as unqualified — explicit phase
+                checks are supplemental and cannot substitute for them.
             run_id: Identifier stamped on dry-replay records / proposed rules.
+            source_repo: Registered source repo path providing the runtime
+                context (``environment_repo``) for checks executed in the
+                worktree. Defaults to the worktree itself.
+            max_files_changed: Per-fix scope cap (files). Mirrors the repo
+                config ``limits`` defaults.
+            max_loc_diff: Per-fix scope cap (added+deleted lines).
 
         The learning-objective kwargs are additive and default to no-ops;
         a campaign without a ``learning_objective`` behaves exactly as before.
@@ -164,6 +164,9 @@ class CampaignExecutor:
         self.dry_replay_path = dry_replay_path
         self.baseline_checks: Dict[str, Any] = baseline_checks or {}
         self.run_id = run_id
+        self.source_repo = source_repo
+        self.max_files_changed = max_files_changed
+        self.max_loc_diff = max_loc_diff
 
     def run(
         self,
@@ -228,6 +231,58 @@ class CampaignExecutor:
                 {"dry_run": dry_run, "phases": len(campaign.phases)},
             )
 
+            # A03/A10: a mutating run without registered baseline checks is
+            # unqualified — explicit phase checks are supplemental and cannot
+            # substitute. Refuse before any file effect, mirroring the solo
+            # lane's empty-baseline refusal (no inference fallback). A run
+            # with only already-completed phases mutates nothing and needs
+            # no baseline; it reports truthful completion without repairs.
+            pending_phases = [
+                phase
+                for phase in campaign.phases
+                if phase.status != PhaseStatus.completed
+            ]
+            if not dry_run and pending_phases and not self.baseline_checks:
+                campaign.status = CampaignStatus.paused
+                self._set_pause_metadata(
+                    campaign,
+                    reason="unqualified-baseline",
+                    phase_id="",
+                    finding_id=None,
+                )
+                campaign.updated_at = now_iso()
+                self.campaign_store.save(campaign)
+                self.campaign_store.append_event(
+                    campaign_id,
+                    "campaign.paused",
+                    {
+                        "dry_run": False,
+                        "reason": "unqualified-baseline",
+                        "detail": (
+                            "no registered baseline checks configured; "
+                            "mutating campaign run refused"
+                        ),
+                    },
+                )
+                return {
+                    "campaign_id": campaign_id,
+                    "status": campaign.status,
+                    "dry_run": False,
+                    "phases_walked": 0,
+                    "findings_skipped": 0,
+                    "findings_fixed": campaign.findings_fixed,
+                    "findings_failed": campaign.findings_failed,
+                    "unqualified": "no registered baseline checks configured",
+                }
+
+            # Logs live in the campaign state dir, never inside the worktree:
+            # the worktree must contain only repair content so the retained
+            # tracked-file patch is a complete account of the change.
+            validation_log = (
+                self.campaign_store.campaigns_dir / campaign_id / "campaign-validation.log"
+            )
+            validation_log.parent.mkdir(parents=True, exist_ok=True)
+
             phases_walked = 0
             findings_skipped = 0
             objective = campaign.learning_objective
@@ -238,11 +293,6 @@ class CampaignExecutor:
             for phase in campaign.phases:
                 if phase.status == PhaseStatus.completed:
                     continue
-                phase_snapshot = (
-                    self._snapshot_phase_files(campaign, phase, cwd)
-                    if not dry_run and require_clean_worktree
-                    else {}
-                )
                 phase_fixed_this_run = 0
                 campaign.current_phase_index = phase.index
                 phase.status = PhaseStatus.active
@@ -259,6 +309,37 @@ class CampaignExecutor:
                     },
                 )
 
+                # A03/A10: qualified pre-phase gate over the registered
+                # baseline checks (worktree baseline + validation gate with
+                # passing control, source runtime context).
+                validation_baseline: Dict[str, Dict[str, Any]] = {}
+                if not dry_run:
+                    validation_baseline, pre_gate = prepare_baseline(
+                        worktree_path=cwd,
+                        source_repo=self.source_repo or cwd,
+                        checks=self.baseline_checks,
+                        repo_baseline_results={},
+                        allow_unchanged_baseline_failures=True,
+                        log_file=validation_log,
+                    )
+                    if not pre_gate.get("passed") or not pre_gate.get("qualified"):
+                        return self._pause_for_validation_failure(
+                            campaign,
+                            phase,
+                            {
+                                "stage": "pre-baseline",
+                                "returncode": -1,
+                                "reason": pre_gate.get(
+                                    "message", "baseline checks unqualified"
+                                ),
+                            },
+                            phases_walked,
+                            findings_skipped,
+                            dry_run,
+                        )
+
+                # Supplemental explicit phase checks (cannot substitute the
+                # baseline gate above).
                 pre_result = self._run_validation_checks(
                     campaign_id,
                     phase.phase_id,
@@ -276,6 +357,30 @@ class CampaignExecutor:
                         findings_skipped,
                         dry_run,
                     )
+
+                # A03: full source checkpoint at phase start (existing
+                # mechanism — byte-exact restore across ALL touched paths on
+                # failure, not just finding paths). Capture failure is
+                # fail-closed: no mutation without a restorable checkpoint.
+                phase_checkpoint = None
+                if not dry_run:
+                    try:
+                        phase_checkpoint = capture_checkpoint(
+                            cwd, default_checkpoint_dir()
+                        )
+                    except CheckpointError as exc:
+                        return self._pause_for_validation_failure(
+                            campaign,
+                            phase,
+                            {
+                                "stage": "checkpoint-capture",
+                                "returncode": -1,
+                                "reason": str(exc),
+                            },
+                            phases_walked,
+                            findings_skipped,
+                            dry_run,
+                        )
 
                 for finding_id in phase.finding_ids:
                     if dry_run:
@@ -324,6 +429,8 @@ class CampaignExecutor:
                                     replay_path = candidate_path
                                     original_content = snapshot_text
 
+                    # A03: stable-HEAD identity for the fix candidate.
+                    candidate_base = self._current_head(cwd)
                     fix_result = self._apply_finding(
                         campaign=campaign,
                         phase=phase,
@@ -332,11 +439,10 @@ class CampaignExecutor:
                         worktree_path=cwd,
                     )
                     if str(fix_result.get("status")) != "success":
-                        self._rollback_phase_files(
-                            campaign.campaign_id,
+                        self._restore_checkpoint(
+                            phase_checkpoint,
+                            campaign_id,
                             phase.phase_id,
-                            cwd,
-                            phase_snapshot,
                             reason="finding_failed",
                         )
                         campaign.findings_fixed -= phase_fixed_this_run
@@ -346,6 +452,87 @@ class CampaignExecutor:
                             phase,
                             finding_id,
                             fix_result,
+                            phases_walked,
+                            findings_skipped,
+                        )
+                    # Fix-runner run artifacts (logs) are archived out of the
+                    # worktree so only repair content remains for retention.
+                    self._archive_run_artifacts(cwd, campaign_id)
+
+                    # A03/A10: candidate acceptance — stable HEAD, scope caps,
+                    # post-fix gate with runtime availability, closure. The
+                    # durable patch artifact is retained BEFORE the fix is
+                    # counted; a fix that cannot be retained is not accepted.
+                    try:
+                        candidate_finding = Finding.from_dict(
+                            {
+                                **finding_snapshot,
+                                "finding_id": finding_snapshot.get("finding_id")
+                                or finding_id,
+                            }
+                        )
+                        candidate = validate_candidate(
+                            worktree_path=cwd,
+                            source_repo=self.source_repo or cwd,
+                            candidate_base=candidate_base,
+                            findings=[candidate_finding],
+                            checks=self.baseline_checks,
+                            baseline_results=validation_baseline,
+                            allow_unchanged_baseline_failures=True,
+                            max_files_changed=self.max_files_changed,
+                            max_loc_diff=self.max_loc_diff,
+                            log_file=validation_log,
+                        )
+                    except (KeyError, TypeError, ValueError) as exc:
+                        candidate = {
+                            "passed": False,
+                            "qualified": False,
+                            "message": f"candidate-snapshot-invalid: {exc}",
+                        }
+                    if not candidate.get("passed"):
+                        self._restore_checkpoint(
+                            phase_checkpoint,
+                            campaign_id,
+                            phase.phase_id,
+                            reason="candidate_rejected",
+                        )
+                        campaign.findings_fixed -= phase_fixed_this_run
+                        phase.findings_fixed -= phase_fixed_this_run
+                        return self._pause_for_finding_failure(
+                            campaign,
+                            phase,
+                            finding_id,
+                            {"error": f"candidate-{candidate.get('message')}"},
+                            phases_walked,
+                            findings_skipped,
+                        )
+                    try:
+                        patch_path = retain_candidate_patch(
+                            worktree_path=cwd,
+                            output_dir=self.campaign_store.campaigns_dir
+                            / campaign_id
+                            / "patches",
+                            identity=f"{campaign_id}:{finding_id}",
+                            prefix="campaign-fix",
+                            # The retained patch must be the exact candidate
+                            # that passed validation — revalidated against
+                            # the verdict signature around diff capture.
+                            expected_signature=candidate.get("candidate_signature"),
+                        )
+                    except (OSError, ValueError) as exc:
+                        self._restore_checkpoint(
+                            phase_checkpoint,
+                            campaign_id,
+                            phase.phase_id,
+                            reason="patch_retention_failed",
+                        )
+                        campaign.findings_fixed -= phase_fixed_this_run
+                        phase.findings_fixed -= phase_fixed_this_run
+                        return self._pause_for_finding_failure(
+                            campaign,
+                            phase,
+                            finding_id,
+                            {"error": f"patch-retention-failed: {exc}"},
                             phases_walked,
                             findings_skipped,
                         )
@@ -398,6 +585,8 @@ class CampaignExecutor:
                             "phase_id": phase.phase_id,
                             "finding_id": finding_id,
                             "method": fix_result.get("method", "fix_runner"),
+                            "patch": str(patch_path),
+                            "validation": candidate.get("message", ""),
                         },
                     )
 
@@ -420,6 +609,52 @@ class CampaignExecutor:
                         proposed_rule_ids,
                     )
 
+                # A03/A10: qualified post-phase gate over the registered
+                # baseline checks (regression comparison against the phase
+                # baseline, runtime availability, passing control).
+                if not dry_run:
+                    post_observed = run_named_checks(
+                        repo_path=cwd,
+                        checks=self.baseline_checks,
+                        log_file=validation_log,
+                        phase="phase-post",
+                        environment_repo=self.source_repo or cwd,
+                    )
+                    post_gate = run_validation_gate(
+                        repo_path=cwd,
+                        worktree_path=cwd,
+                        checks=self.baseline_checks,
+                        baseline_results=validation_baseline,
+                        post_fix_results=post_observed,
+                        target_results={},
+                        allow_unchanged_baseline_failures=True,
+                        log_file=validation_log,
+                    )
+                    if not post_gate.get("passed") or not post_gate.get("qualified"):
+                        self._restore_checkpoint(
+                            phase_checkpoint,
+                            campaign_id,
+                            phase.phase_id,
+                            reason="validation_failed",
+                        )
+                        campaign.findings_fixed -= phase_fixed_this_run
+                        phase.findings_fixed -= phase_fixed_this_run
+                        return self._pause_for_validation_failure(
+                            campaign,
+                            phase,
+                            {
+                                "stage": "post-baseline",
+                                "returncode": -1,
+                                "reason": post_gate.get(
+                                    "message", "post-phase checks unqualified"
+                                ),
+                            },
+                            phases_walked,
+                            findings_skipped,
+                            dry_run,
+                        )
+
+                # Supplemental explicit post-phase checks.
                 post_result = self._run_validation_checks(
                     campaign_id,
                     phase.phase_id,
@@ -429,11 +664,10 @@ class CampaignExecutor:
                     dry_run,
                 )
                 if post_result is not None:
-                    self._rollback_phase_files(
-                        campaign.campaign_id,
+                    self._restore_checkpoint(
+                        phase_checkpoint,
+                        campaign_id,
                         phase.phase_id,
-                        cwd,
-                        phase_snapshot,
                         reason="validation_failed",
                     )
                     campaign.findings_fixed -= phase_fixed_this_run
@@ -508,7 +742,7 @@ class CampaignExecutor:
         failure: Dict[str, Any],
         phases_walked: int,
         findings_skipped: int,
-        dry_run: bool = True,
+        dry_run: bool,
     ) -> Dict[str, Any]:
         """Transition campaign and phase to paused state after a validation check fails.
 
@@ -736,7 +970,12 @@ class CampaignExecutor:
         cwd: Path,
         dry_run: bool,
     ) -> Dict[str, Any] | None:
-        """Run a list of shell-command validation checks; return the first failure or None.
+        """Run supplemental phase checks via run_named_checks; first failure or None.
+
+        Executes with the same runtime semantics as the solo lane
+        (``run_named_checks``): launch availability is detected, a missing
+        executable is unavailable evidence (never a silent pass or crash),
+        and the registered source repo provides the runtime context.
 
         Args:
             campaign_id: Campaign ID for event logging.
@@ -749,25 +988,38 @@ class CampaignExecutor:
         Returns:
             Dict with failure details, or None if all checks passed.
         """
-        for check in checks:
-            result = subprocess.run(
-                check,
-                cwd=str(cwd),
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                check=False,
-            )
+        named = {
+            f"{stage}-{index}": list(check)
+            for index, check in enumerate(checks or [])
+            if check
+        }
+        if not named:
+            return None
+        log_file = (
+            self.campaign_store.campaigns_dir / campaign_id / "campaign-validation.log"
+        )
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        observed = run_named_checks(
+            repo_path=cwd,
+            checks=named,
+            log_file=log_file,
+            phase=f"phase-{stage}",
+            environment_repo=self.source_repo or cwd,
+        )
+        for name, command in named.items():
+            record = observed.get(name, {})
             payload = {
                 "dry_run": dry_run,
                 "phase_id": phase_id,
                 "stage": stage,
-                "command": check,
-                "returncode": result.returncode,
+                "command": command,
+                "returncode": record.get("rc"),
             }
-            if result.stdout:
-                payload["output"] = result.stdout.strip()[:500]
-            if result.returncode != 0:
+            if record.get("available") is False:
+                payload["unavailable_reason"] = record.get("unavailable_reason")
+            if record.get("output"):
+                payload["output"] = record["output"][:500]
+            if record.get("rc") != 0:
                 self.campaign_store.append_event(
                     campaign_id,
                     "phase.validation.failed",
@@ -780,6 +1032,77 @@ class CampaignExecutor:
                 payload,
             )
         return None
+
+    def _current_head(self, worktree_path: Path) -> Optional[str]:
+        """Return the current HEAD commit of the worktree, or None on failure."""
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(worktree_path),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip()
+
+    def _archive_run_artifacts(self, worktree_path: Path, campaign_id: str) -> None:
+        """Move fix-runner log artifacts out of the worktree.
+
+        Run logs are evidence, not repair content: archived into the campaign
+        state dir so the worktree holds only the tracked-file repair the
+        retained patch must completely describe.
+        """
+        artifacts_dir = worktree_path / ".bluei"
+        if not artifacts_dir.is_dir():
+            return
+        destination_dir = self.campaign_store.campaigns_dir / campaign_id
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        for artifact in artifacts_dir.iterdir():
+            if artifact.is_file():
+                destination = destination_dir / artifact.name
+                if destination.exists():
+                    artifact.unlink()
+                else:
+                    artifact.replace(destination)
+
+    def _restore_checkpoint(
+        self,
+        checkpoint: Optional[Any],
+        campaign_id: str,
+        phase_id: str,
+        *,
+        reason: str,
+    ) -> None:
+        """Restore the phase-start source checkpoint (full worktree).
+
+        Uses the existing byte-exact ``restore_checkpoint`` mechanism across
+        ALL touched paths — not a finding-path-only restore. A missing
+        checkpoint (dry-run) or a failed restore is recorded as an event and
+        never silently treated as success.
+        """
+        if checkpoint is None:
+            return
+        try:
+            restore_checkpoint(checkpoint)
+        except CheckpointError as exc:
+            self.campaign_store.append_event(
+                campaign_id,
+                "phase.rollback.failed",
+                {"phase_id": phase_id, "reason": reason, "error": str(exc)},
+            )
+            return
+        self.campaign_store.append_event(
+            campaign_id,
+            "phase.rollback.applied",
+            {
+                "dry_run": False,
+                "phase_id": phase_id,
+                "reason": reason,
+                "mode": "source-checkpoint",
+            },
+        )
 
     def _snapshot_phase_files(
         self, campaign, phase, worktree_path: Path
