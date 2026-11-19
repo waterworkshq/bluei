@@ -167,7 +167,7 @@ class TestApplyClaudeFix:
                 lessons_file=lessons,
             ),
         )
-        assert mock_lesson.call_count == 1
+        mock_lesson.assert_not_called()
 
     @patch("bluei.engine.lifecycle.subprocess.run")
     @patch("bluei.engine.lifecycle.increment_fix_attempt")
@@ -194,7 +194,7 @@ class TestApplyClaudeFix:
             ),
         )
         mock_inc.assert_called_once()
-        mock_update.assert_called_once()
+        mock_update.assert_not_called()
 
 
 # --- TestApplyAutofix ---
@@ -395,7 +395,18 @@ class TestApplyCascadeFix:
         mock_cascade_cls.return_value = cascade
         log = tmp_path / "log.txt"
         log.write_text("")
-        assert apply_cascade_fix(tmp_path, make_finding(), log) is True
+        # A10: the model fallback runs only with an explicit template, and a
+        # caller-supplied acceptance context must also carry real checks.
+        assert (
+            apply_cascade_fix(
+                tmp_path,
+                make_finding(),
+                log,
+                claude_cmd_template="true {prompt_file}",
+                baseline_checks={"unit": ["true"]},
+            )
+            is True
+        )
         mock_claude.assert_called_once()
 
     @patch("bluei.engine.cascade.DeterministicCascade")
@@ -529,6 +540,8 @@ class TestApplyCascadeFix:
             make_finding(),
             log,
             ledger_records=ledger_records,
+            claude_cmd_template="true {prompt_file}",
+            baseline_checks={"unit": ["true"]},
         )
         assert result is True
         assert len(ledger_records) == 1
@@ -573,6 +586,8 @@ class TestApplyCascadeFix:
             make_finding(),
             log,
             ledger_records=ledger_records,
+            claude_cmd_template="true {prompt_file}",
+            baseline_checks={"unit": ["true"]},
         )
         assert result is False
         assert len(ledger_records) == 1
@@ -614,6 +629,8 @@ class TestApplyCascadeFix:
             make_finding(),
             log,
             ledger_records=ledger_records,
+            claude_cmd_template="true {prompt_file}",
+            baseline_checks={"unit": ["true"]},
         )
         assert len(ledger_records) == 1
         assert ledger_records[0]["outcome"] == "resolved_llm"
@@ -659,14 +676,34 @@ class TestGitPushBranch:
         mock_rc.return_value = (0, "pushed")
         log = tmp_path / "log.txt"
         log.write_text("")
-        assert git_push_branch(tmp_path, "main", log, dry_run=False) is True
+        # Authorized push: feature branch + explicit pr-mode policy (the
+        # fail-closed gate denies absent-policy/protected-branch pushes).
+        assert (
+            git_push_branch(
+                tmp_path,
+                "qa/fix-1",
+                log,
+                dry_run=False,
+                safety_config={"mode": "pr"},
+            )
+            is True
+        )
 
     @patch("bluei.engine.git_ops.run_capture")
     def test_failure(self, mock_rc, tmp_path):
         mock_rc.return_value = (1, "push failed")
         log = tmp_path / "log.txt"
         log.write_text("")
-        assert git_push_branch(tmp_path, "main", log, dry_run=False) is False
+        assert (
+            git_push_branch(
+                tmp_path,
+                "qa/fix-1",
+                log,
+                dry_run=False,
+                safety_config={"mode": "pr"},
+            )
+            is False
+        )
 
     def test_dry_run_returns_true(self, tmp_path):
         log = tmp_path / "log.txt"
@@ -682,16 +719,29 @@ class TestDiffStats:
         assert diff_stats(tmp_path) == (2, 20)
 
     @patch("bluei.engine.git_ops.run_capture")
-    def test_binary_and_malformed_handled(self, mock_rc, tmp_path):
-        mock_rc.return_value = (0, "-\t-\timage.png\nbadline\n5\t3\tfile.py\n")
-        files, loc = diff_stats(tmp_path)
-        assert files == 2  # binary + valid (malformed skipped)
-        assert loc == 8
+    def test_binary_raises(self, mock_rc, tmp_path):
+        # A binary candidate cannot satisfy the line-diff bound — hard error,
+        # not a false zero.
+        mock_rc.return_value = (0, "-\t-\timage.png\n5\t3\tfile.py\n")
+        with pytest.raises(ValueError, match="binary"):
+            diff_stats(tmp_path)
 
     @patch("bluei.engine.git_ops.run_capture")
-    def test_returns_zero_on_error(self, mock_rc, tmp_path):
+    def test_malformed_numeric_raises(self, mock_rc, tmp_path):
+        mock_rc.return_value = (0, "abc\tdef\tfile.py\n")
+        with pytest.raises(ValueError, match="inspected"):
+            diff_stats(tmp_path)
+
+    @patch("bluei.engine.git_ops.run_capture")
+    def test_non_numstat_line_skipped(self, mock_rc, tmp_path):
+        mock_rc.return_value = (0, "badline\n5\t3\tfile.py\n")
+        assert diff_stats(tmp_path) == (1, 8)
+
+    @patch("bluei.engine.git_ops.run_capture")
+    def test_git_error_raises(self, mock_rc, tmp_path):
         mock_rc.return_value = (1, "error")
-        assert diff_stats(tmp_path) == (0, 0)
+        with pytest.raises(ValueError, match="inspected"):
+            diff_stats(tmp_path)
 
 
 # --- TestValidation ---
@@ -783,10 +833,17 @@ class TestRunNamedChecks:
 
     @patch("bluei.engine.validation.run_capture")
     def test_output_logged(self, mock_rc, tmp_path):
+        import sys
+
         mock_rc.return_value = (0, "some output text")
         log = tmp_path / "log.txt"
         log.write_text("")
-        run_named_checks(tmp_path, {"test": ["pytest"]}, log, "phase1")
+        # Real interpreter invocation: the availability prerequisite rejects
+        # imaginary executables ("pytest" is not on the sandbox PATH). The
+        # transport itself stays mocked via run_capture.
+        run_named_checks(
+            tmp_path, {"test": [sys.executable, "-c", "print('ran')"]}, log, "phase1"
+        )
         assert "some output text" in log.read_text()
 
 
@@ -1023,62 +1080,52 @@ class TestRunStartupSelfHealing:
 
 
 class TestProcessRefactorQueue:
-    @patch("bluei.engine.lifecycle.RefactorQueue")
-    def test_dry_run_lists_items(self, mock_rq_cls, tmp_path):
-        mock_queue = MagicMock()
-        mock_rq_cls.return_value = mock_queue
-        mock_queue.list_items.return_value = [_make_queue_item("w-1")]
-        result = process_refactor_queue(tmp_path, tmp_path, dry_run=True)
-        assert "w-1" in result["processed"]
+    """Stage1: structural execution is refused before any queue or model work."""
 
     @patch(
         "bluei.engine.lifecycle.apply_claude_fix", return_value=(0, "fixed", "/tmp/p")
     )
-    @patch("bluei.engine.validation.run_validation_gate", return_value={"passed": True})
     @patch("bluei.engine.lifecycle.RefactorQueue")
-    def test_success_completes_item(self, mock_rq_cls, mock_vg, mock_claude, tmp_path):
+    def test_refuses_processing_and_reports_unqualified(
+        self, mock_rq_cls, mock_claude, tmp_path
+    ):
+        """Queue content is refused, not processed and not fake-failed.
+
+        Consolidates the obsolete dry-run/success/claude-failure tests: the
+        backend outcome is irrelevant because the backend is never reached.
+        """
         mock_queue = MagicMock()
         mock_rq_cls.return_value = mock_queue
-        item = _make_queue_item("w-2")
-        mock_queue.list_items.side_effect = [[item], []]
+        mock_queue.list_items.return_value = [_make_queue_item("w-1")]
         result = process_refactor_queue(tmp_path, tmp_path, dry_run=False)
-        assert "w-2" in result["processed"]
-        mock_queue.complete.assert_called_once_with("w-2")
+        assert result["processed"] == []
+        assert result["approved"] == []
+        assert result["pending"] == []
+        assert result["failed"] == []
+        assert "unqualified" in result["unqualified"]
+        mock_rq_cls.assert_not_called()
+        mock_claude.assert_not_called()
 
     @patch(
         "bluei.engine.lifecycle.apply_claude_fix", return_value=(1, "error", "/tmp/p")
     )
     @patch("bluei.engine.lifecycle.RefactorQueue")
-    def test_claude_failure_marks_failed(self, mock_rq_cls, mock_claude, tmp_path):
-        mock_queue = MagicMock()
-        mock_rq_cls.return_value = mock_queue
-        item = _make_queue_item("w-3")
-        mock_queue.list_items.side_effect = [[item], []]
-        result = process_refactor_queue(tmp_path, tmp_path, dry_run=False)
-        assert "w-3" in result["failed"]
-        mock_queue.fail.assert_called_once()
-
-    @patch("bluei.engine.lifecycle.RefactorQueue")
-    def test_auto_approve_moves_pending(self, mock_rq_cls, tmp_path):
-        mock_queue = MagicMock()
-        mock_rq_cls.return_value = mock_queue
-        mock_pending = MagicMock(work_id="w-pend")
-        mock_queue.list_items.side_effect = [[mock_pending], [], []]
-        result = process_refactor_queue(
-            tmp_path, tmp_path, dry_run=False, auto_approve=True
-        )
-        mock_queue.approve.assert_called_once_with("w-pend", "auto_approved")
-        assert "w-pend" in result["approved"]
-
-    @patch("bluei.engine.lifecycle.RefactorQueue")
-    def test_max_items_limits_processing(self, mock_rq_cls, tmp_path):
+    def test_flags_do_not_change_refusal(self, mock_rq_cls, mock_claude, tmp_path):
+        """dry_run/max_items/auto_approve cannot unlock processing or approval."""
         mock_queue = MagicMock()
         mock_rq_cls.return_value = mock_queue
         mock_queue.list_items.return_value = [
             _make_queue_item(f"w-{i}") for i in range(5)
         ]
-        result = process_refactor_queue(tmp_path, tmp_path, dry_run=True, max_items=2)
-        assert len(result["processed"]) == 2
+        result = process_refactor_queue(
+            tmp_path, tmp_path, dry_run=True, max_items=2, auto_approve=True
+        )
+        assert result["processed"] == []
+        assert result["failed"] == []
+        assert "unqualified" in result["unqualified"]
+        mock_rq_cls.assert_not_called()
+        mock_queue.approve.assert_not_called()
+        mock_claude.assert_not_called()
 
 
 # --- TestClassifyReviewFeedback ---

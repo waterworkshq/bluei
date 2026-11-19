@@ -7,6 +7,9 @@ skips, accurate invocation counting, scoped final verification, no-learning
 freeze, and retention of the local patch artifact.
 """
 
+import hashlib
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
@@ -14,10 +17,52 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from bluei.engine.commands.context import RunContext
-from bluei.engine.commands.pr_cycle import run_pr_cycle_phase
+from bluei.engine.commands.pr_cycle import _WorktreeSetup, run_pr_cycle_phase
 from bluei.engine.models import Finding
 
 SELECTED_ID = "py-f821-0001"
+
+# Stage1 qualification boundary: run_named_checks results must carry
+# runtime-available executed evidence and PER_REPO must configure an explicit
+# check before any model attempt is allowed.
+BASELINE_CMD = [sys.executable, "-c", "pass"]
+
+
+def _strict_check_result(cmd=BASELINE_CMD, rc=0, output=""):
+    """A run_named_checks-shaped record: executed, available, with a stable
+    fingerprint so an executed failure counts as an unchanged baseline failure."""
+    return {
+        "rc": rc,
+        "available": True,
+        "unavailable_reason": None,
+        "cmd": list(cmd),
+        "output": output,
+        "fingerprint": hashlib.sha256(output.encode()).hexdigest() if rc != 0 else "",
+    }
+
+
+def _git_worktree(tmp_path, name="wt"):
+    """Real git repo standing in for the repair worktree.
+
+    Stage1 runs a real ``git rev-parse HEAD`` before dispatch and again after
+    the fix, so a fake no-git worktree path would raise. run_named_checks is
+    strictly mocked (the worktree shape is not under test here), but the head
+    guard and dirty-source checks execute against this repository for real.
+    """
+    wt = tmp_path / name
+    (wt / "src").mkdir(parents=True)
+    (wt / "src" / "billing.py").write_text(
+        "def total(price, qty):\n    totl_price = price * qty\n    return totl_price\n"
+    )
+    for git_args in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "test@bluei.dev"],
+        ["git", "config", "user.name", "Test"],
+        ["git", "add", "."],
+        ["git", "commit", "-qm", "fixture"],
+    ):
+        subprocess.run(git_args, cwd=str(wt), check=True, capture_output=True)
+    return wt
 
 
 def _fake_git_output(command, **kwargs):
@@ -103,6 +148,7 @@ def _ctx(tmp_path, args, issues, eligible=None):
         args=args,
         repo_path=tmp_path / "repo",
         state_file=tmp_path / "state" / "run.json",
+        issues_file=tmp_path / "state" / "issues.json",
         findings_file=tmp_path / "findings.jsonl",
         log_file=tmp_path / "run.log",
         worktree_root=tmp_path / "worktrees",
@@ -254,12 +300,43 @@ class TestSelectedFailClosed:
         assert result["fix_attempts"] == 0
         fix.assert_not_called()
 
-    @pytest.mark.parametrize("baseline_checks", [
-        {},
-        {"custom-check": ["python3", "-c", "print('configured validation')"]},
-    ])
+    def test_unconfigured_baseline_refuses_before_model(self, tmp_path):
+        """Stage1 fail-closed: with no PER_REPO checks configured the run must
+        refuse before any model invocation — an empty check set never
+        qualifies autonomous repair (run_validation_gate passed&qualified)."""
+        issues = [_issue()]
+        ctx = _ctx(tmp_path, _selected_args(tmp_path), issues, eligible=[_fresh_finding()])
+        wt = _git_worktree(tmp_path)
+        with patch("bluei.engine.commands.pr_cycle.get_branch", return_value="x"), patch(
+            "bluei.engine.commands.pr_cycle._setup_worktree",
+            return_value=_WorktreeSetup(worktree_path=wt, worktree_branch="fix/f001"),
+        ), patch(
+            "bluei.engine.commands.pr_cycle.apply_claude_fix"
+        ) as fix, patch(
+            "bluei.engine.commands.pr_cycle.remove_worktree"
+        ), patch(
+            "bluei.engine.lifecycle.apply_claude_fix",
+            side_effect=AssertionError("internal model fallback reached"),
+        ):
+            result = run_pr_cycle_phase(ctx)
+        fix.assert_not_called()
+        assert result["claude_invocations"] == 0
+        assert result["fix_attempts"] == 1
+        assert result["fixes_verified"] == 0
+        assert result["fixes_failed_verification"] == 1
+        assert any(
+            "unqualified: no checks configured" in reason
+            for reason in result["blocked_reasons"]
+        )
+        # Honest public failure: no attempt was made, so the message must not
+        # claim a model attempt — it reports no model was invoked.
+        assert "did not produce an accepted patch; no model invoked" in result["selected_error"]
+        assert "failed its single model attempt" not in result["selected_error"]
+        assert result["selected_error"] in result["blocked_reasons"]
+
+    @pytest.mark.parametrize("baseline_shape", ["passing", "stable-failure+control"])
     @pytest.mark.parametrize("engine", ["claude", "opencode"])
-    def test_failed_model_attempt_is_public_failure(self, tmp_path, engine, baseline_checks):
+    def test_failed_model_attempt_is_public_failure(self, tmp_path, engine, baseline_shape):
         issues = [_issue()]
         ctx = _ctx(
             tmp_path,
@@ -267,15 +344,26 @@ class TestSelectedFailClosed:
             issues,
             eligible=[_fresh_finding()],
         )
+        baseline_checks = {"baseline": list(BASELINE_CMD)}
+        baseline_results = {"baseline": _strict_check_result()}
+        if baseline_shape == "stable-failure+control":
+            # An executed failure is tolerated only alongside a passing
+            # control: a second configured check exits 3 with a stable
+            # fingerprint from baseline to post-fix. The all-failing shape
+            # is deliberately absent — it never qualifies Stage1.
+            baseline_checks["flaky"] = [sys.executable, "-c", "import sys; sys.exit(3)"]
+            baseline_results["flaky"] = _strict_check_result(
+                cmd=baseline_checks["flaky"], rc=3, output="boom\n"
+            )
         ctx.PER_REPO_BASELINE_CHECKS = baseline_checks
-        baseline_results = {name: {"rc": index} for index, name in enumerate(baseline_checks)}
+        wt = _git_worktree(tmp_path)
         with patch("bluei.engine.commands.pr_cycle.get_branch", return_value="x"), patch(
+            "bluei.engine.commands.pr_cycle._setup_worktree",
+            return_value=_WorktreeSetup(worktree_path=wt, worktree_branch="fix/f001"),
+        ), patch(
             "bluei.engine.commands.pr_cycle.apply_claude_fix",
             return_value=(1, "model exploded", "prompt.txt"),
         ) as fix, patch(
-            "bluei.engine.commands.pr_cycle.create_worktree",
-            return_value=SimpleNamespace(success=True),
-        ), patch("bluei.engine.commands.pr_cycle.hydrate_worktree"), patch(
             "bluei.engine.commands.pr_cycle.remove_worktree"
         ), patch(
             "bluei.engine.commands.pr_cycle.run_named_checks", return_value=baseline_results
@@ -313,6 +401,12 @@ class TestSelectedSingleModelAttempt:
             eligible=[finding],
         )
         ctx.detector_outcomes = {detector_key: {"status": "ran", "count": 1}}
+        # Explicit PER_REPO check with strict runtime-available results; the
+        # real run_validation_gate then qualifies (passed AND qualified). The
+        # gate itself is NOT mocked — faking past the Stage1 boundary is what
+        # these regressions guard against.
+        ctx.PER_REPO_BASELINE_CHECKS = {"baseline": list(BASELINE_CMD)}
+        run_checks_result = {"baseline": _strict_check_result()}
         patches = [
             patch("bluei.engine.commands.pr_cycle.get_branch", return_value="feature"),
             patch(
@@ -325,10 +419,9 @@ class TestSelectedSingleModelAttempt:
             ),
             patch("bluei.engine.commands.pr_cycle.hydrate_worktree"),
             patch("bluei.engine.commands.pr_cycle.remove_worktree"),
-            patch("bluei.engine.commands.pr_cycle.run_named_checks", return_value={}),
             patch(
-                "bluei.engine.commands.pr_cycle.run_validation_gate",
-                return_value={"passed": True, "message": "ok"},
+                "bluei.engine.commands.pr_cycle.run_named_checks",
+                return_value=run_checks_result,
             ),
             patch(
                 "bluei.engine.commands.pr_cycle.diff_stats",
@@ -363,9 +456,9 @@ class TestSelectedSingleModelAttempt:
             for p in patches:
                 p.stop()
         fix = mocks[1]
-        verify = mocks[8]
-        sub_run = mocks[11]
-        governor, cascade, sprt = mocks[12], mocks[13], mocks[14]
+        verify = mocks[7]
+        sub_run = mocks[10]
+        governor, cascade, sprt = mocks[11], mocks[12], mocks[13]
         return ctx, result, issues, fix, verify, sub_run, governor, cascade, sprt
 
     def test_selected_f821_single_model_attempt(self, tmp_path):
@@ -413,8 +506,9 @@ class TestSelectedSingleModelAttempt:
         assert patch_path.read_bytes().startswith(b"diff --git")
         assert issues[0]["selected_fix_patch"] == str(patch_path)
         assert issues[0]["status"] == "open"
-        assert sub_run.call_args.args[0] == ["git", "diff", "--binary", "HEAD"]
-        assert sub_run.call_args.kwargs["cwd"].startswith(str(ctx.worktree_root))
+        assert any(call.args[0] == ["git", "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"]
+                   for call in sub_run.call_args_list)
+        assert str(sub_run.call_args.kwargs["cwd"]).startswith(str(ctx.worktree_root))
 
         # Only the selected issue was touched; the unrelated one is intact.
         assert issues[1]["status"] == "open"

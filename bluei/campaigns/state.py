@@ -42,12 +42,18 @@ class CampaignStateManager:
         phases_dir = campaign_dir / "phases"
         phases_dir.mkdir(parents=True, exist_ok=True)
 
+        # Resume reads only campaign.json. Publish it before refreshing the
+        # auxiliary copies so a failed acceptance write cannot mark them complete.
         _atomic_json_write(campaign_dir / "campaign.json", campaign.to_dict())
-        _atomic_json_write(
-            campaign_dir / "dependency_graph.json", campaign.dependency_graph
-        )
-        for phase in campaign.phases:
-            _atomic_json_write(phases_dir / f"{phase.phase_id}.json", phase.to_dict())
+        try:
+            _atomic_json_write(
+                campaign_dir / "dependency_graph.json", campaign.dependency_graph
+            )
+            for phase in campaign.phases:
+                _atomic_json_write(phases_dir / f"{phase.phase_id}.json", phase.to_dict())
+        except OSError:
+            # The authoritative write already succeeded; callers must not roll it back.
+            _logger.warning("Could not refresh campaign copies for %s", campaign.campaign_id, exc_info=True)
 
     def load(self, campaign_id: str) -> Campaign:
         """Load a campaign from its persisted JSON file.

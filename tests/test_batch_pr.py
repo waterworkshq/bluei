@@ -19,6 +19,11 @@ from bluei.engine.models import (
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
+# Stage 3: the model path requires the chosen validation-baseline RECORDS
+# (rc outcomes) — the configured checks dict is never forwarded (PR14 leak
+# hardening); ClaudeFixRequest gets {} checks + private rc statuses.
+_BASELINE_RESULTS = {"lint": {"rc": 0, "ok": True}}
+
 
 def _mf(make_finding, **overrides):
     """Wrap conftest make_finding with batch_pr-specific defaults."""
@@ -244,7 +249,9 @@ class TestApplySingleFixAutofix:
             ),
             patch("bluei.engine.constants.load_llm_fixable_rules", return_value=[]),
         ):
-            result = _apply_single_fix(f, tmp_path, tmp_path, args, log)
+            result = _apply_single_fix(
+                f, tmp_path, tmp_path, args, log, baseline_results=_BASELINE_RESULTS
+            )
         assert result.status == "success"
         assert result.fix_method == "autofix"
 
@@ -263,7 +270,9 @@ class TestApplySingleFixAutofix:
             ),
             patch("bluei.engine.constants.load_llm_fixable_rules", return_value=[]),
         ):
-            result = _apply_single_fix(f, tmp_path, tmp_path, args, log)
+            result = _apply_single_fix(
+                f, tmp_path, tmp_path, args, log, baseline_results=_BASELINE_RESULTS
+            )
         assert result.status == "failed"
         assert result.error == "verification-failed"
 
@@ -285,7 +294,9 @@ class TestApplySingleFixAutofix:
                 "bluei.engine.batch_execution.verify_finding_closed", return_value=True
             ),
         ):
-            result = _apply_single_fix(f, tmp_path, tmp_path, args, log)
+            result = _apply_single_fix(
+                f, tmp_path, tmp_path, args, log, baseline_results=_BASELINE_RESULTS
+            )
         assert result.status == "success"
         assert result.fix_method == "contextual"
 
@@ -305,7 +316,9 @@ class TestApplySingleFixAutofix:
                 "bluei.engine.batch_execution.verify_finding_closed", return_value=False
             ),
         ):
-            result = _apply_single_fix(f, tmp_path, tmp_path, args, log)
+            result = _apply_single_fix(
+                f, tmp_path, tmp_path, args, log, baseline_results=_BASELINE_RESULTS
+            )
         assert result.status == "failed"
         assert result.error == "contextual-verification-failed"
 
@@ -317,7 +330,9 @@ class TestApplySingleFixAutofix:
         args = _make_mock_args(fix_engine="deterministic")
 
         with patch("bluei.engine.constants.load_llm_fixable_rules", return_value=[]):
-            result = _apply_single_fix(f, tmp_path, tmp_path, args, log)
+            result = _apply_single_fix(
+                f, tmp_path, tmp_path, args, log, baseline_results=_BASELINE_RESULTS
+            )
         assert result.status == "skipped"
         assert result.error == "not-llm-fixable"
 
@@ -355,7 +370,9 @@ class TestApplySingleFixClaude:
                 ],
             ),
         ):
-            result = _apply_single_fix(f, tmp_path, tmp_path, args, log)
+            result = _apply_single_fix(
+                f, tmp_path, tmp_path, args, log, baseline_results=_BASELINE_RESULTS
+            )
         assert result.status == "success"
         assert result.fix_method == "claude"
 
@@ -382,7 +399,9 @@ class TestApplySingleFixClaude:
             ),
             patch("subprocess.run", return_value=MagicMock(stdout="abc1234\n")),
         ):
-            result = _apply_single_fix(f, tmp_path, tmp_path, args, log)
+            result = _apply_single_fix(
+                f, tmp_path, tmp_path, args, log, baseline_results=_BASELINE_RESULTS
+            )
         assert result.status == "failed"
         assert result.error == "claude-tools-blocked"
 
@@ -408,7 +427,9 @@ class TestApplySingleFixClaude:
             ),
             patch("subprocess.run", return_value=mock_result),
         ):
-            result = _apply_single_fix(f, tmp_path, tmp_path, args, log)
+            result = _apply_single_fix(
+                f, tmp_path, tmp_path, args, log, baseline_results=_BASELINE_RESULTS
+            )
         assert result.status == "failed"
         assert result.error is not None and "claude rc=1" in result.error
 
@@ -438,7 +459,9 @@ class TestApplySingleFixClaude:
                 ],
             ),
         ):
-            result = _apply_single_fix(f, tmp_path, tmp_path, args, log)
+            result = _apply_single_fix(
+                f, tmp_path, tmp_path, args, log, baseline_results=_BASELINE_RESULTS
+            )
         assert result.status == "success"
 
 
@@ -457,7 +480,7 @@ class TestCreateBatchPr:
             "bluei.engine.utils.run_capture",
             return_value=(0, "https://github.com/org/repo/pull/42\n"),
         ):
-            result = create_batch_pr(batch, "org/repo", log)
+            result = create_batch_pr(batch, "org/repo", log, {"mode": "pr"})
         assert result["number"] == 42
         assert "pull/42" in result["url"]
 
@@ -470,7 +493,7 @@ class TestCreateBatchPr:
 
         with patch("bluei.engine.utils.run_capture", return_value=(1, "error")):
             with pytest.raises(RuntimeError, match="Failed to create batch PR"):
-                create_batch_pr(batch, "org/repo", log)
+                create_batch_pr(batch, "org/repo", log, {"mode": "pr"})
 
     def test_create_pr_malformed_url(self, tmp_path, make_finding):
         from bluei.engine.batch_pr import create_batch_pr
@@ -480,7 +503,7 @@ class TestCreateBatchPr:
         log = tmp_path / "log.txt"
 
         with patch("bluei.engine.utils.run_capture", return_value=(0, "some output")):
-            result = create_batch_pr(batch, "org/repo", log)
+            result = create_batch_pr(batch, "org/repo", log, {"mode": "pr"})
         assert result["number"] is None
         assert result["url"] == ""
 
@@ -955,6 +978,16 @@ class TestRecoverInterruptedBatch:
 # ── process_batch ────────────────────────────────────────────────────
 
 
+# Current contract (ACCEPTANCE-BOUNDARY-3ks3txvh): multi-finding batch
+# repair is unqualified — process_batch refuses BEFORE any worktree, fix,
+# git, or gh side effect and returns the detail below. The per-scenario
+# mocks below act as sentinels: each pins that its specific effectful
+# entrypoint is never reached by the refusal.
+UNQUALIFIED_DETAIL = (
+    "batch repair unqualified: missing configured scope/validation/closure acceptance"
+)
+
+
 class TestProcessBatch:
     def test_solo_batch_returns_delegated(self, tmp_path, make_finding):
         from bluei.engine.batch_pr import process_batch
@@ -977,10 +1010,17 @@ class TestProcessBatch:
         log = tmp_path / "log.txt"
         args = _make_mock_args()
 
-        with patch("bluei.engine.batch_pr._create_worktree", return_value=False):
+        # current contract: the refusal precedes worktree creation entirely.
+        with patch(
+            "bluei.engine.batch_pr._create_worktree", return_value=False
+        ) as mock_wt:
             ok, detail = process_batch(batch, tmp_path, args, log)
         assert ok is False
-        assert detail == "worktree-creation-failed"
+        assert detail == UNQUALIFIED_DETAIL
+        mock_wt.assert_not_called()
+        assert batch.branch is None
+        assert batch.worktree_path is None
+        assert batch.status == "open"
 
     def test_no_successful_fixes(self, tmp_path, make_finding):
         from bluei.engine.batch_pr import process_batch
@@ -992,15 +1032,17 @@ class TestProcessBatch:
         log = tmp_path / "log.txt"
         args = _make_mock_args()
 
-        with (
-            patch("bluei.engine.batch_pr._create_worktree", return_value=True),
-            patch("bluei.engine.worktree.hydrate_worktree"),
-            patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(0, 3)),
-            patch("bluei.engine.utils.run_no_capture"),
-        ):
+        # current contract: no fix ever runs, so a zero-success outcome can
+        # no longer be produced (or needed) — the batch is refused upfront.
+        with patch(
+            "bluei.engine.batch_pr.apply_batch_fixes", return_value=(0, 3)
+        ) as mock_fixes:
             ok, detail = process_batch(batch, tmp_path, args, log)
         assert ok is False
-        assert detail == "no-successful-fixes"
+        assert detail == UNQUALIFIED_DETAIL
+        mock_fixes.assert_not_called()
+        assert batch.status == "open"
+        assert "batch-refused" in log.read_text()
 
     def test_commit_no_changes(self, tmp_path, make_finding):
         from bluei.engine.batch_pr import process_batch
@@ -1012,16 +1054,14 @@ class TestProcessBatch:
         log = tmp_path / "log.txt"
         args = _make_mock_args()
 
-        with (
-            patch("bluei.engine.batch_pr._create_worktree", return_value=True),
-            patch("bluei.engine.worktree.hydrate_worktree"),
-            patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
-            patch("bluei.engine.git_ops.git_commit_all", return_value="no_changes"),
-            patch("bluei.engine.utils.run_no_capture"),
-        ):
+        # current contract: nothing is ever staged or committed.
+        with patch(
+            "bluei.engine.git_ops.git_commit_all", return_value="no_changes"
+        ) as mock_commit:
             ok, detail = process_batch(batch, tmp_path, args, log)
         assert ok is False
-        assert detail == "commit-no-changes"
+        assert detail == UNQUALIFIED_DETAIL
+        mock_commit.assert_not_called()
 
     def test_push_failed(self, tmp_path, make_finding):
         from bluei.engine.batch_pr import process_batch
@@ -1033,17 +1073,14 @@ class TestProcessBatch:
         log = tmp_path / "log.txt"
         args = _make_mock_args()
 
-        with (
-            patch("bluei.engine.batch_pr._create_worktree", return_value=True),
-            patch("bluei.engine.worktree.hydrate_worktree"),
-            patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
-            patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
-            patch("bluei.engine.git_ops.git_push_branch", return_value=False),
-            patch("bluei.engine.utils.run_no_capture"),
-        ):
+        # current contract: no branch is ever pushed.
+        with patch(
+            "bluei.engine.git_ops.git_push_branch", return_value=False
+        ) as mock_push:
             ok, detail = process_batch(batch, tmp_path, args, log)
         assert ok is False
-        assert detail == "push-failed"
+        assert detail == UNQUALIFIED_DETAIL
+        mock_push.assert_not_called()
 
     def test_dry_run_returns_true(self, tmp_path, make_finding):
         from bluei.engine.batch_pr import process_batch
@@ -1055,17 +1092,20 @@ class TestProcessBatch:
         log = tmp_path / "log.txt"
         args = _make_mock_args(dry_run=True)
 
+        # current contract: dry-run no longer simulates PR acceptance —
+        # the refusal is reported instead of "dry-run-pr-simulated".
         with (
-            patch("bluei.engine.batch_pr._create_worktree", return_value=True),
-            patch("bluei.engine.worktree.hydrate_worktree"),
+            patch("bluei.engine.batch_pr._create_worktree", return_value=True) as mock_wt,
             patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
             patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
             patch("bluei.engine.git_ops.git_push_branch", return_value=True),
-            patch("bluei.engine.utils.run_no_capture"),
         ):
             ok, detail = process_batch(batch, tmp_path, args, log)
-        assert ok is True
-        assert detail == "dry-run-pr-simulated"
+        assert ok is False
+        assert detail == UNQUALIFIED_DETAIL
+        assert detail != "dry-run-pr-simulated"
+        mock_wt.assert_not_called()
+        assert batch.status == "open"
 
     def test_live_run_pr_creation_fails(self, tmp_path, make_finding):
         from bluei.engine.batch_pr import process_batch
@@ -1077,26 +1117,18 @@ class TestProcessBatch:
         log = tmp_path / "log.txt"
         args = _make_mock_args(dry_run=False)
 
-        with (
-            patch("bluei.engine.batch_pr._create_worktree", return_value=True),
-            patch("bluei.engine.worktree.hydrate_worktree"),
-            patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
-            patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
-            patch("bluei.engine.git_ops.git_push_branch", return_value=True),
-            patch(
-                "bluei.engine.gh.get_origin_url", return_value="https://github.com/o/r"
-            ),
-            patch("bluei.engine.gh.parse_github_repo", return_value=("o", "r")),
-            patch("bluei.engine.gh.find_batch_pr_by_rule", return_value=None),
-            patch(
-                "bluei.engine.batch_pr.create_batch_pr",
-                side_effect=RuntimeError("fail"),
-            ),
-            patch("bluei.engine.utils.run_no_capture"),
-        ):
+        # current contract: create_batch_pr is never reached, so its
+        # RuntimeError can neither escape nor mark the batch FAILED.
+        with patch(
+            "bluei.engine.batch_pr.create_batch_pr",
+            side_effect=RuntimeError("fail"),
+        ) as mock_create:
             ok, detail = process_batch(batch, tmp_path, args, log)
         assert ok is False
-        assert detail == "pr-creation-failed"
+        assert detail == UNQUALIFIED_DETAIL
+        assert detail != "pr-creation-failed"
+        mock_create.assert_not_called()
+        assert batch.status == "open"
 
     def test_live_run_success(self, tmp_path, make_finding):
         from bluei.engine.batch_pr import process_batch
@@ -1108,27 +1140,20 @@ class TestProcessBatch:
         log = tmp_path / "log.txt"
         args = _make_mock_args(dry_run=False)
 
-        with (
-            patch("bluei.engine.batch_pr._create_worktree", return_value=True),
-            patch("bluei.engine.worktree.hydrate_worktree"),
-            patch("bluei.engine.batch_pr.apply_batch_fixes", return_value=(3, 0)),
-            patch("bluei.engine.git_ops.git_commit_all", return_value="committed"),
-            patch("bluei.engine.git_ops.git_push_branch", return_value=True),
-            patch(
-                "bluei.engine.gh.get_origin_url", return_value="https://github.com/o/r"
-            ),
-            patch("bluei.engine.gh.parse_github_repo", return_value=("o", "r")),
-            patch("bluei.engine.gh.find_batch_pr_by_rule", return_value=None),
-            patch(
-                "bluei.engine.batch_pr.create_batch_pr",
-                return_value={"number": 99, "url": "https://pr"},
-            ),
-            patch("bluei.engine.batch_pr.link_issues_to_batch_pr"),
-            patch("bluei.engine.utils.run_no_capture"),
-        ):
+        # current contract: no PR is created in live mode — the batch PR
+        # fields stay unset and the refusal stands.
+        with patch(
+            "bluei.engine.batch_pr.create_batch_pr",
+            return_value={"number": 99, "url": "https://pr"},
+        ) as mock_create:
             ok, detail = process_batch(batch, tmp_path, args, log)
-        assert ok is True
-        assert detail is not None and "99" in detail
+        assert ok is False
+        assert detail == UNQUALIFIED_DETAIL
+        assert "99" not in detail
+        mock_create.assert_not_called()
+        assert batch.pr_number is None
+        assert batch.pr_url is None
+        assert batch.status == "open"
 
     def test_no_repo_slug(self, tmp_path, make_finding):
         from bluei.engine.batch_pr import process_batch
@@ -1140,13 +1165,17 @@ class TestProcessBatch:
         log = tmp_path / "log.txt"
         args = _make_mock_args(dry_run=False)
 
-        with (
-            patch("bluei.engine.gh.get_origin_url", return_value="bad-url"),
-            patch("bluei.engine.gh.parse_github_repo", return_value=(None, None)),
-        ):
+        # current contract: the refusal precedes repo-slug derivation — an
+        # unparseable origin no longer yields "no-repo-slug"; the origin is
+        # never even consulted.
+        with patch(
+            "bluei.engine.gh.get_origin_url", return_value="bad-url"
+        ) as mock_origin:
             ok, detail = process_batch(batch, tmp_path, args, log)
         assert ok is False
-        assert detail == "no-repo-slug"
+        assert detail == UNQUALIFIED_DETAIL
+        assert detail != "no-repo-slug"
+        mock_origin.assert_not_called()
 
     def test_duplicate_pr_skipped(self, tmp_path, make_finding):
         from bluei.engine.batch_pr import process_batch
@@ -1158,16 +1187,15 @@ class TestProcessBatch:
         log = tmp_path / "log.txt"
         args = _make_mock_args(dry_run=False)
 
-        with (
-            patch(
-                "bluei.engine.gh.get_origin_url", return_value="https://github.com/o/r"
-            ),
-            patch("bluei.engine.gh.parse_github_repo", return_value=("o", "r")),
-            patch(
-                "bluei.engine.gh.find_batch_pr_by_rule",
-                return_value={"number": 10, "url": "u"},
-            ),
-        ):
+        # current contract: the duplicate-PR check is never consulted —
+        # the refusal outranks the duplicate classification.
+        with patch(
+            "bluei.engine.gh.find_batch_pr_by_rule",
+            return_value={"number": 10, "url": "u"},
+        ) as mock_find_dup:
             ok, detail = process_batch(batch, tmp_path, args, log)
         assert ok is False
-        assert detail is not None and "duplicate" in detail
+        assert detail == UNQUALIFIED_DETAIL
+        assert "duplicate" not in detail
+        mock_find_dup.assert_not_called()
+        assert batch.status == "open"

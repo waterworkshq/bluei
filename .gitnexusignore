@@ -1,0 +1,2 @@
+# The public CLI dispatcher is source, not a generated binary directory.
+!bin/

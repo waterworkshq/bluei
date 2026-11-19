@@ -169,7 +169,8 @@ def test_bluei_emergent_propose_list_and_show(tmp_path) -> None:
     )
 
     assert shadow.returncode == 0
-    assert "status=active" in shadow.stdout
+    assert "status=tentative" in shadow.stdout
+    assert "false_positive_rate=unmeasured" in shadow.stdout
 
 
 def test_bluei_emergent_list_handles_empty_state(tmp_path) -> None:

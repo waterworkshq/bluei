@@ -17,11 +17,12 @@ from bluei.common.models import now_iso, ReviewMode
 from bluei.review.types import ReviewCycleResult
 from bluei.engine.worktree import get_worktree_branch
 from bluei.engine.safety_gates import check_push_allowed
+from bluei.engine.git_ops import diff_stats
 
 
 class WorktreeMixin:
     def _prepare_worktree(
-        self, snapshot: Dict[str, Any], dry_run: bool
+        self, snapshot: Dict[str, Any], dry_run: bool, preserve_dirty: bool = False
     ) -> Dict[str, Any]:
         pr_number = int(snapshot["pr_number"])
         branch = str(snapshot.get("branch") or "")
@@ -51,6 +52,21 @@ class WorktreeMixin:
                     ["git", "status", "--porcelain"], cwd=path, check=False
                 )
                 if status_output.strip():
+                    if preserve_dirty:
+                        # Pending-push: the dirty worktree holds validated
+                        # remediation changes awaiting operator push —
+                        # recreating would silently discard them.
+                        _logger.info(
+                            f"worktree-preserved: path={path} "
+                            "pending-push changes retained"
+                        )
+                        return {
+                            "worktree_path": str(path),
+                            "local_branch": local_branch,
+                            "prepared": True,
+                            "dry_run": False,
+                            "preserved_dirty": True,
+                        }
                     _logger.warning(f"worktree-dirty: path={path} — force-recreating")
                     self._run_repo_cmd(
                         ["git", "worktree", "remove", "--force", str(path)],
@@ -174,7 +190,16 @@ class WorktreeMixin:
                 encoding="utf-8",
             )
         backend = self._render_backend_command(prompt_path)
-        worktree = self._prepare_worktree(snapshot, dry_run=dry_run)
+        # A validated-but-unpushed worktree (pending push) must survive
+        # re-planning — its changes are revalidated, not discarded. The
+        # preserve kwarg is passed only when needed, so the call shape for
+        # the ordinary path is unchanged.
+        if str(review_record.get("last_action") or "") == "retry_pending_push":
+            worktree = self._prepare_worktree(
+                snapshot, dry_run=dry_run, preserve_dirty=True
+            )
+        else:
+            worktree = self._prepare_worktree(snapshot, dry_run=dry_run)
         return {
             "status": "retry_prepared" if worktree.get("prepared") else "retry_planned",
             "prompt_file": str(prompt_path),
@@ -215,13 +240,23 @@ class WorktreeMixin:
             }
 
     def _collect_changed_files(self, cwd: Path) -> List[str]:
-        out = self._run_repo_cmd(["git", "status", "--porcelain"], cwd=cwd, check=False)
+        # Raw subprocess, NOT _run_repo_cmd: that helper strips stdout, which
+        # deletes porcelain v1's leading status column (" M app.py" →
+        # "M app.py") and corrupts the path extracted below ("pp.py").
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(cwd),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
         files: List[str] = []
-        for line in out.splitlines():
-            line = line.strip()
-            if not line:
+        for line in (result.stdout or "").splitlines():
+            if not line.strip():
                 continue
-            files.append(line[3:] if len(line) > 3 else line)
+            # Porcelain v1 is "XY<space>path": slice the two-char status
+            # prefix off the RAW line.
+            files.append(line[3:].strip() if len(line) > 3 else line.strip())
         return files
 
     def _run_git_result(self, args: List[str], cwd: Path) -> Dict[str, Any]:
@@ -274,6 +309,31 @@ class WorktreeMixin:
             result["status"] = "no_changes"
             return result
 
+        # A03: declared scope caps (same config.limits source and defaults
+        # as the solo lane) — an over-broad remediation is never committed.
+        try:
+            files_changed, loc_diff = diff_stats(worktree_path)
+        except (OSError, ValueError):
+            result["status"] = "blocked_by_scope"
+            result["scope_reason"] = "diff-unavailable"
+            return result
+        limits = getattr(self.repo.config, "limits", None) or {}
+        max_files_changed = int(limits.get("max_files_changed", 5))
+        max_loc_diff = int(limits.get("max_loc_diff", 200))
+        if files_changed > max_files_changed or loc_diff > max_loc_diff:
+            result["status"] = "blocked_by_scope"
+            result["scope_reason"] = (
+                f"scope-limit-exceeded files={files_changed}/{max_files_changed} "
+                f"loc={loc_diff}/{max_loc_diff}"
+            )
+            return result
+        result["scope"] = {
+            "files_changed": files_changed,
+            "loc_diff": loc_diff,
+            "max_files_changed": max_files_changed,
+            "max_loc_diff": max_loc_diff,
+        }
+
         add_result = self._run_git_result(
             ["add", "--", *changed_files], cwd=worktree_path
         )
@@ -316,27 +376,25 @@ class WorktreeMixin:
         return result
 
     def _run_validation(self, worktree_path: Path) -> Dict[str, Any]:
-        commands = self.repo.config.baseline_checks or self._guess_validation_commands()
+        from bluei.engine.validation import run_named_checks
+
+        # A03/A10: configured repo baseline_checks only — no inference
+        # fallback. Empty config is unqualified, mirroring the solo lane.
+        commands = self.repo.config.baseline_checks
         if not commands:
-            return {"ok": True, "results": [], "reason": "no-validation-configured"}
-        results = []
-        ok = True
-        for cmd in commands:
-            result = subprocess.run(
-                cmd, cwd=str(worktree_path), text=True, capture_output=True, check=False
-            )
-            results.append(
-                {
-                    "command": cmd,
-                    "returncode": result.returncode,
-                    "stdout": (result.stdout or "").strip()[-2000:],
-                    "stderr": (result.stderr or "").strip()[-2000:],
-                }
-            )
-            if result.returncode != 0:
-                ok = False
-                break
-        return {"ok": ok, "results": results, "reason": "completed"}
+            return {"ok": False, "results": [], "reason": "unqualified: no-validation-configured"}
+        checks = {f"review-{idx}": cmd for idx, cmd in enumerate(commands)}
+        observed = run_named_checks(
+            worktree_path, checks, Path("/dev/null"), "review-validation",
+            environment_repo=Path(self.repo.config.path),
+        )
+        results = [{
+            "command": record["cmd"], "returncode": record["rc"],
+            "stdout": record["output"][-2000:], "stderr": "",
+            "available": record["available"],
+        } for record in observed.values()]
+        ok = all(record["available"] and record["rc"] == 0 for record in observed.values())
+        return {"ok": ok, "results": results, "reason": "completed" if ok else "validation-failed-or-unavailable"}
 
     def _execute_prepared_remediation(
         self,
@@ -365,21 +423,111 @@ class WorktreeMixin:
                 "executed": False,
                 "attempts_used": attempts_used_prior,
             }
+
+        # F1/F4: HEAD identity is a precondition, not an optional check. A
+        # worktree we cannot inspect (missing cwd, git failure) must fail
+        # closed BEFORE the backend runs or a pending-push result is reused —
+        # an empty head_before would silently skip the head-change gate.
+        try:
+            head_result = self._run_git_result(
+                ["rev-parse", "HEAD"], cwd=worktree_path
+            )
+        except OSError:
+            head_result = {"returncode": 1, "stdout": "", "stderr": "unavailable"}
+        if head_result["returncode"] != 0 or not head_result["stdout"]:
+            return {
+                "status": "retry_failed",
+                "executed": True,
+                "attempts_used": attempts_used_prior + 1,
+                "backend_result": None,
+                "changed_files": [],
+                "validation": {
+                    "ok": False,
+                    "results": [],
+                    "reason": "head-unavailable",
+                },
+                "push_result": None,
+                "head_changed": False,
+            }
+        head_before = head_result["stdout"]
+
+        prior_pending = (
+            str(review_record.get("last_action") or "") == "retry_pending_push"
+            and isinstance(review_record.get("execution_result"), dict)
+        )
+        if prior_pending:
+            revalidated = self._revalidate_pending_push(
+                worktree_path, review_record, head_before
+            )
+            if revalidated is not None:
+                validation, changed_files = revalidated
+                push_result = self._apply_commit_push_boundary(
+                    worktree_path,
+                    snapshot or {},
+                    changed_files,
+                    allow_review_push=allow_review_push,
+                )
+                push_status = push_result.get("status")
+                if push_status == "pending_operator_confirmation":
+                    status = "retry_pending_push"
+                elif push_status == "pushed":
+                    status = "retry_pushed"
+                else:
+                    status = "retry_failed_push"
+                return {
+                    "status": status,
+                    "executed": False,
+                    "revalidated": True,
+                    "attempts_used": attempts_used_prior,
+                    "backend_result": None,
+                    "changed_files": changed_files,
+                    "validation": validation,
+                    "push_result": push_result,
+                }
+            # Revalidation failed (changes lost / validation no longer ok):
+            # fall through to a fresh backend attempt below. The recorded
+            # pending-push state is not trusted as acceptance evidence.
+
         shell_result = self._run_shell(
             remediation_plan["backend_command"], worktree_path
         )
-        changed_files = self._collect_changed_files(worktree_path)
-        validation = (
-            self._run_validation(worktree_path)
-            if shell_result["returncode"] == 0
-            else {"ok": False, "results": [], "reason": "backend-failed"}
-        )
+        # F4: a vanished/uninspectable worktree after the backend run fails
+        # closed instead of crashing or skipping the head gate.
+        try:
+            head_now_result = self._run_git_result(
+                ["rev-parse", "HEAD"], cwd=worktree_path
+            )
+            head_changed = (
+                head_now_result["returncode"] != 0
+                or not head_now_result["stdout"]
+                or head_now_result["stdout"] != head_before
+            )
+            changed_files = self._collect_changed_files(worktree_path)
+        except OSError:
+            head_changed = True
+            changed_files = []
+        if head_changed:
+            validation = {
+                "ok": False,
+                "results": [],
+                "reason": "head-changed-by-backend",
+            }
+        else:
+            validation = (
+                self._run_validation(worktree_path)
+                if shell_result["returncode"] == 0
+                else {"ok": False, "results": [], "reason": "backend-failed"}
+            )
         attempts_used = attempts_used_prior + 1
         status = "retry_executed"
         push_result: Optional[Dict[str, Any]] = None
         if shell_result.get("timed_out"):
             status = "retry_failed_timeout"
         elif shell_result["returncode"] != 0:
+            status = "retry_failed"
+        elif head_changed:
+            # A backend that moves HEAD (commits/rebases) is rejected: the
+            # validated diff is no longer what was reviewed.
             status = "retry_failed"
         elif not validation.get("ok", False):
             status = "retry_failed_validation"
@@ -396,7 +544,11 @@ class WorktreeMixin:
                 status = "retry_pending_push"
             elif push_result.get("status") == "pushed":
                 status = "retry_pushed"
-            elif push_result.get("status") in {"commit_failed", "push_failed"}:
+            elif push_result.get("status") in {
+                "commit_failed",
+                "push_failed",
+                "blocked_by_scope",
+            }:
                 status = "retry_failed_push"
         return {
             "status": status,
@@ -406,7 +558,47 @@ class WorktreeMixin:
             "changed_files": changed_files,
             "validation": validation,
             "push_result": push_result,
+            "head_changed": head_changed,
         }
+
+    def _revalidate_pending_push(
+        self,
+        worktree_path: Path,
+        review_record: Dict[str, Any],
+        head_before: str,
+    ) -> Optional[tuple]:
+        """Revalidate a pending-push worktree before reusing its result.
+
+        The stored pending-push execution_result is acceptance evidence only
+        if the worktree still holds those validated changes and the current
+        validation gate still passes at the same HEAD. Returns
+        ``(validation, changed_files)`` when valid, None when the state has
+        diverged (caller falls through to a fresh attempt).
+        """
+        prior = review_record.get("execution_result") or {}
+        prior_changed = list(prior.get("changed_files") or [])
+        if not prior_changed:
+            return None
+        try:
+            current_changed = self._collect_changed_files(worktree_path)
+        except Exception:
+            return None
+        if set(prior_changed) - set(current_changed):
+            return None
+        if not all((worktree_path / path).exists() for path in prior_changed):
+            return None
+        try:
+            head_now = self._run_git_result(
+                ["rev-parse", "HEAD"], cwd=worktree_path
+            )
+        except OSError:
+            return None
+        if head_now["returncode"] != 0 or head_now["stdout"] != head_before:
+            return None
+        validation = self._run_validation(worktree_path)
+        if not validation.get("ok", False):
+            return None
+        return validation, prior_changed
 
     def _persist_review_state(
         self,

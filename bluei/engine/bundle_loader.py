@@ -141,6 +141,19 @@ def load_bundles(repo_state_dir: Optional[Path] = None) -> List[GoldenBundle]:
     return product
 
 
+def bundle_from_accepted(evidence: dict) -> GoldenBundle:
+    """Join a retained observation to its persisted shared asset, not its local ID."""
+    ref = evidence.get("shared_asset_ref")
+    if not isinstance(ref, str) or not ref.startswith("pattern:xp-"):
+        raise ValueError("accepted evidence has no shared asset")
+    return GoldenBundle(
+        id=f"gb-{evidence['evidence_id']}", asset_class="pattern", asset_ref=ref,
+        rule=evidence["rule"], rule_family="ruff", language="python",
+        before=evidence["before"], after=evidence["after"], detector_before="",
+        detector_after="", validation_command="", source_finding_id=None, extracted_at="",
+    )
+
+
 def has_bundle_reference(asset_ref: str, bundles: List[GoldenBundle]) -> bool:
     """Return True if any bundle's ``asset_ref`` matches *asset_ref*.
 

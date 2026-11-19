@@ -81,7 +81,18 @@ def try_replay(
     shared_library: Any = None,
     record_outcome: bool = True,
     exclude_pattern_ids: Optional[set] = None,
+    record_success: bool = True,
 ) -> Tuple[bool, Optional[str]]:
+    """Attempt deterministic pattern replay for one finding.
+
+    ``record_outcome`` gates all store outcome recording (ADR-0004
+    HIT/MISS/FAILURE). ``record_success`` (default ``True``) gates ONLY the
+    positive HIT recording: with ``record_success=False`` the replay still
+    applies and validates, MISS/FAILURE are still recorded per
+    ``record_outcome``, but the caller owns recording the HIT after its own
+    acceptance boundary (scope/validation/closure/retained artifact) via
+    ``store.record_replay_outcome(pid, ReplayOutcome.HIT)``.
+    """
     try:
         return _try_replay_inner(
             worktree_path,
@@ -92,6 +103,7 @@ def try_replay(
             shared_library,
             record_outcome,
             exclude_pattern_ids,
+            record_success,
         )
     except Exception as exc:
         try:
@@ -318,6 +330,7 @@ def _try_replay_inner(
     shared_library: Any = None,
     record_outcome: bool = True,
     exclude_pattern_ids: Optional[set] = None,
+    record_success: bool = True,
 ) -> Tuple[bool, Optional[str]]:
     pattern = _resolve_pattern(
         finding, store, log_file, shared_library, exclude_pattern_ids
@@ -420,7 +433,12 @@ def _try_replay_inner(
             )
         return (False, None)
 
-    if record_outcome:
+    # Positive HIT recording is deferred to the caller's acceptance boundary
+    # when record_success=False (outer scope/validation/closure/retained-
+    # artifact gates may still reject the fix). Negative MISS/FAILURE
+    # observations above are real evidence and stay recorded per
+    # record_outcome.
+    if record_outcome and record_success:
         store.record_replay_outcome(pid, ReplayOutcome.HIT)
     if application.mechanism == "structural":
         append_log(

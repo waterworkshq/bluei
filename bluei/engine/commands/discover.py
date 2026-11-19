@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from bluei.engine.models import Finding
+from bluei.engine.models import Finding, canonical_ruff_rule
 from bluei.engine.state import (
     _append_text,
     append_findings,
@@ -12,6 +12,7 @@ from bluei.engine.state import (
     guard_open_issues,
     canonical_markdown_rule,
     _load_markdown_identities,
+    _load_ruff_identities,
 )
 
 DiscoverResult = Tuple[
@@ -75,8 +76,14 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
         _append_text(log_file, f"pre-discovery-cap-check: {cap_reason}")
         if not cap_ok:
             blocked_reasons.append(cap_reason)
+            # The cap gates issue admission downstream, never the scan:
+            # discovery stays fresh so the backlog keeps provenance.
+            _append_text(
+                log_file,
+                "discovery-proceeds: open-issue cap gates admission, not the scan",
+            )
 
-    if args.run_phase in ("verify-only",) or (run_issue_cycle and cap_ok):
+    if args.run_phase in ("verify-only", "refactor-cycle") or run_issue_cycle:
         findings = discover_findings(
             repo_path,
             log_file=log_file,
@@ -85,12 +92,6 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
             **({"discovery_scope": args.discovery_scope}
                if getattr(args, "discovery_scope", "repository") != "repository" else {}),
         )
-    elif not cap_ok:
-        detector_outcomes["discovery"] = {
-            "status": "skipped",
-            "count": 0,
-            "reason": f"open-issue cap reached; discovery not run ({blocked_reasons[-1] if blocked_reasons else 'cap'})",
-        }
 
     if ctx is not None:
         ctx.detector_outcomes = detector_outcomes
@@ -123,6 +124,10 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
     aliases: Dict[str, set[str]] = {}
     if any(canonical_markdown_rule(finding.rule) for finding in findings):
         _load_markdown_identities(findings_file, aliases=aliases)
+    if any(canonical_ruff_rule(finding.rule) for finding in findings):
+        # Same loader contract as Markdown; snippets compare verbatim so
+        # trailing-whitespace variants never merge into one alias group.
+        _load_ruff_identities(findings_file, aliases=aliases)
     if args.run_phase == "verify-only":
         return (findings, written_findings, [], [], [], blocked_reasons, cap_ok)
     issues_by_id: Dict[str, List[Dict[str, Any]]] = {}
@@ -153,22 +158,35 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
         matches = [issue for fid in ids for issue in issues_by_id.get(fid, [])]
         linked_ids = {issue["finding_id"] for issue in matches} | ids.intersection(pr_ids)
         if len(ids) > 1 and (len(matches) > 1 or len(linked_ids) > 1):
-            reason = f"Markdown alias conflict for {finding.finding_id}; manual resolution required"
+            family = (
+                "Markdown" if canonical_markdown_rule(finding.rule) else "Ruff"
+            )
+            reason = f"{family} alias conflict for {finding.finding_id}; manual resolution required"
             blocked_reasons.append(reason)
             _append_text(log_file, reason)
-            detector_outcomes["markdown-identity"] = {
+            detector_outcomes["finding-identity"] = {
                 "status": "failed", "count": 0, "reason": reason,
             }
+            if family == "Markdown":
+                # Compatibility: Markdown consumers key off this outcome.
+                detector_outcomes["markdown-identity"] = (
+                    detector_outcomes["finding-identity"]
+                )
             suppressed_findings.append(finding)
             continue
         if len(ids) > 1 and linked_ids:
+            # Rebind to the id the active issue (or linked PR) uses so
+            # earliest-ID adoption cannot mint a duplicate below the cap.
             finding.finding_id = next(iter(linked_ids))
         elif not matches:
             terminal = [issue for fid in ids for issue in all_issues_by_id.get(fid, [])]
             if terminal:
                 finding.finding_id = terminal[0]["finding_id"]
         routed_findings.append(finding)
-    if detector_outcomes.get("markdown-identity", {}).get("status") == "failed":
+    if any(
+        detector_outcomes.get(key, {}).get("status") == "failed"
+        for key in ("finding-identity", "markdown-identity")
+    ):
         if ctx is not None and ctx.run_id:
             atomic_json_write(ctx.status_file.parent / "discovery-current.json", {
                 "run_id": ctx.run_id, "findings_detected": len(findings),
@@ -247,6 +265,7 @@ def run_discover_phase(*args, **kwargs) -> DiscoverResult:
             findings_file=findings_file,
             worktree_path=repo_path,
             log_file=log_file,
+            queue_dir=ctx.state_file.parent / "refactor_queue" if ctx is not None else None,
         )
         refactor_routed_items = list(routed.get("refactor_queue", []))
         _append_text(

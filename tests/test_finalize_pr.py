@@ -100,7 +100,7 @@ class TestFinalizeNoChanges:
 
         assert result.success is True
         assert result.run_status == "resolved-verified-noop"
-        assert result.fixes_verified_delta == 1
+        assert result.fixes_verified_delta == 0
         assert result.should_break is False
         mock_mark.assert_called_once()
         mock_comment.assert_called_once()

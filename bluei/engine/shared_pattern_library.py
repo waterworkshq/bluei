@@ -5,8 +5,10 @@ exact hash match first, then fuzzy structural similarity. Patterns are
 privacy-normalized before storage (identifiers and literals stripped).
 """
 
-import logging
+import fcntl
+import hashlib
 import json
+import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -31,6 +33,10 @@ MIN_REPOS_FOR_LOOKUP = 1
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _accepted_before_hash(before: str) -> str:
+    return hashlib.sha256(normalize_for_sharing(before, "python").encode()).hexdigest()
 
 
 @dataclass
@@ -153,6 +159,102 @@ class SharedPatternLibrary:
             self._cache.pop(language, None)
             self._cache_ts.pop(language, None)
             return existing.pattern_id
+
+    def observe_accepted(self, rule: str, language: str, before: str, after: str,
+                         repo_id: str, evidence_id: str) -> str:
+        """Record accepted provenance separately from legacy replayable patterns."""
+        if language != "python" or not repo_id or not evidence_id:
+            raise ValueError("missing supported accepted provenance")
+        safe_before = normalize_for_sharing(before, language)
+        safe_after = normalize_for_sharing(after, language)
+        key = hashlib.sha256(json.dumps([rule, safe_before, safe_after]).encode()).hexdigest()
+        pattern_id = f"xp-{key}"
+        path = self.library_path / "accepted.jsonl"
+        with path.with_suffix(".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            from bluei.engine.jsonl import append_jsonl
+
+            records = read_jsonl(path, skip_errors=False)
+            if not any(r["repo_id"] == repo_id and r["evidence_id"] == evidence_id for r in records):
+                append_jsonl(path, {"pattern_id": pattern_id, "repo_id": repo_id,
+                                   "evidence_id": evidence_id, "rule": rule})
+        return pattern_id
+
+    def record_attempt(self, attempt_id, repo_id, before, *, evidence_id=None):
+        from bluei.engine.jsonl import append_jsonl
+
+        # No completion record means failed, unqualified, or interrupted. None
+        # of these is a known-clean detector example or earns positive credit.
+        path = self.library_path / "attempts.jsonl"
+        with path.with_suffix(".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            append_jsonl(path, {
+                "attempt_id": attempt_id, "repo_id": repo_id,
+                "before_hash": _accepted_before_hash(before), "evidence_id": evidence_id,
+            })
+
+    def eligible_accepted(self, pattern_id: str, before: str, registered_states: dict,
+                          *, current_attempt=None, required_observation=None) -> bool:
+        """Count only completed attempts backed by a current registered patch."""
+        from bluei.engine.retained_recipe import digest, verify_retained_patch
+
+        records = read_jsonl(self.library_path / "accepted.jsonl", skip_errors=False)
+        shared = {}
+        for row in records:
+            key = (row["repo_id"], row["evidence_id"])
+            if shared.setdefault(key, row["pattern_id"]) != row["pattern_id"]:
+                return False
+        candidates = {key for key, asset in shared.items() if asset == pattern_id}
+        rows = read_jsonl(self.library_path / "attempts.jsonl", skip_errors=False)
+        before_hash = _accepted_before_hash(before)
+        attempts = {}
+        for row in rows:
+            if row["before_hash"] != before_hash:
+                continue
+            attempt_id, repo_id, evidence_id = row["attempt_id"], row["repo_id"], row["evidence_id"]
+            if attempt_id not in attempts:
+                if evidence_id is not None:
+                    return False
+            elif attempts[attempt_id] != (repo_id, None) or evidence_id is None:
+                return False
+            attempts[attempt_id] = (repo_id, evidence_id)
+        # The caller may exclude only the attempt currently choosing a recipe.
+        if current_attempt in attempts and attempts[current_attempt][1] is None:
+            del attempts[current_attempt]
+        if not attempts:
+            return False
+        completed = {(repo, evidence) for repo, evidence in attempts.values() if evidence is not None}
+        needed = candidates | completed
+        observations = set()
+        for repo_id, directories in registered_states.items():
+            for state_dir in directories:
+                source = read_jsonl(state_dir / "accepted_fix_evidence.jsonl", skip_errors=False)
+                for record in source:
+                    key = (repo_id, record["evidence_id"])
+                    if key not in needed or key not in shared or record.get("repo_id") != repo_id:
+                        continue
+                    raw = {k: record[k] for k in ("repo_id", "rule", "path", "base", "patch_sha256", "before", "after")}
+                    if (digest(raw) != record["evidence_id"]
+                            or record.get("shared_asset_ref") != f"pattern:{shared[key]}"
+                            or _accepted_before_hash(record["before"]) != before_hash):
+                        continue
+                    try:
+                        verify_retained_patch(state_dir, record)
+                    except (OSError, ValueError):
+                        continue
+                    observations.add(key)
+        if needed - observations:
+            return False
+        # An accepted alternate transformation supplies neither success nor failure for this asset.
+        completed &= candidates
+        if required_observation is not None and required_observation not in completed:
+            return False
+        pattern = CrossRepoPattern(
+            pattern_id, "ruff-b904", "python", "", "", "", 0.0,
+            source_repos={repo for repo, _ in completed}, success_count=len(completed),
+            failure_count=sum(evidence is None for _, evidence in attempts.values()),
+        )
+        return check_promotion_eligibility(pattern)
 
     def lookup(
         self,

@@ -60,6 +60,26 @@ def default_checkpoint_dir() -> Path:
 
 
 @dataclass
+class CascadeAcceptanceContext:
+    """Configured acceptance context a caller threads through the cascade.
+
+    Carries the solo lane's real execution contract (A03/A10): configured
+    baseline checks and their pre-computed results, the source repo whose
+    environment defines the intended runtime, the governed model command
+    template with its explicit logical backend identity, and the baseline
+    failure policy. Every field is caller-supplied evidence — the cascade
+    never substitutes defaults or samples.
+    """
+
+    baseline_checks: Dict[str, List[str]] = field(default_factory=dict)
+    baseline_results: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    environment_repo: Optional[Path] = None
+    claude_cmd_template: Optional[str] = None
+    backend: str = "claude"
+    allow_unchanged_baseline_failures: bool = True
+
+
+@dataclass
 class CascadeResult:
     """Outcome of a single cascade stage attempt."""
 
@@ -70,6 +90,12 @@ class CascadeResult:
     pattern_id: Optional[str] = None
     latency_ms: int = 0
     error: Optional[str] = None
+    # Positive-outcome confirmations (pattern HIT, composite success count,
+    # replay savings) collected by stages in defer mode. The lifecycle tier
+    # appends learning/ledger confirmations and hands the whole list to the
+    # caller's deferred-acceptance record; nothing runs before the caller's
+    # outer durable acceptance invokes record["confirm"]().
+    pending_confirmations: List[Any] = field(default_factory=list)
     # Telemetry for the winning run; set on cascade-level success so the
     # lifecycle tier can emit the ledger record AFTER its own validation.
     telemetry: Optional["CascadeTelemetry"] = None
@@ -138,6 +164,14 @@ class CascadeContext:
     checkpoint: Optional[WorktreeCheckpoint] = None
     # Backup root when execute() must create its own checkpoint (direct callers).
     checkpoint_dir: Optional[Path] = None
+    # Configured acceptance context (A03/A10): real checks/runtime/backend
+    # evidence from the caller. None keeps the legacy uncontextualized path
+    # (explicitly unqualified — the cascade substitutes nothing).
+    acceptance: Optional[CascadeAcceptanceContext] = None
+    # True when the caller owns the acceptance boundary: stages defer every
+    # positive outcome confirmation into CascadeResult.pending_confirmations
+    # instead of recording eagerly. Negative evidence stays immediate.
+    defer_success_evidence: bool = False
 
 
 class CascadeStage(ABC):
@@ -353,6 +387,11 @@ class DeterministicCascade:
                 pattern_id=None,
                 latency_ms=telemetry.total_latency_ms,
                 error=f"cascade exhausted after {len(telemetry.stages_tried)} stages: " + "; ".join(f"{x['stage']}: {x['reason']}" for x in telemetry.stages_failed),
+                # Additive: carry the honest exhausted telemetry so callers
+                # can report attempt counters (e.g. whether deterministic
+                # stages actually ran before a model fallback). Success-side
+                # ledger semantics are unchanged — emission stays caller-side.
+                telemetry=telemetry,
             )
         except BaseException as exc:
             pending = exc
@@ -501,6 +540,30 @@ class DeterministicCascade:
                 append_jsonl(context.ledger_path, record)
             except Exception:
                 _logger.debug("Failed to write ledger record")
+
+
+def _record_replay_hit(store: Any, pattern_id: str) -> None:
+    """Record one positive replay HIT at the caller's acceptance boundary."""
+    from bluei.engine.pattern_store import ReplayOutcome
+
+    store.record_replay_outcome(pattern_id, ReplayOutcome.HIT)
+
+
+def _record_replay_savings(
+    context: "CascadeContext", pattern_id: Optional[str], rule: str
+) -> None:
+    """Record replay cost savings; no-op without a tracker or pattern id."""
+    if not (context.cost_tracker and pattern_id):
+        return
+    saved = context.cost_tracker.estimate_invocation_cost(
+        "claude-sonnet-4", input_tokens=4000, output_tokens=2000
+    )
+    context.cost_tracker.record_pattern_replay_savings(
+        model="claude-sonnet-4",
+        saved_cost=saved,
+        pattern_id=pattern_id,
+        rule=rule,
+    )
 
 
 class LinterFixStage(CascadeStage):
@@ -841,18 +904,31 @@ class PatternReplayCascadeStage(CascadeStage):
                 context.log_file,
                 shared_library=getattr(context, "shared_library", None),
                 exclude_pattern_ids=getattr(context, "attempted_pattern_ids", None),
+                # Defer mode: the positive HIT is recorded by the caller's
+                # acceptance boundary, not here (MISS/FAILURE stay immediate).
+                record_success=not context.defer_success_evidence,
             )
-            if replayed and context.cost_tracker and pattern_id:
-                saved = context.cost_tracker.estimate_invocation_cost(
-                    "claude-sonnet-4", input_tokens=4000, output_tokens=2000
-                )
-                context.cost_tracker.record_pattern_replay_savings(
-                    model="claude-sonnet-4",
-                    saved_cost=saved,
-                    pattern_id=pattern_id,
-                    rule=finding.rule,
-                )
             latency = int((time.monotonic() - t0) * 1000)
+            if replayed and pattern_id and context.defer_success_evidence:
+                # Deferred positive evidence: HIT + savings run only when the
+                # caller's outer acceptance confirms the candidate.
+                store = context.pattern_store
+                pid = pattern_id
+                rule = finding.rule
+                return CascadeResult(
+                    success=replayed,
+                    stage_name=self.name,
+                    changes_made=[finding.path] if replayed else [],
+                    validation_passed=replayed,
+                    pattern_id=pattern_id,
+                    latency_ms=latency,
+                    pending_confirmations=[
+                        lambda: _record_replay_hit(store, pid),
+                        lambda: _record_replay_savings(context, pid, rule),
+                    ],
+                )
+            if replayed:
+                _record_replay_savings(context, pattern_id, finding.rule)
             return CascadeResult(
                 success=replayed,
                 stage_name=self.name,
@@ -1085,16 +1161,28 @@ class CompositePatternCascadeStage(CascadeStage):
                 from bluei.engine.validation import verify_fix_closed
 
                 resolved = verify_fix_closed(worktree, finding, context.log_file)
-                comp_store.record_result(pattern.pattern_id, resolved)
-                if resolved and context.cost_tracker:
-                    saved = context.cost_tracker.estimate_invocation_cost(
-                        "claude-sonnet-4", input_tokens=4000, output_tokens=2000
-                    )
-                    context.cost_tracker.record_pattern_replay_savings(
-                        model="claude-sonnet-4",
-                        saved_cost=saved,
+                if resolved and context.defer_success_evidence:
+                    # Deferred positive evidence: success count and savings
+                    # run only at the caller's outer acceptance.
+                    cs = comp_store
+                    pid = pattern.pattern_id
+                    rule = finding.rule
+                    return CascadeResult(
+                        success=resolved,
+                        stage_name=self.name,
+                        changes_made=changes if resolved else [],
+                        validation_passed=resolved,
                         pattern_id=pattern.pattern_id,
-                        rule=finding.rule,
+                        latency_ms=latency,
+                        pending_confirmations=[
+                            lambda: cs.record_result(pid, True),
+                            lambda: _record_replay_savings(context, pid, rule),
+                        ],
+                    )
+                comp_store.record_result(pattern.pattern_id, resolved)
+                if resolved:
+                    _record_replay_savings(
+                        context, pattern.pattern_id, finding.rule
                     )
                 return CascadeResult(
                     success=resolved,

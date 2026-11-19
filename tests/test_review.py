@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for review-cycle helpers."""
 
+import subprocess
 from pathlib import Path
 
 from bluei.app.models import Repo, RepoConfig
@@ -20,6 +21,43 @@ def make_repo(tmp_path: Path) -> Repo:
             language="typescript",
         )
     )
+
+
+def _stable_head(engine, head: str = "a" * 40) -> None:
+    """Explicit per-test HEAD mock: valid, identical rev-parse before and
+    after the (stubbed) backend.
+
+    Deliberately NOT autouse — head-negative tests must keep the real
+    fail-closed rev-parse path.
+    """
+    engine._run_git_result = lambda args, cwd: {
+        "command": ["git", *args],
+        "returncode": 0,
+        "stdout": head,
+        "stderr": "",
+    }
+
+
+def _git_worktree(tmp_path: Path) -> Path:
+    """Real clean git worktree so the HEAD precondition is exercised for
+    real (stronger than a rev-parse mock where practical)."""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    for args in (
+        ["git", "init"],
+        ["git", "config", "user.email", "bluei@example.invalid"],
+        ["git", "config", "user.name", "bluei"],
+    ):
+        subprocess.run(args, cwd=worktree, capture_output=True, check=True)
+    (worktree / "README").write_text("init\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=worktree, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=worktree,
+        capture_output=True,
+        check=True,
+    )
+    return worktree
 
 
 def test_is_managed_pr_by_branch_prefix(tmp_path):
@@ -421,6 +459,7 @@ def test_execute_prepared_remediation_reports_no_changes(tmp_path):
     engine = ReviewCycleEngine.__new__(ReviewCycleEngine)
     engine.repo = repo
     engine.state = StateManager(tmp_path / "repos")
+    _stable_head(engine)
     engine._run_shell = lambda command, cwd: {
         "returncode": 0,
         "stdout": "ok",
@@ -454,6 +493,7 @@ def test_execute_prepared_remediation_validation_failure_beats_no_changes(tmp_pa
     engine = ReviewCycleEngine.__new__(ReviewCycleEngine)
     engine.repo = repo
     engine.state = StateManager(tmp_path / "repos")
+    _stable_head(engine)
     engine._run_shell = lambda command, cwd: {
         "returncode": 0,
         "stdout": "ok",
@@ -506,6 +546,7 @@ def test_execute_prepared_remediation_handles_timeout(tmp_path):
     engine = ReviewCycleEngine.__new__(ReviewCycleEngine)
     engine.repo = repo
     engine.state = StateManager(tmp_path / "repos")
+    _stable_head(engine)
     engine._run_shell = lambda command, cwd: {
         "returncode": 124,
         "stdout": "",
@@ -538,6 +579,7 @@ def test_execute_prepared_remediation_requires_explicit_push_confirmation(tmp_pa
     engine = ReviewCycleEngine.__new__(ReviewCycleEngine)
     engine.repo = repo
     engine.state = StateManager(tmp_path / "repos")
+    _stable_head(engine)
     engine._run_shell = lambda command, cwd: {
         "returncode": 0,
         "stdout": "ok",
@@ -581,6 +623,7 @@ def test_execute_prepared_remediation_pushes_when_allowed(tmp_path):
     engine = ReviewCycleEngine.__new__(ReviewCycleEngine)
     engine.repo = repo
     engine.state = StateManager(tmp_path / "repos")
+    _stable_head(engine)
     engine._run_shell = lambda command, cwd: {
         "returncode": 0,
         "stdout": "ok",
@@ -702,8 +745,7 @@ def test_unattended_push_policy_default_blocks_push(tmp_path):
     Unattended review-cycle runs (e.g., cron jobs) must NEVER push code.
     """
     repo = make_repo(tmp_path)
-    worktree = tmp_path / "worktree"
-    worktree.mkdir()
+    worktree = _git_worktree(tmp_path)
     engine = ReviewCycleEngine.__new__(ReviewCycleEngine)
     engine.repo = repo
     engine.state = StateManager(tmp_path / "repos")
@@ -749,8 +791,7 @@ def test_unattended_push_policy_explicit_flag_enables_push(tmp_path):
     proceeds to push after validation.
     """
     repo = make_repo(tmp_path)
-    worktree = tmp_path / "worktree"
-    worktree.mkdir()
+    worktree = _git_worktree(tmp_path)
     engine = ReviewCycleEngine.__new__(ReviewCycleEngine)
     engine.repo = repo
     engine.state = StateManager(tmp_path / "repos")

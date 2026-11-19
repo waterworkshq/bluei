@@ -356,6 +356,17 @@ class RepoConfig:
                 "digest": {"enabled": False, "schedule": "never", "channels": []},
                 "rate_limit": {"cooldown_seconds": 300, "max_per_hour": 20},
             }
+        # Fail loud on unknown top-level keys: a silent drop or a raw
+        # TypeError from cls(**data) hides config drift (typo'd or future
+        # schema keys). Every key to_dict() emits is a dataclass field.
+        known = {f.name for f in fields(cls)}
+        unsupported = sorted(k for k in data if k not in known)
+        if unsupported:
+            raise ValueError(
+                "RepoConfig.from_dict: unsupported top-level key(s): "
+                + ", ".join(unsupported)
+                + f"; supported keys: {', '.join(sorted(known))}"
+            )
         return cls(**data)
 
     def validate(self) -> List[str]:

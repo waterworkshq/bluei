@@ -61,14 +61,16 @@ def git_push_branch(
         branch: Branch name to push.
         log_file: Path to the run log.
         dry_run: If True, log the would-be push without executing it.
-        safety_config: Optional safety policy dict. When provided, the push is
-            blocked if ``branch`` is a protected branch (e.g. main/master).
-            When omitted/empty, no enforcement is applied (backward compat).
+        safety_config: Safety policy dict. A supplied policy's denial takes
+            PRECEDENCE over dry-run. On actual mutation the gate is ALWAYS
+            consulted — missing/empty/invalid policy is denied by
+            ``check_push_allowed`` itself (fail closed), never by skipping the
+            gate here. Dry-run with no policy simulates without mutation.
 
     Returns:
         True if push succeeded (or dry-run), False on failure or safety block.
     """
-    if safety_config:
+    if safety_config or not dry_run:
         allowed, reason = check_push_allowed(branch, safety_config)
         if not allowed:
             _append_text(
@@ -89,17 +91,19 @@ def git_push_branch(
 
 
 def diff_stats(repo_path: Path) -> Tuple[int, int]:
-    """Return (files_changed, total_loc_diff) from the working tree diff.
+    """Return (files_changed, total_loc_diff) from staged and unstaged changes.
 
     Args:
         repo_path: Path to the git repository.
 
     Returns:
-        Tuple of (files_changed, lines_added_plus_deleted). (0, 0) on error.
+        Tuple of (files_changed, lines_added_plus_deleted).
+
+    Raises ValueError when Git cannot inspect the candidate.
     """
-    rc, out = run_capture(["git", "diff", "--numstat"], cwd=repo_path)
+    rc, out = run_capture(["git", "diff", "--numstat", "HEAD"], cwd=repo_path)
     if rc != 0:
-        return 0, 0
+        raise ValueError("candidate diff could not be inspected")
     files_changed = 0
     loc_diff = 0
     for line in out.splitlines():
@@ -107,10 +111,11 @@ def diff_stats(repo_path: Path) -> Tuple[int, int]:
         if len(parts) < 3:
             continue
         add_s, del_s = parts[0], parts[1]
-        if add_s != "-" and del_s != "-":
-            try:
-                loc_diff += int(add_s) + int(del_s)
-            except ValueError:
-                _logger.debug("Failed to parse diff stat line")
+        if add_s == "-" or del_s == "-":
+            raise ValueError("binary candidate cannot satisfy the line-diff bound")
+        try:
+            loc_diff += int(add_s) + int(del_s)
+        except ValueError as exc:
+            raise ValueError("candidate diff size could not be inspected") from exc
         files_changed += 1
     return files_changed, loc_diff

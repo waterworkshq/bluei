@@ -727,19 +727,25 @@ class TestMergePr:
 
     def test_success(self, tmp_path: Path) -> None:
         with patch("bluei.engine.gh.run_capture", return_value=(0, "merged")):
-            success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
+            success, reason = merge_pr(
+                "o/r", 42, dry_run=False, cwd=tmp_path, safety_config={"mode": "merge"}
+            )
         assert success is True
         assert reason == "merged"
 
     def test_failure(self, tmp_path: Path) -> None:
         with patch("bluei.engine.gh.run_capture", return_value=(1, "merge failed")):
-            success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
+            success, reason = merge_pr(
+                "o/r", 42, dry_run=False, cwd=tmp_path, safety_config={"mode": "merge"}
+            )
         assert success is False
         assert "failed" in reason
 
     def test_failure_empty_output(self, tmp_path: Path) -> None:
         with patch("bluei.engine.gh.run_capture", return_value=(1, "")):
-            success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
+            success, reason = merge_pr(
+                "o/r", 42, dry_run=False, cwd=tmp_path, safety_config={"mode": "merge"}
+            )
         assert success is False
         assert "rc=1" in reason
 
@@ -748,7 +754,9 @@ class TestMergePr:
             "bluei.engine.gh.run_capture",
             return_value=(1, "Pull Request is already merged"),
         ):
-            success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
+            success, reason = merge_pr(
+                "o/r", 42, dry_run=False, cwd=tmp_path, safety_config={"mode": "merge"}
+            )
         assert success is True
         assert reason == "already-merged-or-queued"
 
@@ -757,7 +765,9 @@ class TestMergePr:
             "bluei.engine.gh.run_capture",
             return_value=(1, "The pull request has already been merged"),
         ):
-            success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
+            success, reason = merge_pr(
+                "o/r", 42, dry_run=False, cwd=tmp_path, safety_config={"mode": "merge"}
+            )
         assert success is True
         assert reason == "already-merged-or-queued"
 
@@ -766,7 +776,9 @@ class TestMergePr:
             "bluei.engine.gh.run_capture",
             return_value=(1, "This branch is in a merge queue"),
         ):
-            success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
+            success, reason = merge_pr(
+                "o/r", 42, dry_run=False, cwd=tmp_path, safety_config={"mode": "merge"}
+            )
         assert success is True
         assert reason == "already-merged-or-queued"
 
@@ -777,7 +789,9 @@ class TestMergePr:
             "bluei.engine.gh.run_capture",
             return_value=(1, "Auto-merge is already enabled"),
         ):
-            success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
+            success, reason = merge_pr(
+                "o/r", 42, dry_run=False, cwd=tmp_path, safety_config={"mode": "merge"}
+            )
         assert success is True
         assert reason == "already-merged-or-queued"
 
@@ -786,7 +800,9 @@ class TestMergePr:
             "bluei.engine.gh.run_capture",
             return_value=(1, "PR queued for merge"),
         ):
-            success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
+            success, reason = merge_pr(
+                "o/r", 42, dry_run=False, cwd=tmp_path, safety_config={"mode": "merge"}
+            )
         assert success is True
         assert reason == "already-merged-or-queued"
 
@@ -795,7 +811,9 @@ class TestMergePr:
             "bluei.engine.gh.run_capture",
             return_value=(1, "PR #42 is queued"),
         ):
-            success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
+            success, reason = merge_pr(
+                "o/r", 42, dry_run=False, cwd=tmp_path, safety_config={"mode": "merge"}
+            )
         assert success is True
         assert reason == "already-merged-or-queued"
 
@@ -804,7 +822,9 @@ class TestMergePr:
             "bluei.engine.gh.run_capture",
             return_value=(1, "MERGE QUEUE has captured this PR"),
         ):
-            success, reason = merge_pr("o/r", 42, dry_run=False, cwd=tmp_path)
+            success, reason = merge_pr(
+                "o/r", 42, dry_run=False, cwd=tmp_path, safety_config={"mode": "merge"}
+            )
         assert success is True
         assert reason == "already-merged-or-queued"
 
@@ -920,7 +940,14 @@ class TestCreateOrUpdateGithubPr:
             patch("bluei.engine.gh.run_capture", return_value=(0, url)),
         ):
             result = create_or_update_github_pr(
-                "o/r", finding, "fix-branch", 42, False, log, tmp_path
+                "o/r",
+                finding,
+                "fix-branch",
+                42,
+                False,
+                log,
+                tmp_path,
+                safety_config={"mode": "pr"},
             )
         assert result["created"] is True
         assert result["number"] == 20
@@ -934,7 +961,14 @@ class TestCreateOrUpdateGithubPr:
             patch("bluei.engine.gh.run_capture", return_value=(1, "error")),
         ):
             result = create_or_update_github_pr(
-                "o/r", finding, "fix-branch", None, False, log, tmp_path
+                "o/r",
+                finding,
+                "fix-branch",
+                None,
+                False,
+                log,
+                tmp_path,
+                safety_config={"mode": "pr"},
             )
         assert result["created"] is False
         assert "error" in result
@@ -953,7 +987,14 @@ class TestCreateOrUpdateGithubPr:
             patch("bluei.engine.gh.run_capture", return_value=(0, "bad-url")),
         ):
             result = create_or_update_github_pr(
-                "o/r", finding, "fix-branch", None, False, log, tmp_path
+                "o/r",
+                finding,
+                "fix-branch",
+                None,
+                False,
+                log,
+                tmp_path,
+                safety_config={"mode": "pr"},
             )
         assert result["created"] is True
         assert result["number"] == 33

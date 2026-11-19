@@ -141,7 +141,12 @@ def parse_args() -> argparse.Namespace:
         "--auto-approve",
         action="store_true",
         default=False,
-        help="Auto-approve pending_review items before processing (use with refactor-cycle)",
+        help="Unsupported legacy bulk approval; use --approve-refactor-item",
+    )
+    p.add_argument(
+        "--approve-refactor-item",
+        default=None,
+        help="Explicitly approve one current human-review item during refactor-cycle",
     )
     p.add_argument(
         "--max-fix-attempts-per-issue",
@@ -202,7 +207,7 @@ def parse_args() -> argparse.Namespace:
     # Baseline checks (per-repo validation commands, JSON list of lists)
     p.add_argument(
         "--baseline-checks",
-        default="[]",
+        default=None,
         help='JSON list of baseline check command lists, e.g. \'[["npm","test"],["npm","run","build"]]\'',
     )
 
@@ -223,8 +228,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--batch-pr-enabled",
         action="store_true",
-        default=True,
-        help="Enable batch PR grouping for related findings",
+        default=False,
+        help="Group related findings into the currently unqualified batch lane",
     )
     p.add_argument(
         "--no-batch-pr",
@@ -271,19 +276,20 @@ def parse_args() -> argparse.Namespace:
     # can never silently send prompts to the wrong backend. An explicitly
     # selected template is operator config and is not otherwise validated.
     if args.claude_cmd_template is None:
-        if args.fix_engine == "opencode" and args.run_phase in {"pr-cycle", "orchestrated", "e2e"}:
+        if args.fix_engine == "opencode" and args.run_phase in {"pr-cycle", "orchestrated", "e2e", "refactor-cycle"}:
             p.error(
                 "--fix-engine opencode requires --claude-cmd-template: the "
                 "default template targets the Claude CLI backend, not opencode"
             )
         args.claude_cmd_template = DEFAULT_CLAUDE_CMD_TEMPLATE
-    if args.fix_engine == "opencode" and args.run_phase == "refactor-cycle":
-        # The refactor phase still hardcodes the Claude backend; an explicit
-        # operator template must not sneak opencode past that limitation.
-        p.error(
-            "--fix-engine opencode is not supported for refactor-cycle: the "
-            "refactor phase hardcodes the Claude backend; use --fix-engine claude"
-        )
+    if args.auto_approve:
+        p.error("bulk refactor auto-approval is unsupported; use --approve-refactor-item")
+    if args.approve_refactor_item is not None and (
+        args.run_phase != "refactor-cycle" or not args.approve_refactor_item.strip()
+    ):
+        p.error("--approve-refactor-item requires refactor-cycle and an item ID")
+    if args.max_queue_items is not None and args.max_queue_items < 1:
+        p.error("--max-queue-items must be positive")
     if args.discovery_scope == "python" and (
         args.run_phase not in {"issue-cycle", "detect-only", "orchestrated", "e2e"}
         or args.reconcile_only or args.migrate_context or args.live_github_actions
@@ -319,17 +325,17 @@ def resolve_baseline_checks(args: argparse.Namespace) -> Dict[str, List[str]]:
     Returns:
         Dict mapping 'baseline-N' to command lists.
     """
-    _parsed: Dict[str, List[str]] = {}
+    if args.baseline_checks is None:
+        return load_validation_config()["baseline_validation_checks"]
     try:
-        raw: List[List[str]] = json.loads(args.baseline_checks)
-        for idx, cmd in enumerate(raw):
-            if cmd:
-                _parsed[f"baseline-{idx}"] = cmd
+        raw = json.loads(args.baseline_checks)
     except (json.JSONDecodeError, TypeError):
-        _parsed = {}
-    return (
-        _parsed if _parsed else load_validation_config()["baseline_validation_checks"]
-    )
+        # Preserve invalid input as unavailable evidence; never silently borrow
+        # a different workspace configuration after an operator typo.
+        return {"baseline-invalid": []}
+    if not isinstance(raw, list):
+        return {"baseline-invalid": []}
+    return {f"baseline-{idx}": cmd for idx, cmd in enumerate(raw)}
 
 
 def normalize_run_phase(args: argparse.Namespace) -> None:

@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from bluei.app.emergent_rules import (
     EmergentRuleStore,
-    measure_false_positives,
+    _negative_corpus_rate,
     propose_rules_from_fix_patterns,
     scan_shadow_rules,
 )
@@ -72,13 +72,13 @@ def consume_emergent_evidence(
     if target is not None:
         try:
             matches = scan_shadow_rules([target], worktree)
-            fps = measure_false_positives(target)
             result = store.record_shadow_run(
                 target_ref,
                 matches=len(matches),
-                false_positives=fps,
+                false_positives=None,
             )
-            if result.get("status") == "active" and target_ref not in assets_proven:
+            rate = _negative_corpus_rate(target)
+            if result.get("status") == "active" and rate is not None and rate <= 0.2:
                 assets_proven.append(target_ref)
         except KeyError:
             _logger.debug("campaign emergent target %s missing", target_ref)

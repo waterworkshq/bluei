@@ -1337,7 +1337,14 @@ def test_lifecycle_fallback_only_after_clean_exhaustion(tmp_path, monkeypatch):
             return CascadeResult(False, self.name, error="failed")
 
     monkeypatch.setattr("bluei.engine.cascade.default_cascade_stages", lambda: [Fail()])
-    assert lifecycle.apply_cascade_fix(tmp_path, _finding(), tmp_path / "log")
+    # A10: explicit template + configured checks — no implicit fallback.
+    assert lifecycle.apply_cascade_fix(
+        tmp_path,
+        _finding(),
+        tmp_path / "log",
+        claude_cmd_template="true {prompt_file}",
+        baseline_checks={"unit": ["true"]},
+    )
     assert calls == ["original"]
 
     def fail_capture(*args, **kwargs):

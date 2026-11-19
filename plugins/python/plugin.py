@@ -14,10 +14,16 @@ import re
 
 import yaml
 
-from bluei.engine.models import Finding
+from bluei.engine.constants import DETECTOR_CATALOG
+from bluei.engine.models import Finding, canonical_ruff_rule
 from bluei.app.plugins import ToolWrapperPlugin
 
 _logger = logging.getLogger(__name__)
+
+# Confidence for ruff diagnostics whose code is not in DETECTOR_CATALOG.
+# Catalog codes use the catalog confidence so the native ruff producer and
+# this plugin report identical metadata for the same rule.
+_PLUGIN_ONLY_RUFF_CONFIDENCE = 0.88
 
 
 def stable_finding_id(repo: str, path: str, line: int, rule: str, snippet: str) -> str:
@@ -29,16 +35,12 @@ def stable_finding_id(repo: str, path: str, line: int, rule: str, snippet: str) 
 class Plugin(ToolWrapperPlugin):
     """Wraps ``ruff`` and supplements with regex-based text scanning.
 
-    Maps ruff diagnostic codes to internal rule names via ``_RUFF_RULE_MAP``.
+    Ruff diagnostics keep their canonical ``ruff-<code>`` lowercase identity
+    (same rule, confidence, and autofix safety as the native ruff producer);
+    the regex text scan emits the internal rule names (broad-except,
+    trailing-whitespace, debt-todo-marker) for lines the tool did not cover.
     Falls back to pure text scanning when ruff is unavailable.
     """
-
-    _RUFF_RULE_MAP = {
-        "E501": "trailing-whitespace",
-        "E722": "broad-except",
-        "B001": "broad-except",
-        "S108": "hardcoded-tmp-path",
-    }
 
     @property
     def id(self) -> str:
@@ -82,13 +84,14 @@ class Plugin(ToolWrapperPlugin):
         Args:
             output: Raw JSON string from ``ruff --output-format json``.
             repo_path: Repository root used for computing relative paths.
-            raw_rule_ids: Preserve verbatim ``ruff-<CODE>`` rules instead of
-                mapping known codes to internal rule names. Used by the
-                python discovery scope so provenance stays on the actual
-                tool diagnostic.
+            raw_rule_ids: Kept for backward compatibility. Both lanes now
+                emit the same canonical lowercase ``ruff-<code>`` rules with
+                identity, confidence, and autofix safety matching the native
+                ruff producer, so the python discovery scope can deduplicate
+                the two producers by instance.
 
         Returns:
-            List of Findings, one per ruff diagnostic with a non-empty code.
+            List of Findings, one per ruff diagnostic with a well-formed code.
         """
         from bluei.engine.models import now_iso
 
@@ -99,20 +102,32 @@ class Plugin(ToolWrapperPlugin):
         if not isinstance(items, list):
             return []
 
+        catalog_meta = {
+            str(entry["rule"]): entry
+            for entry in DETECTOR_CATALOG
+            if str(entry["rule"]).startswith("ruff-")
+        }
+
         findings = []
         for item in items:
             if not isinstance(item, dict):
                 continue
-            code = item.get("code", "")
-            if not code:
+            # Helper contract: full-rule in/out — canonical_ruff_rule
+            # ("ruff-B904") -> "ruff-b904"; anything not a well-formed
+            # ruff rule id returns None and is skipped.
+            rule = canonical_ruff_rule(f"ruff-{str(item.get('code', ''))}")
+            if rule is None:
                 continue
-            rule = (
-                f"ruff-{code}"
-                if raw_rule_ids
-                else self._RUFF_RULE_MAP.get(code, f"ruff-{code}")
-            )
             loc = item.get("location", {})
-            line = loc.get("row", 1)
+            if not isinstance(loc, dict):
+                # Native parser parity: skip this diagnostic, not the run.
+                continue
+            try:
+                line = int(loc.get("row", 0))
+            except (TypeError, ValueError):
+                # Malformed row: skip per-item exactly like the native
+                # producer's except clause; default row is 0, not 1.
+                continue
             raw_path = item.get("filename") or item.get("path")
             if not isinstance(raw_path, str) or not raw_path:
                 continue
@@ -122,7 +137,26 @@ class Plugin(ToolWrapperPlugin):
                 continue
             if path == ".":
                 continue
-            message = item.get("message", "")
+            # Truncate before hashing: the native producer hashes the same
+            # truncated material, so an identical diagnostic gets an
+            # identical finding id regardless of producer.
+            message = str(item.get("message", ""))[:200]
+            # Autofix safety comes from this instance's fix applicability,
+            # not the rule code prefix; mirrors the native producer,
+            # including the c408 override.
+            fix_obj = item.get("fix")
+            applicability = (
+                fix_obj.get("applicability") if isinstance(fix_obj, dict) else None
+            )
+            safe_to_autofix = applicability in ("safe", "generated")
+            if rule == "ruff-c408":
+                safe_to_autofix = False
+            meta = catalog_meta.get(rule)
+            confidence = (
+                float(meta.get("confidence", _PLUGIN_ONLY_RUFF_CONFIDENCE))
+                if meta is not None
+                else _PLUGIN_ONLY_RUFF_CONFIDENCE
+            )
             findings.append(
                 Finding(
                     finding_id=stable_finding_id(
@@ -132,10 +166,10 @@ class Plugin(ToolWrapperPlugin):
                     path=path,
                     line=line,
                     rule=rule,
-                    snippet=message[:200],
-                    confidence=0.88,
-                    quick_win=code.startswith("W") or code.startswith("E"),
-                    safe_to_autofix=code.startswith("W") or code.startswith("E"),
+                    snippet=message,
+                    confidence=confidence,
+                    quick_win=safe_to_autofix,
+                    safe_to_autofix=safe_to_autofix,
                     severity="medium",
                     category="lint",
                     discovered_at=now_iso(),
@@ -249,9 +283,9 @@ class Plugin(ToolWrapperPlugin):
         Args:
             repo_path: Repository root to scan.
             config: Plugin configuration dict. ``{"ruff_only": True}``
-                restricts discovery to the actual ruff tool run (parsed with
-                verbatim ``ruff-<CODE>`` rules): no regex text-scan findings
-                and no text-scan fallback when the tool is unavailable.
+                restricts discovery to the actual ruff tool run (canonical
+                ``ruff-<code>`` rules only): no regex text-scan findings and
+                no text-scan fallback when the tool is unavailable.
 
         Returns:
             Merged list of Findings from tool output and text scanning, or
@@ -268,7 +302,7 @@ class Plugin(ToolWrapperPlugin):
         if ruff_only:
             # Provenance-complete mode for the python discovery scope: a
             # clean real-tool run must emit nothing, so no text-scan
-            # fallback and no mapped internal rule names.
+            # fallback and no internal rule names.
             return tool_findings
 
         text_findings = self._text_scan(repo_path)

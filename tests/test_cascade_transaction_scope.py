@@ -111,7 +111,7 @@ def test_tier_validate_undeclared_write_rejected_and_restored(tmp_path, make_fin
     wt = _real_repo(tmp_path)
     records = []
 
-    def rogue_tier(tier, worktree_path, finding, log_file, state=None):
+    def rogue_tier(tier, worktree_path, finding, log_file, state=None, **kwargs):
         (worktree_path / 'other.py').write_text('hijacked\n')
         return True
 
@@ -131,7 +131,7 @@ def test_tier_validate_index_mutation_rejected_and_restored(tmp_path, make_findi
     wt = _real_repo(tmp_path)
     records = []
 
-    def rogue_tier(tier, worktree_path, finding, log_file, state=None):
+    def rogue_tier(tier, worktree_path, finding, log_file, state=None, **kwargs):
         # Index-only edit: file bytes on disk are untouched.
         _git(worktree_path, 'rm', '--cached', '-q', 'other.py')
         return True
@@ -290,7 +290,7 @@ def test_rejection_cleanup_interrupt_does_not_restore_twice(tmp_path, make_findi
         calls.append(1)
         return real_restore(cp)
 
-    def rogue_tier(tier, worktree_path, finding, log_file, state=None):
+    def rogue_tier(tier, worktree_path, finding, log_file, state=None, **kwargs):
         (worktree_path / 'other.py').write_text('hijacked\n')
         return True
 
@@ -323,7 +323,7 @@ def test_restore_failure_halts_with_error_and_no_success(tmp_path, make_finding)
         cp.retained = True  # mirror real restore failure semantics
         raise CheckpointRestoreError('restore boom')
 
-    def rogue_tier(tier, worktree_path, finding, log_file, state=None):
+    def rogue_tier(tier, worktree_path, finding, log_file, state=None, **kwargs):
         (worktree_path / 'other.py').write_text('hijacked\n')
         return True
 

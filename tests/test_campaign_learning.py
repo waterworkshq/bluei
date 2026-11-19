@@ -18,6 +18,8 @@ Covers AC-P2-1..6:
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict
 
@@ -211,17 +213,63 @@ def _build_one_finding_campaign(
     return state, campaign
 
 
+def _qualified_baseline() -> Dict[str, list]:
+    """Registered-style meaningful baseline check for a mutating run.
+
+    ``git diff --check HEAD`` validates the tracked-file diff for whitespace
+    errors and conflict markers — a real invariant that holds before and
+    after the fixes these tests inject.
+    """
+    return {"baseline-0": ["git", "diff", "--check", "HEAD", "--"]}
+
+
+def _mock_candidate_closure(monkeypatch) -> None:
+    """Mock per-fix closure verification for injected-runner acceptance.
+
+    These tests exercise learning-evidence routing, not detector semantics;
+    synthetic rules have no real responsible producer, so closure is mocked
+    rather than weakened in the product.
+    """
+    from types import SimpleNamespace
+
+    from bluei.engine import repair_acceptance
+
+    monkeypatch.setattr(
+        repair_acceptance,
+        "verify_fix_closed",
+        lambda *args, **kwargs: SimpleNamespace(is_closed=True),
+    )
+
+
+def _git_worktree_with_target(tmp_path: Path) -> Path:
+    """Real clean git worktree containing src/app.py (tracked-file diffs only)."""
+    worktree = tmp_path / "worktree"
+    (worktree / "src").mkdir(parents=True)
+    (worktree / "src" / "app.py").write_text("raise ValueError('x')\n")
+    for args in (
+        ["git", "init"],
+        ["git", "config", "user.email", "bluei@example.invalid"],
+        ["git", "config", "user.name", "bluei"],
+    ):
+        subprocess.run(args, cwd=worktree, capture_output=True, check=True)
+    subprocess.run(["git", "add", "."], cwd=worktree, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "initial"], cwd=worktree, capture_output=True, check=True
+    )
+    return worktree
+
+
 # --------------------------------------------------------------------------- #
 # None-objective: no evidence writes, today's behavior
 # --------------------------------------------------------------------------- #
 
 
-def test_none_objective_campaign_emits_no_learning_report(tmp_path: Path) -> None:
+def test_none_objective_campaign_emits_no_learning_report(
+    tmp_path: Path, monkeypatch
+) -> None:
     state, campaign = _build_one_finding_campaign(tmp_path / "campaigns")
-    worktree = tmp_path / "worktree"
-    worktree.mkdir()
-    (worktree / "src").mkdir()
-    (worktree / "src" / "app.py").write_text("raise ValueError('x')\n")
+    worktree = _git_worktree_with_target(tmp_path)
+    _mock_candidate_closure(monkeypatch)
     dry_path = tmp_path / "dry.jsonl"
     approval_path = tmp_path / "approval_records.jsonl"
     approval_path.write_text("")
@@ -230,12 +278,14 @@ def test_none_objective_campaign_emits_no_learning_report(tmp_path: Path) -> Non
         state,
         fix_runner=_fix_runner_success,
         dry_replay_path=dry_path,
+        baseline_checks=_qualified_baseline(),
     )
     result = exe.run(
         campaign.campaign_id,
         dry_run=False,
         worktree_path=worktree,
     )
+    assert result["status"].value == "completed"
     assert "learning_report" not in result
     # No dry-replay evidence written for a None objective.
     assert not dry_path.exists()
@@ -258,6 +308,7 @@ def _seed_pattern_store(store_path: Path, patterns) -> None:
 
 def test_pattern_family_objective_writes_dry_replay_and_preserves_governance(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     from bluei.engine.pattern_store import FixPatternStore
 
@@ -268,10 +319,8 @@ def test_pattern_family_objective_writes_dry_replay_and_preserves_governance(
             target_ref="ruff-b",  # derive_rule_family("ruff-b904") == "ruff-b"
         ),
     )
-    worktree = tmp_path / "worktree"
-    worktree.mkdir()
-    (worktree / "src").mkdir()
-    (worktree / "src" / "app.py").write_text("raise ValueError('x')\n")
+    worktree = _git_worktree_with_target(tmp_path)
+    _mock_candidate_closure(monkeypatch)
 
     # Seed a pattern store with a candidate for ruff-b904.
     pattern_store_path = tmp_path / "patterns.jsonl"
@@ -315,7 +364,7 @@ def test_pattern_family_objective_writes_dry_replay_and_preserves_governance(
         fix_runner=_fix_runner_success,
         pattern_store_path=pattern_store_path,
         dry_replay_path=dry_path,
-        baseline_checks={},
+        baseline_checks=_qualified_baseline(),
         run_id="camp-run-1",
     )
     result = exe.run(
@@ -349,6 +398,7 @@ def test_pattern_family_objective_writes_dry_replay_and_preserves_governance(
 
 def test_emergent_rule_objective_advances_target_and_proposes(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     from functools import partial
 
@@ -363,10 +413,8 @@ def test_emergent_rule_objective_advances_target_and_proposes(
             target_ref="er-target",
         ),
     )
-    worktree = tmp_path / "worktree"
-    worktree.mkdir()
-    (worktree / "src").mkdir()
-    (worktree / "src" / "app.py").write_text("raise ValueError('x')\n")
+    worktree = _git_worktree_with_target(tmp_path)
+    _mock_candidate_closure(monkeypatch)
 
     emergent_path = tmp_path / "emergent_rules.json"
     _seed_emergent_store(
@@ -421,6 +469,7 @@ def test_emergent_rule_objective_advances_target_and_proposes(
         fix_runner=_fix_runner_success,
         pattern_store_path=pattern_store_path,
         emergent_evidence_consumer=consumer,
+        baseline_checks=_qualified_baseline(),
         run_id="camp-run-em",
     )
     result = exe.run(
@@ -455,7 +504,9 @@ def test_emergent_rule_objective_advances_target_and_proposes(
     assert report["method_breakdown"].get("pattern_replay") == 1
 
 
-def test_emergent_objective_no_op_without_consumer(tmp_path: Path) -> None:
+def test_emergent_objective_no_op_without_consumer(
+    tmp_path: Path, monkeypatch
+) -> None:
     """With no emergent_evidence_consumer wired (the default), the emergent
     objective routing is a no-op — no store mutation, no crash. Confirms the
     decoupling default is safe (campaigns never imports bluei.app.*)."""
@@ -466,12 +517,12 @@ def test_emergent_objective_no_op_without_consumer(tmp_path: Path) -> None:
             target_ref="er-missing",
         ),
     )
-    worktree = tmp_path / "worktree"
-    worktree.mkdir()
-    (worktree / "src").mkdir()
-    (worktree / "src" / "app.py").write_text("raise ValueError('x')\n")
+    worktree = _git_worktree_with_target(tmp_path)
+    _mock_candidate_closure(monkeypatch)
 
-    exe = CampaignExecutor(state, fix_runner=_fix_runner_success)
+    exe = CampaignExecutor(
+        state, fix_runner=_fix_runner_success, baseline_checks=_qualified_baseline()
+    )
     result = exe.run(
         campaign.campaign_id,
         dry_run=False,

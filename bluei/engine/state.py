@@ -14,7 +14,13 @@ from bluei.engine.constants import (
 )
 from bluei.engine.jsonl import append_jsonl
 from bluei.engine.reforge import RefactorPhase, RefactorWork
-from bluei.engine.models import Finding, age_seconds, now_iso, stable_finding_id
+from bluei.engine.models import (
+    Finding,
+    age_seconds,
+    canonical_ruff_rule,
+    now_iso,
+    stable_finding_id,
+)
 from bluei.engine.utils import run_capture
 from bluei.engine.gh import fetch_github_live_counts, get_origin_url
 
@@ -186,9 +192,61 @@ def _load_markdown_identities(
     return identities
 
 
+def _load_ruff_identities(
+    path: Path, aliases: Optional[Dict[str, set[str]]] = None,
+) -> Dict[Tuple[str, str, Any, str, str], str]:
+    """Map Ruff diagnostic identity -> earliest persisted finding_id.
+
+    Same contract as ``_load_markdown_identities``, with the canonical
+    (lowercase) rule collapsing case-variant history; only records whose
+    finding_id recomputes from their own stored fields participate.
+    Snippets compare verbatim (no strip): E501 embeds source line text,
+    so a trailing-whitespace difference is ambiguous and must not merge.
+    """
+    identities: Dict[Tuple[str, str, Any, str, str], str] = {}
+    if not path.exists():
+        return identities
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            try:
+                obj = json.loads(raw)
+                if not isinstance(obj, dict):
+                    continue
+                rule = canonical_ruff_rule(str(obj.get("rule") or ""))
+                if rule is None:
+                    continue
+                fid = str(obj.get("finding_id") or "")
+                if not fid:
+                    continue
+                if fid != stable_finding_id(
+                    str(obj.get("repo") or ""),
+                    str(obj.get("path") or ""),
+                    obj.get("line"),
+                    str(obj.get("rule") or ""),
+                    str(obj.get("snippet") or ""),
+                ):
+                    continue
+                identity = (
+                    str(obj.get("repo") or ""),
+                    str(obj.get("path") or ""),
+                    obj.get("line"),
+                    rule,
+                    str(obj.get("snippet") or ""),
+                )
+                first_id = identities.setdefault(identity, fid)
+                if aliases is not None:
+                    group = aliases.setdefault(first_id, {first_id})
+                    group.add(fid)
+                    aliases[fid] = group
+            except Exception:
+                continue
+    return identities
+
+
 def append_findings(path: Path, findings: List[Finding]) -> int:
     seen = load_findings_seen(path)
     md_identities: Optional[Dict[Tuple[str, str, Any, str, str], str]] = None
+    ruff_identities: Optional[Dict[Tuple[str, str, Any, str, str], str]] = None
     written = 0
     for finding in findings:
         rule = canonical_markdown_rule(str(finding.rule))
@@ -212,12 +270,32 @@ def append_findings(path: Path, findings: List[Finding]) -> int:
             ):
                 finding.finding_id = legacy_id
                 continue
+        ruff_rule = canonical_ruff_rule(str(finding.rule))
+        if ruff_rule is not None:
+            if ruff_identities is None:
+                ruff_identities = _load_ruff_identities(path)
+            identity = (
+                str(finding.repo),
+                str(finding.path),
+                finding.line,
+                ruff_rule,
+                str(finding.snippet),
+            )
+            legacy_id = ruff_identities.get(identity)
+            # Same adoption contract as Markdown; snippet is verbatim so
+            # trailing-whitespace (E501) differences stay unmerged.
+            if legacy_id and finding.finding_id == stable_finding_id(
+                finding.repo, finding.path, finding.line, finding.rule, finding.snippet
+            ):
+                finding.finding_id = legacy_id
+                continue
         if finding.finding_id in seen:
             continue
         if finding.discovered_at is None:
             finding.discovered_at = now_iso()
         payload = finding.to_dict()
         append_jsonl(path, payload)
+        seen.add(finding.finding_id)
         written += 1
     return written
 

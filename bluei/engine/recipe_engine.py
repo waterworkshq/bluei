@@ -9,9 +9,11 @@ See docs/RULES_REFERENCE.md#recipes for the complete list of built-in recipes.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from bluei.engine.models import canonical_ruff_rule
 from bluei.engine.recipe_handlers import HANDLER_REGISTRY, RecipeFixResult
 from bluei.engine.recipe_schema import Recipe, load_recipe
 
@@ -66,6 +68,9 @@ class RecipeEngine:
         Returns:
             The highest-scoring Recipe, or None if nothing matches.
         """
+        # Ruff rules canonicalize (lowercase) to match recipe index keys;
+        # non-Ruff rules match byte-exact.
+        rule = canonical_ruff_rule(rule) or rule
         candidates = []
 
         for recipe in self.recipes.get(rule, []):
@@ -107,10 +112,36 @@ class RecipeEngine:
         else:
             return 0.0
 
+        # Inert text recipe (no pattern, empty value): TextHandler can never
+        # change any file, so it must not shadow an applicable recipe.
+        if (
+            recipe.replacement.type == "text"
+            and not recipe.replacement.pattern
+            and not recipe.replacement.value
+        ):
+            return 0.0
+
+        # Invariant: a regex_substitute recipe must be able to change the
+        # text (pattern occurs in it) to be selectable; absence of file_text
+        # keeps the legacy pure-lookup scoring ceiling.
+        if recipe.replacement.type == "regex_substitute" and "file_text" in context:
+            pattern = recipe.replacement.pattern or ""
+            if not pattern:
+                return 0.0
+            flags = 0
+            if recipe.metadata.get("regex_dotall"):
+                flags |= re.DOTALL
+            if recipe.metadata.get("regex_multiline"):
+                flags |= re.MULTILINE
+            try:
+                if not re.search(pattern, context["file_text"], flags):
+                    return 0.0
+            except re.error:
+                return 0.0
+
         if recipe.match.context_guard:
             excludes = recipe.match.context_guard.get("excludes_pattern")
             if excludes:
-                import re
                 file_text = context.get("file_text", "")
                 if file_text and re.search(excludes, file_text):
                     return 0.0
@@ -151,7 +182,11 @@ class RecipeEngine:
 
         Returns:
             True if at least one matching recipe exists.
+
+        Pure existence lookup; fix eligibility/safety is decided elsewhere.
         """
+        # Same canonicalization as match(); non-Ruff rules byte-exact.
+        rule = canonical_ruff_rule(rule) or rule
         if rule in self.recipes and self.recipes[rule]:
             for r in self.recipes[rule]:
                 if r.language == "*" or r.language == language:

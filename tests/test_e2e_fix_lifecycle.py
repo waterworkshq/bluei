@@ -407,7 +407,7 @@ def test_bad_fix_rolled_back_by_tier_validate(
     repo = git_repo
     (repo / "src").mkdir(exist_ok=True)
     target = repo / "src" / "target.py"
-    valid_content = "def good():\n    return 42\n"
+    valid_content = "def good():  \n    return 42\n"
     target.write_text(valid_content, encoding="utf-8")
     git_commit_all(repo)
 

@@ -245,7 +245,7 @@ class TestRunFoundryGateOpen:
 
 
 class TestRunFoundryGateClosed:
-    def test_queues_pending_with_cached_yaml(self, tmp_path):
+    def test_gate_closed_seed_without_registered_evidence_is_not_queued(self, tmp_path):
         pattern = _make_pattern()
         cb = lambda prompt: _fenced(GOOD_YAML)  # noqa: E731
         staged = tmp_path / "staged"
@@ -269,20 +269,12 @@ class TestRunFoundryGateClosed:
                 approval_records_path=approvals,
             )
 
-        assert summary.queued_pending == 1
+        assert summary.rejected == 1
+        assert summary.queued_pending == 0
         assert summary.written == 0
         assert summary.auto_promoted == 0
-
-        assert not staged.exists() or not list(staged.glob("*.yaml"))
-
-        records = list(read_jsonl(approvals))
-        assert len(records) == 1
-        rec = records[0]
-        assert rec["decision"] == "pending_approval"
-        snap = rec["evidence_snapshot"]
-        assert snap["recipe_id"] == "foundry-ruff-b904"
-        assert "id: foundry-ruff-b904" in snap["proposed_recipe_yaml"]
-        assert snap["source_pattern_id"] == "seed-ruff-b904"
+        assert not list(staged.glob("*.yaml"))
+        assert not approvals.exists()
 
 
 class TestRunFoundryDefaultGateOpen:
@@ -361,9 +353,7 @@ class TestRunFoundryPausedHold:
         assert not staged.exists() or not list(staged.glob("*.yaml"))
         assert list(read_jsonl(approvals)) == []
 
-    def test_audit_only_still_behaves_gate_closed(self, tmp_path):
-        # Pin: audit_only forces gate-closed (queues pending) — paused is
-        # strictly stronger (writes and queues nothing).
+    def test_audit_only_holds_unbound_seed_even_with_explicit_gate_open(self, tmp_path):
         pattern = _make_pattern()
         cb = lambda prompt: _fenced(GOOD_YAML)  # noqa: E731
         staged = tmp_path / "staged"
@@ -393,12 +383,11 @@ class TestRunFoundryPausedHold:
                 approval_records_path=approvals,
             )
 
-        assert summary.queued_pending == 1
+        assert summary.rejected == 1
+        assert summary.queued_pending == 0
         assert summary.held_paused == 0
         assert summary.written == 0
-        records = list(read_jsonl(approvals))
-        assert len(records) == 1
-        assert records[0]["decision"] == "pending_approval"
+        assert not approvals.exists()
 
 
 class TestRunFoundryRejections:

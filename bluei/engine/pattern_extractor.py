@@ -8,8 +8,13 @@ appended to a log file for auditability.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import os
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -38,6 +43,68 @@ LANGUAGE_BY_EXTENSION = {
 }
 
 VALID_SOURCES = {"autofix", "claude", "contextual"}
+
+
+def read_accepted_evidence(
+    worktree: Path, patch_path: Path, base: str, finding: Finding, repo_id: str,
+) -> Optional[dict]:
+    """Reconstruct a bounded ordinary repair from its retained patch, not the checkout."""
+    from bluei.engine.models import canonical_ruff_rule
+
+    rule = canonical_ruff_rule(finding.rule)
+    # ponytail: qualify one ordinary text repair; add a rule only with its own oracle corpus.
+    if rule != "ruff-b904" or not repo_id or not re.fullmatch(r"[a-f0-9]{40,64}", base):
+        return None
+    path = finding.path
+    if not re.fullmatch(r"(?:[\w-]+/)*[\w.-]+\.py", path) or Path(path).is_absolute():
+        return None
+    limit = 1 << 20
+    with patch_path.open("rb") as stream:
+        patch = stream.read(limit + 1)
+    if not patch or len(patch) > limit:
+        return None
+
+    with tempfile.TemporaryDirectory() as temporary:
+        objects = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-path", "objects"],
+            cwd=worktree, capture_output=True, check=True, timeout=30,
+        ).stdout.rstrip(b"\n")
+        private_objects = Path(temporary) / "objects"
+        private_objects.mkdir()
+        env = {
+            **os.environ,
+            "GIT_INDEX_FILE": str(Path(temporary) / "index"),
+            "GIT_OBJECT_DIRECTORY": str(private_objects),
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": os.fsdecode(objects),
+        }
+
+        def git(*args, input=None):
+            return subprocess.run(
+                ["git", *args], cwd=worktree, env=env, input=input,
+                capture_output=True, check=True, timeout=30,
+            ).stdout
+
+        git("read-tree", base)
+        git("apply", "--cached", "-", input=patch)
+        if git("diff", "--cached", "--name-only", "-z", base) != path.encode() + b"\0":
+            return None
+        old = git("ls-tree", base, "--", path)
+        new = git("ls-files", "--stage", "--", path)
+        if not old.startswith(b"100644 blob ") or not new.startswith(b"100644 "):
+            return None
+        before_ref, after_ref = f"{base}:{path}", f":{path}"
+        if any(int(git("cat-file", "-s", ref)) > limit for ref in (before_ref, after_ref)):
+            return None
+        before, after = (git("cat-file", "blob", ref).decode("utf-8") for ref in (before_ref, after_ref))
+    if before == after or not before or not after or "\0" in before + after:
+        return None
+    evidence = {
+        "repo_id": repo_id, "rule": rule, "path": path, "base": base,
+        "patch_sha256": hashlib.sha256(patch).hexdigest(),
+        "before": before, "after": after,
+    }
+    evidence["evidence_id"] = hashlib.sha256(json.dumps(evidence, sort_keys=True).encode()).hexdigest()
+    return evidence
 
 
 def extract(

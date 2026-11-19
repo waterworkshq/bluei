@@ -125,117 +125,15 @@ class TestExtractFixPattern:
         assert "result=no-pattern" in log.read_text()
         assert "finding_id=abc" in log.read_text()
 
-    def test_publishes_high_confidence_pattern_to_shared_library(
-        self, tmp_path, make_finding
-    ):
-        """Cover lines 160-202: confidence >= 0.8 triggers publish + promotion."""
-        # Workspace layout: tmp_path / "state" / "fix_patterns.jsonl"
-        # _extract_fix_pattern derives workspace = pattern_store_path.parent.parent
-        state_dir = tmp_path / "state"
-        state_dir.mkdir(parents=True)
-        store_path = state_dir / "fix_patterns.jsonl"
-        log = tmp_path / "log.txt"
-        log.write_text("")
+    def test_legacy_extraction_does_not_publish_without_accepted_evidence(self, tmp_path, make_finding):
+        from bluei.engine.lifecycle import _extract_fix_pattern
 
-        # Build a real FixPattern-like object with confidence >= 0.8.
-        stored_pattern = MagicMock()
-        stored_pattern.confidence = 0.9
-        stored_pattern.rule = "ruff-c408"
-        stored_pattern.language = "python"
-        stored_pattern.before_snippet = "before"
-        stored_pattern.after_snippet = "after"
-        stored_pattern.structural_hash = "abc123"
-        stored_pattern.success_count = 3
-        stored_pattern.failure_count = 0
-
-        mock_store = MagicMock()
-        mock_store.get_pattern.return_value = stored_pattern
-
-        # Promotion path: lib._get_cached returns a cross-pattern that is
-        # eligible → promote_pattern_to_recipe is invoked.
-        mock_cross = MagicMock()
-        mock_lib = MagicMock()
-        mock_lib._get_cached.return_value = {"ruff-c408::abc123": mock_cross}
-
-        with (
-            patch("bluei.engine.pattern_extractor.extract", return_value="fp-1"),
-            patch(
-                "bluei.engine.pattern_store.FixPatternStore", return_value=mock_store
-            ),
-            patch(
-                "bluei.engine.lifecycle._is_pattern_sharing_enabled",
-                return_value=True,
-            ),
-            patch(
-                "bluei.engine.shared_pattern_library.SharedPatternLibrary",
-                return_value=mock_lib,
-            ),
-            patch(
-                "bluei.engine.shared_pattern_library.check_promotion_eligibility",
-                return_value=True,
-            ),
-            patch(
-                "bluei.engine.shared_pattern_library.promote_pattern_to_recipe",
-                return_value=PromotionResult.PROMOTED,
-            ) as mock_promote,
-            patch(
-                "bluei.engine.recipe_engine.staged_recipe_dir",
-                return_value=tmp_path / "staged",
-            ),
-            patch("bluei.engine.lifecycle._get_recipe_engine") as mock_engine,
-        ):
-            _extract_fix_pattern(
-                tmp_path,
-                make_finding(),
-                "claude",
-                store_path,
-                log,
-            )
-            mock_lib.publish.assert_called_once()
-            mock_promote.assert_called_once()
-            mock_engine.return_value.reload.assert_called_once()
-
-    def test_skips_publish_when_confidence_below_threshold(
-        self, tmp_path, make_finding
-    ):
-        """Low-confidence patterns are stored but not published to the shared library."""
-        state_dir = tmp_path / "state"
-        state_dir.mkdir(parents=True)
-        store_path = state_dir / "fix_patterns.jsonl"
-        log = tmp_path / "log.txt"
-        log.write_text("")
-
-        stored_pattern = MagicMock()
-        stored_pattern.confidence = 0.5  # below 0.8 threshold
-
-        mock_store = MagicMock()
-        mock_store.get_pattern.return_value = stored_pattern
-
-        mock_lib = MagicMock()
-
-        with (
-            patch("bluei.engine.pattern_extractor.extract", return_value="fp-low"),
-            patch(
-                "bluei.engine.pattern_store.FixPatternStore", return_value=mock_store
-            ),
-            patch(
-                "bluei.engine.lifecycle._is_pattern_sharing_enabled",
-                return_value=True,
-            ),
-            patch(
-                "bluei.engine.shared_pattern_library.SharedPatternLibrary",
-                return_value=mock_lib,
-            ),
-        ):
-            _extract_fix_pattern(
-                tmp_path,
-                make_finding(),
-                "claude",
-                store_path,
-                log,
-            )
-            # Library IS constructed, but publish() is gated on confidence >= 0.8.
-            mock_lib.publish.assert_not_called()
+        with patch("bluei.engine.pattern_extractor.extract", return_value="fp-local"), patch(
+            "bluei.engine.shared_pattern_library.SharedPatternLibrary.publish"
+        ) as publish:
+            _extract_fix_pattern(tmp_path, make_finding(), "autofix", tmp_path / "patterns.jsonl", tmp_path / "run.log")
+        publish.assert_not_called()
+        assert "pattern_id=fp-local" in (tmp_path / "run.log").read_text()
 
     def test_handles_extract_exception_and_logs_error(self, tmp_path, make_finding):
         """Outer except (line 208) writes error line to log."""
@@ -286,180 +184,6 @@ class TestExtractFixPattern:
                 store_path,
                 tmp_path / "log.txt",
             )
-
-    def test_recipe_reload_failure_after_promotion_is_swallowed(
-        self, tmp_path, make_finding
-    ):
-        """Lines 195-198: recipe engine reload fails after successful promotion.
-
-        The innermost except catches it and logs a debug message — no raise.
-        """
-        state_dir = tmp_path / "state"
-        state_dir.mkdir(parents=True)
-        store_path = state_dir / "fix_patterns.jsonl"
-        log = tmp_path / "log.txt"
-        log.write_text("")
-
-        stored_pattern = MagicMock()
-        stored_pattern.confidence = 0.9
-        stored_pattern.rule = "ruff-c408"
-        stored_pattern.language = "python"
-        stored_pattern.structural_hash = "abc123"
-
-        mock_store = MagicMock()
-        mock_store.get_pattern.return_value = stored_pattern
-
-        mock_cross = MagicMock()
-        mock_lib = MagicMock()
-        mock_lib._get_cached.return_value = {"ruff-c408::abc123": mock_cross}
-
-        mock_engine = MagicMock()
-        mock_engine.reload.side_effect = RuntimeError("reload failed")
-
-        with (
-            patch("bluei.engine.pattern_extractor.extract", return_value="fp-1"),
-            patch(
-                "bluei.engine.pattern_store.FixPatternStore", return_value=mock_store
-            ),
-            patch(
-                "bluei.engine.lifecycle._is_pattern_sharing_enabled",
-                return_value=True,
-            ),
-            patch(
-                "bluei.engine.shared_pattern_library.SharedPatternLibrary",
-                return_value=mock_lib,
-            ),
-            patch(
-                "bluei.engine.shared_pattern_library.check_promotion_eligibility",
-                return_value=True,
-            ),
-            patch(
-                "bluei.engine.shared_pattern_library.promote_pattern_to_recipe",
-                return_value=PromotionResult.PROMOTED,
-            ),
-            patch(
-                "bluei.engine.recipe_engine.staged_recipe_dir",
-                return_value=tmp_path / "staged",
-            ),
-            patch(
-                "bluei.engine.lifecycle._get_recipe_engine", return_value=mock_engine
-            ),
-        ):
-            # Must not raise despite reload failure.
-            _extract_fix_pattern(
-                tmp_path,
-                make_finding(),
-                "claude",
-                store_path,
-                log,
-            )
-            mock_engine.reload.assert_called_once()
-
-    def test_promotion_failure_is_swallowed(self, tmp_path, make_finding):
-        """Lines 199-200: promotion logic itself fails → outer except logs.
-
-        ``promote_pattern_to_recipe`` raises; the middle except catches it.
-        """
-        state_dir = tmp_path / "state"
-        state_dir.mkdir(parents=True)
-        store_path = state_dir / "fix_patterns.jsonl"
-        log = tmp_path / "log.txt"
-        log.write_text("")
-
-        stored_pattern = MagicMock()
-        stored_pattern.confidence = 0.9
-        stored_pattern.rule = "ruff-c408"
-        stored_pattern.language = "python"
-        stored_pattern.structural_hash = "abc123"
-
-        mock_store = MagicMock()
-        mock_store.get_pattern.return_value = stored_pattern
-
-        mock_cross = MagicMock()
-        mock_lib = MagicMock()
-        # Key must match "{rule}::{structural_hash}" exactly.
-        mock_lib._get_cached.return_value = {"ruff-c408::abc123": mock_cross}
-
-        with (
-            patch("bluei.engine.pattern_extractor.extract", return_value="fp-1"),
-            patch(
-                "bluei.engine.pattern_store.FixPatternStore", return_value=mock_store
-            ),
-            patch(
-                "bluei.engine.lifecycle._is_pattern_sharing_enabled",
-                return_value=True,
-            ),
-            patch(
-                "bluei.engine.shared_pattern_library.SharedPatternLibrary",
-                return_value=mock_lib,
-            ),
-            patch(
-                "bluei.engine.shared_pattern_library.check_promotion_eligibility",
-                return_value=True,
-            ),
-            patch(
-                "bluei.engine.shared_pattern_library.promote_pattern_to_recipe",
-                side_effect=RuntimeError("promotion write failed"),
-            ),
-            patch(
-                "bluei.engine.recipe_engine.staged_recipe_dir",
-                return_value=tmp_path / "staged",
-            ),
-        ):
-            # Must not raise despite promotion failure.
-            _extract_fix_pattern(
-                tmp_path,
-                make_finding(),
-                "claude",
-                store_path,
-                log,
-            )
-
-    def test_publish_failure_is_swallowed(self, tmp_path, make_finding):
-        """Lines 201-202: shared-library publish fails → outermost except logs.
-
-        ``lib.publish`` raises; the outermost try/except (line 152/201) catches it.
-        """
-        state_dir = tmp_path / "state"
-        state_dir.mkdir(parents=True)
-        store_path = state_dir / "fix_patterns.jsonl"
-        log = tmp_path / "log.txt"
-        log.write_text("")
-
-        stored_pattern = MagicMock()
-        stored_pattern.confidence = 0.9
-
-        mock_store = MagicMock()
-        mock_store.get_pattern.return_value = stored_pattern
-
-        mock_lib = MagicMock()
-        mock_lib.publish.side_effect = RuntimeError("shared store write failed")
-
-        with (
-            patch("bluei.engine.pattern_extractor.extract", return_value="fp-1"),
-            patch(
-                "bluei.engine.pattern_store.FixPatternStore", return_value=mock_store
-            ),
-            patch(
-                "bluei.engine.lifecycle._is_pattern_sharing_enabled",
-                return_value=True,
-            ),
-            patch(
-                "bluei.engine.shared_pattern_library.SharedPatternLibrary",
-                return_value=mock_lib,
-            ),
-        ):
-            # Must not raise despite publish failure.
-            _extract_fix_pattern(
-                tmp_path,
-                make_finding(),
-                "claude",
-                store_path,
-                log,
-            )
-
-
-# ── apply_claude_fix — failure paths ─────────────────────────────────────
 
 
 class TestApplyClaudeFixFailurePaths:
@@ -916,7 +640,7 @@ def _queue_item(work_id: str = "w-x", rule: str = "xo-complexity"):
 
 
 class TestProcessRefactorQueueBranches:
-    """Cover validation-failure (914-916) and exception (924-928) branches."""
+    """Stage1: failure branches are unreachable; refusal is not fake failure."""
 
     @patch(
         "bluei.engine.lifecycle.apply_claude_fix",
@@ -924,61 +648,28 @@ class TestProcessRefactorQueueBranches:
     )
     @patch("bluei.engine.verify.run_validation")
     @patch("bluei.engine.lifecycle.RefactorQueue")
-    def test_validation_failure_marks_item_failed(
+    def test_failure_branches_unreachable_no_fake_failures(
         self, mock_rq_cls, mock_validate, mock_claude, tmp_path
     ):
-        """Lines 914-916: Claude succeeds but validation.passed=False → fail."""
+        """Validation failure (incl. empty message) and processing exceptions
+        can no longer mark items failed — Stage1 refuses before those branches
+        exist. Consolidates the three obsolete branch tests.
+        """
         mock_queue = MagicMock()
         mock_rq_cls.return_value = mock_queue
         item = _queue_item("w-vf")
         mock_queue.list_items.side_effect = [[item], []]
+        mock_queue.start_execution.side_effect = RuntimeError("db locked")
 
-        # Validation returns passed=False with a message.
         mock_result = MagicMock()
         mock_result.passed = False
         mock_result.message = "regression detected"
         mock_validate.return_value = mock_result
 
         result = process_refactor_queue(tmp_path, tmp_path, dry_run=False)
-        assert "w-vf" in result["failed"]
-        mock_queue.fail.assert_called_once_with("w-vf", "regression detected")
-
-    @patch(
-        "bluei.engine.lifecycle.apply_claude_fix",
-        return_value=(0, "fixed", "/tmp/p"),
-    )
-    @patch("bluei.engine.verify.run_validation")
-    @patch("bluei.engine.lifecycle.RefactorQueue")
-    def test_validation_failure_with_empty_message_uses_default(
-        self, mock_rq_cls, mock_validate, mock_claude, tmp_path
-    ):
-        """Lines 914-916: empty validation.message falls back to default text."""
-        mock_queue = MagicMock()
-        mock_rq_cls.return_value = mock_queue
-        item = _queue_item("w-vf2")
-        mock_queue.list_items.side_effect = [[item], []]
-
-        mock_result = MagicMock()
-        mock_result.passed = False
-        mock_result.message = ""  # Empty → default fallback.
-        mock_validate.return_value = mock_result
-
-        result = process_refactor_queue(tmp_path, tmp_path, dry_run=False)
-        assert "w-vf2" in result["failed"]
-        mock_queue.fail.assert_called_once_with("w-vf2", "validation failed")
-
-    @patch("bluei.engine.lifecycle.RefactorQueue")
-    def test_exception_during_processing_marks_failed(self, mock_rq_cls, tmp_path):
-        """Lines 924-928: unexpected exception during processing → fail + record."""
-        mock_queue = MagicMock()
-        mock_rq_cls.return_value = mock_queue
-        item = _queue_item("w-exc")
-        mock_queue.list_items.side_effect = [[item], []]
-        # start_execution raises an unhandled exception.
-        mock_queue.start_execution.side_effect = RuntimeError("db locked")
-
-        result = process_refactor_queue(tmp_path, tmp_path, dry_run=False)
-        assert "w-exc" in result["failed"]
-        mock_queue.fail.assert_called_once()
-        # Error message preserved.
-        assert "exception" in mock_queue.fail.call_args[0][1]
+        assert result["failed"] == []
+        assert "unqualified" in result["unqualified"]
+        mock_queue.fail.assert_not_called()
+        mock_queue.start_execution.assert_not_called()
+        mock_validate.assert_not_called()
+        mock_claude.assert_not_called()

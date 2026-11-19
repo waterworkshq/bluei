@@ -28,11 +28,11 @@ def test_dirty_selected_source_is_rejected_before_model(tmp_path):
 def test_selected_public_lane_rejects_oversize_diff_candidate(tmp_path):
     """The production 1 MiB diff bound trips on a real git diff, not a scope gate.
 
-    A fake backend closes the finding and swaps one tracked binary file for
-    2 MiB of stdlib randomness: scope stays inside the scoped-run baseline
-    (1 file changed, 0 loc — numstat reports "-" for binaries against the
-    5-file/200-loc defaults), so only the kernel-enforced diff-output ceiling
-    in the real selected patch path can reject it.
+    A fake backend closes the finding and rewrites one tracked TEXT file to a
+    single ~2 MiB line (no NUL bytes, no binary rows: numstat reports 1 add /
+    1 del, inside the 5-file/200-loc scope defaults), so only the
+    kernel-enforced diff-output ceiling in the real selected patch path can
+    reject it.
     """
     root = Path(__file__).resolve().parents[1]
     workspace = tmp_path / "workspace"
@@ -43,8 +43,8 @@ def test_selected_public_lane_rejects_oversize_diff_candidate(tmp_path):
     target.mkdir()
     (target / "requirements.txt").write_text("")
     (target / "app.py").write_text("def answer():\n    return missing_name\n")
-    payload = b"tracked-binary-payload-v1"
-    (target / "payload.bin").write_bytes(payload)
+    payload = b"tracked-text-payload-v1\n"
+    (target / "payload.txt").write_bytes(payload)
     for args in [["init", "-q"], ["add", "."],
                  ["-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "-qm", "fixture"]]:
         subprocess.run(["git", "-C", str(target), *args], check=True, capture_output=True)
@@ -58,10 +58,12 @@ def test_selected_public_lane_rejects_oversize_diff_candidate(tmp_path):
     calls = tmp_path / "backend-calls.jsonl"
     backend = tools / "claude"
     backend.write_text(
-        f"#!{sys.executable}\nimport os\nfrom pathlib import Path\n"
+        f"#!{sys.executable}\nfrom pathlib import Path\n"
         f"with Path({str(calls)!r}).open('a') as stream: stream.write('call\\n')\n"
         "Path('app.py').write_text('def answer():\\n    return 42\\n')\n"
-        "Path('payload.bin').write_bytes(os.urandom(2 << 20))\n"
+        # One giant NUL-free text line: numstat stays 1 add/1 del (inside the
+        # 200-loc scope cap) while the diff output itself blows past 1 MiB.
+        "Path('payload.txt').write_text('A' * (2 << 20) + '\\n')\n"
     )
     backend.chmod(0o755)
     repo.config.claude_template = f"{backend} {{prompt_file}} {{finding_id}}"
@@ -74,7 +76,7 @@ def test_selected_public_lane_rejects_oversize_diff_candidate(tmp_path):
     assert scan.returncode == 0, scan.stdout + scan.stderr
     state = manager.repos_dir / "selected/state"
     findings = [json.loads(line) for line in (state / "findings.jsonl").read_text().splitlines()]
-    finding = next(item for item in findings if item["rule"] == "ruff-F821" and item["path"] == "app.py")
+    finding = next(item for item in findings if item["rule"] == "ruff-f821" and item["path"] == "app.py")
     before = (target / "app.py").read_bytes()
     result = subprocess.run([*command, "run", "selected", "--discovery-scope", "python",
                              "--finding-id", finding["finding_id"], "--fix-engine", "claude",
@@ -91,20 +93,19 @@ def test_selected_public_lane_rejects_oversize_diff_candidate(tmp_path):
     assert metrics["fixes_verified"] == 0
     assert metrics["fixes_failed_verification"] == 1
     assert metrics["run_completed"] is False
-    # The production 1 MiB diff bound is the blocker — scope limits are not.
-    assert "selected patch could not be retained" in metrics["blocked_reasons"]
+    # The same production 1 MiB bound now rejects when freezing the candidate
+    # before validation, earlier than final retention; scope still permits it.
+    assert "fix-failed-verification:candidate-diff-unavailable" in metrics["blocked_reasons"]
     assert not any("scope" in reason for reason in metrics["blocked_reasons"])
     assert not list(state.rglob("*.patch"))
     issues = json.loads((state / "issues.json").read_text())["issues"]
     selected = next(issue for issue in issues if issue.get("finding_id") == finding["finding_id"])
     assert selected["status"] == "fix_failed_verification"
-    # The real `git diff --binary HEAD` died on the kernel file-size limit
-    # production applies via RLIMIT_FSIZE — the 1 MiB bound itself tripped.
-    assert "patch retention failed" in selected["status_detail"]
-    assert "git', 'diff', '--binary', 'HEAD'" in selected["status_detail"]
-    assert "SIGXFSZ" in selected["status_detail"]
+    # The real diff is bounded by RLIMIT_FSIZE before validation or retention.
+    # Public issue detail stays categorical rather than exposing subprocess argv.
+    assert selected["status_detail"] == "fix-failed-verification:candidate-diff-unavailable"
     assert "selected_fix_patch" not in selected
     # The oversized content never reached the main checkout or a retained artifact.
     assert (target / "app.py").read_bytes() == before
-    assert (target / "payload.bin").read_bytes() == payload
+    assert (target / "payload.txt").read_bytes() == payload
     assert not subprocess.check_output(["git", "-C", str(target), "status", "--porcelain"])

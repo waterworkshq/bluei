@@ -227,6 +227,18 @@ class TestInbox:
         assert "needs review" in out
         assert "2" in out  # count
 
+    def test_inbox_marks_legacy_recipe_as_blocked(self, state_env, capsys):
+        state_dir, _, repo = state_env
+        _write_jsonl(state_dir / "approval_records.jsonl", [
+            _approval_record(asset_ref="recipe:legacy", decision="pending_approval",
+                             timestamp="2026-06-27T10:00:00Z"),
+        ])
+        assert _learn_inbox(repo, state_dir) == 0
+        out = capsys.readouterr().out
+        assert "recipe:legacy" in out
+        assert "blocked:   legacy recipe lacks exact evidence" in out
+        assert "proposal:" not in out
+
     def test_inbox_hides_non_pending(self, state_env, capsys):
         state_dir, _, repo = state_env
         _write_jsonl(
@@ -830,8 +842,8 @@ class TestGovernanceVerbsDispatch:
             err = capsys.readouterr().err
             assert "asset_ref" in err
 
-    def test_governance_verb_appends_after_pending(self, tmp_path):
-        """AC-P2-5: pending + approve both present in the trail."""
+    def test_recipe_approval_without_artifact_leaves_trail_unchanged(self, tmp_path):
+        """A pending marker is not evidence of an exact recipe."""
         repo_name = "myrepo"
         repos_dir = tmp_path / "repos"
         state_dir = repos_dir / repo_name / "state"
@@ -847,31 +859,18 @@ class TestGovernanceVerbsDispatch:
                 ),
             ],
         )
-        # recipe: with no cached YAML → resume_pending_promotion returns
-        # NOT_ELIGIBLE but the approve record is still written.
+        before = approvals.read_bytes()
         rc = _cmd_learn(
-            [
-                "approve",
-                "recipe:test-1",
-                "--repo",
-                repo_name,
-                "--state-root",
-                str(repos_dir),
-            ]
+            ["approve", "recipe:test-1", "--repo", repo_name, "--state-root", str(repos_dir)]
         )
-        assert rc == 0
-        lines = approvals.read_text(encoding="utf-8").splitlines()
-        assert len(lines) == 2
-        first = json.loads(lines[0])
-        second = json.loads(lines[1])
-        assert first["decision"] == "pending_approval"
-        assert second["decision"] == "approve"
+        assert rc == 1
+        assert approvals.read_bytes() == before
 
 
 class TestApproveWritesCachedRecipeYaml:
-    """AC-P2-4: under gate_closed, learn approve writes the cached YAML."""
+    """Legacy cached bytes do not establish an exact approval."""
 
-    def test_approve_calls_resume_pending_promotion_for_recipe_ref(
+    def test_approve_refuses_unbound_cached_recipe(
         self, tmp_path, capsys
     ):
         repo_name = "myrepo"
@@ -931,21 +930,11 @@ class TestApproveWritesCachedRecipeYaml:
                     str(repos_dir),
                 ]
             )
-        assert rc == 0
-
-        out = capsys.readouterr().out
-        assert "resume_pending_promotion" in out
-        assert "promoted" in out
-
-        written_yaml = staged_dir / "foundry-ruff-b904.yaml"
-        assert written_yaml.exists()
-        assert "id: foundry-ruff-b904" in written_yaml.read_text(encoding="utf-8")
-
-        # An auto_promote record was appended by resume_pending_promotion.
-        lines = approvals.read_text(encoding="utf-8").splitlines()
-        assert len(lines) == 3
-        decisions = [json.loads(line)["decision"] for line in lines]
-        assert decisions == ["pending_approval", "approve", "auto_promote"]
+        assert rc == 1
+        assert "refused" not in capsys.readouterr().out
+        assert not list(staged_dir.iterdir())
+        records = [json.loads(line) for line in approvals.read_text().splitlines()]
+        assert [r["decision"] for r in records] == ["pending_approval"]
 
     def test_approve_skips_resume_for_non_recipe_ref(self, tmp_path, capsys):
         """pattern: refs only write the approve record — no resume call."""

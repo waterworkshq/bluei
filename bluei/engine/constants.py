@@ -260,7 +260,10 @@ _VALIDATION_CONFIG_CACHE: Optional[Dict[str, Any]] = None
 def load_validation_config(workspace: Optional[Path] = None) -> Dict[str, Any]:
     """Load per-repo validation check overrides from config.yaml.
 
-    Config shape (optional keys — absent keys fall back to built-in defaults):
+    Config shape (optional keys — an absent ``baseline_validation_checks``
+    key means NO baseline checks; there is no implicit sandbox fallback for
+    an ordinary/empty config. Explicit operator checks — via this key or
+    ``--baseline-checks`` — are honored verbatim):
 
         baseline_validation_checks:
           baseline-0: ["python3", "run_lint.py"]
@@ -274,8 +277,13 @@ def load_validation_config(workspace: Optional[Path] = None) -> Dict[str, Any]:
     if _VALIDATION_CONFIG_CACHE is not None:
         return _VALIDATION_CONFIG_CACHE
 
+    # A02: the built-in qa-sandbox checks (lint_check.py / test_price.py) are
+    # referenced explicitly by the sandbox flows that need them; an ordinary
+    # repo with no config gets an EMPTY check set, which the validation gate
+    # reports as passed-but-not-qualified instead of silently running sandbox
+    # scripts that do not exist there.
     result: Dict[str, Any] = {
-        "baseline_validation_checks": dict(BASELINE_VALIDATION_CHECKS),
+        "baseline_validation_checks": {},
         "rule_target_checks": dict(RULE_TARGET_CHECKS),
     }
 

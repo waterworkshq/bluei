@@ -115,7 +115,7 @@ def _first_positional(rest: list[str]) -> Optional[str]:
 
 # Options in the ``learn`` namespace that consume the following positional as
 # their value (and therefore must not be treated as positionals themselves).
-_VALUE_OPTIONS = {"--repo", "--state-root", "--worktree", "--from-finding"}
+_VALUE_OPTIONS = {"--repo", "--state-root", "--worktree", "--from-finding", "--proposal", "--evidence"}
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +197,13 @@ def _cmd_learn(rest: list[str]) -> int:
                 file=sys.stderr,
             )
             return 1
+        if asset_ref.startswith("recipe:") and subcmd in {"approve", "resume"}:
+            if state_root:
+                print("bluei: retained recipe decisions require registered state", file=sys.stderr)
+                return 1
+            return _decide_retained_recipe(
+                subcmd, asset_ref, repo, state_dir, _parse_option(sub_rest, "--proposal"),
+            )
         if subcmd == "approve":
             return _learn_approve(asset_ref, repo, state_dir, state)
         if subcmd == "reject":
@@ -208,6 +215,12 @@ def _cmd_learn(rest: list[str]) -> int:
         return _learn_retire(asset_ref, repo, state_dir, state)
 
     # bundle
+    evidence_id = _parse_option(sub_rest, "--evidence")
+    if evidence_id is not None:
+        if state_root:
+            print("bluei: retained bundles require registered state", file=sys.stderr)
+            return 1
+        return _learn_retained_bundle(evidence_id, repo, state_dir)
     pattern_id = _first_positional(sub_rest)
     if not pattern_id:
         print(
@@ -273,6 +286,11 @@ def _learn_inbox(repo: str, state_dir: Path) -> int:
         print(f"    timestamp: {ts}")
         if reason:
             print(f"    reason:    {reason}")
+        proposal = (r.get("evidence_snapshot") or {}).get("proposal_id")
+        if proposal:
+            print(f"    proposal:  {proposal}")
+        elif ref.startswith("recipe:"):
+            print("    blocked:   legacy recipe lacks exact evidence; reject and qualify a new recipe ID")
     return 0
 
 
@@ -408,34 +426,73 @@ def _write_governance_decision(
         actor="operator:cli",
         timestamp=now_iso(),
     )
-    append_jsonl(state_dir / "approval_records.jsonl", record.to_dict())
+    from bluei.engine.retained_recipe import trail_lock
+
+    with trail_lock(state_dir) as trail:
+        if decision == "pause" and asset_ref.startswith("recipe:"):
+            from bluei.engine.retained_recipe import latest
+
+            current = latest(trail, asset_ref)
+            if current.get("native_state_after") == "paused-retained-recipe":
+                print(f"Already paused: {asset_ref}.")
+                return 0
+            if current.get("native_state_after") in {"active-retained-recipe", "staged-retained-recipe"}:
+                record.native_state_before = current["native_state_after"]
+                record.native_state_after = "paused-retained-recipe"
+                record.evidence_snapshot = current.get("evidence_snapshot", {})
+        append_jsonl(trail, record.to_dict())
     print(f"Recorded '{decision}' for {asset_ref}.")
     return 0
 
 
-def _learn_approve(asset_ref: str, repo: str, state_dir: Path, state) -> int:
-    """Append an ``approve`` ApprovalRecord.
+def _decide_retained_recipe(verb, asset_ref, repo, state_dir, token):
+    import yaml
 
-    For ``recipe:`` asset_refs, additionally calls
-    :func:`resume_pending_promotion` to write a Foundry-cached YAML to the
-    staged recipe directory (ADR-0020 approval-loop closer).
-    """
-    decision, native_state_after = _VERB_TO_DECISION["approve"]
-    rc = _write_governance_decision(state_dir, asset_ref, decision, native_state_after)
-    if rc != 0:
-        return rc
+    from bluei.app.config import ConfigManager, load_global_config
+    from bluei.engine.governance import resolve_learning_mode
+    from bluei.engine.retained_recipe import (
+        append_decision, bound_artifact, digest, latest, stage_exact, stage_path, trail_lock,
+    )
 
-    if asset_ref.startswith("recipe:"):
-        from bluei.engine.recipe_engine import staged_recipe_dir
-        from bluei.engine.shared_pattern_library import resume_pending_promotion
-
-        result = resume_pending_promotion(
-            asset_ref,
-            state_dir / "approval_records.jsonl",
-            staged_recipe_dir(),
-        )
-        print(f"resume_pending_promotion: {result.value}")
+    try:
+        config = ConfigManager().load_repo_config(repo)
+        if not token or config is None or not config.id or resolve_learning_mode(load_global_config()) != "active":
+            raise ValueError("registered repository, proposal token and active learning required")
+        with trail_lock(state_dir) as trail:
+            entry = latest(trail, asset_ref)
+            proof, recipe, data = bound_artifact(entry, config.id, state_dir)
+            if token != proof["proposal_id"] or digest(config.baseline_checks) != proof["checks_sha256"]:
+                raise ValueError("proposal or configured checks changed")
+            path = stage_path(state_dir, recipe)
+            native = entry.get("native_state_after")
+            if verb == "approve" and entry.get("decision") == "pending_approval":
+                stage_exact(path, data)
+                append_decision(trail, asset_ref, "approve", "pending-recipe",
+                                "staged-retained-recipe", proof, "operator:cli")
+            elif verb == "approve" and native == "staged-retained-recipe":
+                if path.is_symlink() or path.read_bytes() != data:
+                    raise ValueError("staged recipe changed")
+            elif verb == "resume" and native in {"staged-retained-recipe", "paused-retained-recipe"}:
+                if path.is_symlink() or path.read_bytes() != data:
+                    raise ValueError("staged recipe changed")
+                append_decision(trail, asset_ref, "resume", native,
+                                "active-retained-recipe", proof, "operator:cli")
+            else:
+                raise ValueError("proposal is not pending or staged for this decision")
+    except (OSError, ValueError, AttributeError, TypeError, KeyError, yaml.YAMLError) as exc:
+        print(f"bluei: {verb} refused for {asset_ref}: {exc}", file=sys.stderr)
+        return 1
+    print(f"{'Staged' if verb == 'approve' else 'Resumed'} {asset_ref}.")
     return 0
+
+
+def _learn_approve(asset_ref: str, repo: str, state_dir: Path, state) -> int:
+    """Record an in-place approval; a recipe requires a bound artifact."""
+    if asset_ref.startswith("recipe:"):
+        print("bluei: recipe approval requires an exact retained proposal", file=sys.stderr)
+        return 1
+    decision, native_state_after = _VERB_TO_DECISION["approve"]
+    return _write_governance_decision(state_dir, asset_ref, decision, native_state_after)
 
 
 def _learn_reject(asset_ref: str, repo: str, state_dir: Path, state) -> int:
@@ -469,6 +526,31 @@ def _learn_retire(asset_ref: str, repo: str, state_dir: Path, state) -> int:
 # ---------------------------------------------------------------------------
 # bundle
 # ---------------------------------------------------------------------------
+
+
+def _learn_retained_bundle(evidence_id: str, repo: str, state_dir: Path) -> int:
+    from dataclasses import asdict
+
+    import yaml
+
+    from bluei.app.config import ConfigManager
+    from bluei.engine.bundle_loader import bundle_from_accepted
+    from bluei.engine.retained_recipe import load_accepted_evidence, stage_exact
+
+    try:
+        manager = ConfigManager()
+        config = manager.load_repo_config(repo) if repo in manager.list_repo_configs() else None
+        if config is None or not config.id or state_dir.resolve() != state_dir:
+            raise ValueError("registered repository state required")
+        evidence = load_accepted_evidence(state_dir, config.id, evidence_id)
+        bundle = bundle_from_accepted(evidence)
+        path = state_dir / "golden_bundles" / f"{bundle.id}.yaml"
+        stage_exact(path, yaml.safe_dump(asdict(bundle), sort_keys=False).encode("utf-8"))
+    except (OSError, ValueError, AttributeError, TypeError, KeyError, yaml.YAMLError) as exc:
+        print(f"bluei: retained bundle refused: {exc}", file=sys.stderr)
+        return 1
+    print(f"Bundle written: {path}")
+    return 0
 
 
 def _learn_bundle(

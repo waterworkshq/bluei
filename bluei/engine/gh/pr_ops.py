@@ -184,14 +184,16 @@ def merge_pr(
         pr_number: PR number.
         dry_run: If ``True``, simulate the merge without executing.
         cwd: Working directory for the ``gh`` subprocess.
-        safety_config: Optional safety policy dict. When provided, the merge is
-            blocked unless the safety mode is ``merge``. When omitted/empty, no
-            enforcement is applied (backward compat).
+        safety_config: Safety policy dict. A supplied policy's denial takes
+            PRECEDENCE over dry-run. On actual mutation the gate is ALWAYS
+            consulted — missing/empty/invalid policy is denied by
+            ``check_merge_allowed`` itself (fail closed), never by skipping the
+            gate here. Dry-run with no policy simulates without mutation.
 
     Returns:
         ``(success, reason)`` tuple.
     """
-    if safety_config:
+    if safety_config or not dry_run:
         allowed, reason = check_merge_allowed(safety_config)
         if not allowed:
             return False, f"blocked-by-safety-mode: {reason}"
@@ -249,9 +251,11 @@ def create_or_update_github_pr(
         dry_run: If ``True``, log actions without executing.
         log_file: Path to append log entries to.
         cwd: Working directory for the ``gh`` subprocess.
-        safety_config: Optional safety policy dict. When provided, PR creation
-            is blocked unless the safety mode allows it (``pr`` or ``merge``).
-            When omitted/empty, no enforcement is applied (backward compat).
+        safety_config: Safety policy dict. The creation gate is ALWAYS
+            consulted — missing/empty/invalid policy is denied by
+            ``check_pr_creation_allowed`` itself (fail closed), never by
+            skipping the gate here. Reusing an existing OPEN PR is a pure
+            read and may return without a policy. Dry-run needs no policy.
         repo_config: Optional repo config (dict OR ``RepoConfig`` dataclass)
             used to resolve the PR base branch (``base_branch`` /
             ``default_branch`` override). When omitted, the base falls back
@@ -297,19 +301,18 @@ def create_or_update_github_pr(
         )
         return {"number": None, "url": "", "created": True}
 
-    if safety_config:
-        allowed, reason = check_pr_creation_allowed(base_branch, safety_config)
-        if not allowed:
-            _append_text(
-                log_file,
-                f"safety-block: PR creation blocked finding_id={finding.finding_id} reason={reason}",
-            )
-            return {
-                "number": None,
-                "url": "",
-                "created": False,
-                "error": "blocked-by-safety-mode",
-            }
+    allowed, reason = check_pr_creation_allowed(base_branch, safety_config)
+    if not allowed:
+        _append_text(
+            log_file,
+            f"safety-block: PR creation blocked finding_id={finding.finding_id} reason={reason}",
+        )
+        return {
+            "number": None,
+            "url": "",
+            "created": False,
+            "error": "blocked-by-safety-mode",
+        }
 
     rc, out = _facade.run_capture(
         [

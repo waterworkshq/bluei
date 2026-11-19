@@ -286,21 +286,21 @@ def test_default_scope_status_keeps_all_commands(tmp_path, monkeypatch):
         assert key in status, key
 
 
-# ── opencode is rejected for refactor-cycle (phase hardcodes Claude) ──
+# Explicit backend context replaces the former hardcoded refactor backend.
 
 
 def test_opencode_refactor_cycle_rejected_even_with_template(monkeypatch, capsys):
+    # Historical name retained; missing context still refuses, explicit context
+    # now reaches the same configured executor as the ordinary model lane.
     with pytest.raises(SystemExit):
-        _parse(
-            [
-                "--fix-engine", "opencode",
-                "--run-phase", "refactor-cycle",
-                "--claude-cmd-template", "opencode run {prompt}",
-            ],
-            monkeypatch,
-        )
-    err = capsys.readouterr().err
-    assert "not supported for refactor-cycle" in err
+        _parse(["--fix-engine", "opencode", "--run-phase", "refactor-cycle"], monkeypatch)
+    assert "requires --claude-cmd-template" in capsys.readouterr().err
+    args = _parse(
+        ["--fix-engine", "opencode", "--run-phase", "refactor-cycle",
+         "--claude-cmd-template", "opencode run {prompt}"], monkeypatch,
+    )
+    assert args.fix_engine == "opencode"
+    assert args.claude_cmd_template == "opencode run {prompt}"
 
 
 def test_default_engine_refactor_cycle_still_accepted(monkeypatch):

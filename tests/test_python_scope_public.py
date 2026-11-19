@@ -145,7 +145,7 @@ def test_actual_public_python_discovery_preserves_repository_health(tmp_path, mo
     assert current["detector_outcomes"]["ast-python"]["status"] == "ran"
     assert current["detector_outcomes"]["ast-typescript"]["status"] == "skipped"
     findings = [json.loads(line) for line in (state / "findings.jsonl").read_text().splitlines()]
-    assert any(item["rule"] == "ruff-F821" and item["path"] == "app.py" for item in findings)
+    assert any(item["rule"] == "ruff-f821" and item["path"] == "app.py" for item in findings)
     assert all(item["path"].endswith(".py") for item in findings)
     assert run["issues_created"] == run["fix_attempts"] == 0
     issues_file = state / "issues.json"

@@ -181,7 +181,12 @@ def _autonomous_review_gate_passes(
 def _get_llm_fixable_rules() -> Dict[str, Dict[str, Any]]:
     global _LLM_FIXABLE_RULES
     if _LLM_FIXABLE_RULES is None:
-        _LLM_FIXABLE_RULES = load_llm_fixable_rules()
+        from bluei.engine.models import canonical_ruff_rule
+
+        _LLM_FIXABLE_RULES = {
+            canonical_ruff_rule(rule) or rule: meta
+            for rule, meta in load_llm_fixable_rules().items()
+        }
     return _LLM_FIXABLE_RULES
 
 

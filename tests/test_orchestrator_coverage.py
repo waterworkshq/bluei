@@ -526,9 +526,14 @@ class TestRouteFindingsWithIntent:
                 findings_file=tmp_path / "f.jsonl",
                 worktree_path=worktree,
                 log_file=tmp_path / "log.txt",
+                queue_dir=tmp_path / "refactor_queue",
             )
         assert len(result["refactor_queue"]) == 1
-        assert result["refactor_queue"][0]["reason"] == "planning"
+        # Stage 3 semantics: safety-allowed structural work is durably
+        # queued in the READY execution lane (eligibility, not approval).
+        assert result["refactor_queue"][0]["reason"] == "safety-allowed"
+        assert result["refactor_queue"][0]["lane"] == "execution"
+        assert result["refactor_queue"][0]["queued_work_id"]
 
 
 # ── Routing: choose_safe_autofix_items ──────────────────────────────────────

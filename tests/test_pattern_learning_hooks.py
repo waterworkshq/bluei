@@ -100,9 +100,11 @@ def test_apply_autofix_with_no_pattern_store_keeps_backward_compat(
     assert "pattern-extract-hook" not in log_file.read_text(encoding="utf-8")
 
 
-def test_apply_claude_fix_success_extracts_with_correct_args(
+def test_apply_claude_fix_rc0_does_not_extract_until_accepted(
     tmp_path, monkeypatch, make_finding
 ):
+    """A bare provider rc0 must NOT mine a pattern (A04) — only the
+    final-acceptance helper does, with fix_source="claude"."""
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     log_file = tmp_path / "run.log"
@@ -120,13 +122,17 @@ def test_apply_claude_fix_success_extracts_with_correct_args(
     )
     monkeypatch.setattr("bluei.engine.pattern_extractor.extract", fake_extract)
 
-    rc, _, _ = lifecycle.apply_claude_fix(
-        claude_kwargs(
-            make_finding, tmp_path, worktree, log_file, pattern_store_path=store_path
-        )
+    req = claude_kwargs(
+        make_finding, tmp_path, worktree, log_file, pattern_store_path=store_path
     )
+    rc, _, _ = lifecycle.apply_claude_fix(req)
 
     assert rc == 0
+    assert calls == []
+    assert "pattern-extract-hook" not in log_file.read_text(encoding="utf-8")
+
+    lifecycle.record_accepted_fix(req)
+
     assert len(calls) == 1
     assert calls[0][0] == worktree
     assert calls[0][1].rule == "claude-rule"
@@ -134,6 +140,39 @@ def test_apply_claude_fix_success_extracts_with_correct_args(
     assert isinstance(calls[0][3], FixPatternStore)
     assert calls[0][3].store_path == store_path
     assert calls[0][4] == log_file
+
+
+def test_record_accepted_fix_labels_custom_fix_source(
+    tmp_path, monkeypatch, make_finding
+):
+    """Deterministic wins may reuse the helper with their stage name and
+    None lesson/finding sinks for mining-only accepted learning."""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    log_file = tmp_path / "run.log"
+    store_path = tmp_path / "state" / "fix_patterns.jsonl"
+    lessons_file = tmp_path / "lessons.log"
+    calls = []
+
+    def fake_extract(worktree_path, finding, fix_source, store, log_path):
+        calls.append(fix_source)
+        return "fp-test"
+
+    monkeypatch.setattr("bluei.engine.pattern_extractor.extract", fake_extract)
+
+    req = claude_kwargs(
+        make_finding,
+        tmp_path,
+        worktree,
+        log_file,
+        pattern_store_path=store_path,
+        lessons_file=None,
+        findings_file=None,
+    )
+    lifecycle.record_accepted_fix(req, fix_source="recipe")
+
+    assert calls == ["recipe"]
+    assert not lessons_file.exists()
 
 
 def test_apply_autofix_success_extracts_with_correct_args(

@@ -33,6 +33,8 @@ def test_markdown_filename_keyed_json_is_completed_and_retained(tmp_path, monkey
 def test_npx_wrapper_uses_already_installed_local_tool_without_installing(tmp_path, monkeypatch):
     local = tmp_path / "node_modules/.bin/xo"
     _tool(local, "[]")
+    # This availability test models a clean completed run, not rc1 with no diagnostics.
+    local.write_text(local.read_text().replace("SystemExit(1)", "SystemExit(0)"))
     monkeypatch.setenv("PATH", str(tmp_path / "no-global-tools"))
     class LocalPlugin(ToolWrapperPlugin):
         id = "local-xo"

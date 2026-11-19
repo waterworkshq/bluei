@@ -28,6 +28,55 @@ _GATE_OPEN = {
 }
 
 
+def test_alternate_accepted_transform_does_not_poison_qualified_pattern(tmp_path):
+    from hashlib import sha256
+
+    from bluei.engine.jsonl import append_jsonl
+    from bluei.engine.retained_recipe import digest
+
+    library = SharedPatternLibrary(tmp_path / "shared")
+    registered = {}
+    before = "try:\n    int(value)\nexcept ValueError:\n    raise RuntimeError()\n"
+
+    def record(number, after, repo_id):
+        state = tmp_path / repo_id
+        state.mkdir(exist_ok=True)
+        registered[repo_id] = [state]
+        patch = f"local-fix-{number}.patch"
+        # This store-level test checks joins and byte integrity; the public
+        # repair test supplies and independently applies real Git patches.
+        retained = str(number).encode()
+        (state / patch).write_bytes(retained)
+        evidence = {"repo_id": repo_id, "rule": "ruff-b904", "path": "parser.py",
+                    "base": f"{number:040x}", "patch_sha256": sha256(retained).hexdigest(),
+                    "before": before, "after": after}
+        evidence_id = digest(evidence)
+        library.record_attempt(str(number), repo_id, before)
+        asset = library.observe_accepted("ruff-b904", "python", before, after, repo_id, evidence_id)
+        append_jsonl(state / "accepted_fix_evidence.jsonl", {
+            **evidence, "evidence_id": evidence_id, "patch_name": patch,
+            "shared_asset_ref": f"pattern:{asset}",
+        })
+        library.record_attempt(str(number), repo_id, before, evidence_id=evidence_id)
+        return asset
+
+    primary = before.replace("raise RuntimeError()", "raise RuntimeError() from None")
+    alternate = before.replace("except ValueError:", "except ValueError as err:").replace(
+        "raise RuntimeError()", "raise RuntimeError() from err",
+    )
+    asset = record(0, primary, "repo-0")
+    for number in range(1, 20):
+        assert record(number, primary, f"repo-{number % 4}") == asset
+    assert not library.eligible_accepted(asset, before, registered)
+    assert record(20, primary, "repo-4") == asset
+    other = record(21, alternate, "repo-4")
+    assert asset != other
+    assert library.eligible_accepted(asset, before, registered)
+    assert not library.eligible_accepted(other, before, registered)
+    library.record_attempt("rejected", "repo-4", before)
+    assert not library.eligible_accepted(asset, before, registered)
+
+
 def _mf(make_finding, **overrides):
     """Wrap conftest make_finding with shared_pattern_library-specific defaults."""
     defaults = {

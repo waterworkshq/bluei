@@ -64,7 +64,12 @@ from bluei.engine.linters import (
     discover_typescript_type_findings,
     discover_xo_linter_findings,
 )
-from bluei.engine.models import Finding, parse_iso, stable_finding_id
+from bluei.engine.models import (
+    Finding,
+    canonical_ruff_rule,
+    parse_iso,
+    stable_finding_id,
+)
 from bluei.engine.plugin_loader import run_plugin_discovery
 from bluei.engine.state import _append_text
 from bluei.engine.utils import walk_source_files
@@ -369,6 +374,33 @@ def _ast_scan_rust_files(
     )
 
 
+def _ruff_dedupe_key(finding: Finding) -> tuple:
+    """Dedupe identity: path, line, snippet, and rule — case-normalized
+    only for ruff ids via canonical_ruff_rule, verbatim for every other
+    rule so non-Ruff codes are never aliased."""
+    rule = canonical_ruff_rule(finding.rule) or finding.rule
+    return (finding.path, finding.line, rule, finding.snippet)
+
+
+def _dedupe_identical_diagnostics(
+    incoming: List[Finding], existing: List[Finding]
+) -> List[Finding]:
+    """Drop ``incoming`` findings duplicating an ``existing`` one.
+
+    One canonical finding per diagnostic: the earlier producer (native)
+    wins; the same code on the same line with a different message is a
+    distinct diagnostic and survives. Used by both discovery scopes."""
+    seen = {_ruff_dedupe_key(f) for f in existing}
+    kept: List[Finding] = []
+    for finding in incoming:
+        key = _ruff_dedupe_key(finding)
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(finding)
+    return kept
+
+
 def discover_findings(
     repo_path: Path,
     log_file: Path = DEFAULT_LOG,
@@ -442,21 +474,18 @@ def discover_findings(
             discovery_scope="python",
             config={"plugin-python": {"ruff_only": True}},
         )
-        # Preserve raw Ruff provenance and all plugin-only diagnostics; the
-        # completed core producer already covers its exact catalog codes.
+        # Preserve canonical Ruff provenance and all plugin-only diagnostics.
+        # Dedupe against the native producer's actual instances, not its
+        # catalog: a catalog rule with no native instance keeps its plugin
+        # finding, and when the native producer did not complete nothing is
+        # hidden — every plugin finding survives.
         core_ruff_ran = (
             python_outcome.get("python-linter-ruff", {}).get("status") == "ran"
         )
         if core_ruff_ran:
-            native_ruff_rules = {
-                str(entry["rule"]).casefold()
-                for entry in DETECTOR_CATALOG
-                if str(entry["rule"]).casefold().startswith("ruff-")
-            }
-            scoped_plugin_findings = [
-                f for f in plugin_findings
-                if f.rule.casefold() not in native_ruff_rules
-            ]
+            scoped_plugin_findings = _dedupe_identical_diagnostics(
+                plugin_findings, findings
+            )
         else:
             scoped_plugin_findings = plugin_findings
         dropped_core_dups = len(plugin_findings) - len(scoped_plugin_findings)
@@ -465,7 +494,7 @@ def discover_findings(
                 log_file,
                 "python-discovery: dropped "
                 f"{dropped_core_dups} plugin finding(s) duplicating native "
-                "ruff catalog rules",
+                "ruff instances (native finding kept)",
             )
         # Keep AST identity where it exists without hiding Ruff-only diagnostics.
         ast_except_locations = {
@@ -874,10 +903,29 @@ def discover_findings(
 
     plugin_findings = run_plugin_discovery(repo_path, outcomes=outcomes)
     if plugin_findings:
-        findings.extend(plugin_findings)
+        # Same canonical merge as the python scope: identical diagnostics
+        # (native ruff producer vs plugin ruff run) collapse onto the
+        # earlier producer, and the AST location guard keeps the AST
+        # broad-except identity where it exists — a plugin ruff-e722 at
+        # that location is the same bare except, while ruff-e722 elsewhere
+        # still survives.
+        deduped_plugin_findings = _dedupe_identical_diagnostics(
+            plugin_findings, findings
+        )
+        ast_except_locations = {
+            (f.path, f.line) for f in findings if f.rule == "broad-except"
+        }
+        added_plugin_findings = [
+            f for f in deduped_plugin_findings
+            if not (
+                f.rule.casefold() == "ruff-e722"
+                and (f.path, f.line) in ast_except_locations
+            )
+        ]
+        findings.extend(added_plugin_findings)
         _append_text(
             log_file,
-            f"plugin-discovery: added {len(plugin_findings)} language pack findings",
+            f"plugin-discovery: added {len(added_plugin_findings)} language pack findings",
         )
 
     return findings

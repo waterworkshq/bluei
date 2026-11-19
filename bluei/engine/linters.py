@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 _logger = logging.getLogger(__name__)
 
 from bluei.engine.constants import DETECTOR_CATALOG
-from bluei.engine.models import Finding, stable_finding_id
+from bluei.engine.models import Finding, canonical_ruff_rule, stable_finding_id
 from bluei.engine.state import _append_text
 from bluei.engine.utils import run_capture
 
@@ -436,8 +436,14 @@ def discover_python_linter_findings(
 
     for result in ruff_results:
         try:
-            code = result.get('code', '')
-            rule_name = f'ruff-{code.lower()}'
+            # Helper contract: full-rule in/out — canonical_ruff_rule
+            # ("ruff-B904") -> "ruff-b904"; anything not a well-formed
+            # ruff rule id returns None and is skipped.
+            rule_name = canonical_ruff_rule(
+                f"ruff-{str(result.get('code', ''))}"
+            )
+            if rule_name is None:
+                continue
 
             if rule_name not in rule_meta:
                 continue

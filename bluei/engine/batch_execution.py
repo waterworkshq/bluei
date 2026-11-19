@@ -90,15 +90,28 @@ def apply_batch_fixes(
     run_id: str = "",
     discovery: Optional[ModelDiscovery] = None,
     cost_tracker: Any = None,
+    baseline_results: Optional[dict] = None,
+    counters: Optional[dict] = None,
 ) -> Tuple[int, int]:
     """Apply all fixes within a shared worktree sequentially.
 
     For each finding in the batch:
     - If safe_to_autofix: try apply_autofix(), then apply_contextual_fix() fallback
-    - If LLM-fixable: try apply_claude_fix()
+    - If LLM-fixable → apply_claude_fix() (explicit claude engine only)
     - Otherwise: skip
 
     Returns (successes, failures) tally.
+
+    ``baseline_results`` carries the chosen validation-baseline records
+    (rc outcomes) for the model request — the configured checks DICT is
+    deliberately NOT forwarded: check argv/names must not leak into the
+    model prompt (credential-leak hardening, PR14); actual check
+    enforcement stays in the outer acceptance gate.
+
+    ``counters`` (internal mutable dict, optional) records ACTUAL events:
+    ``attempts`` increments per member DISPATCHED here (members after an
+    aborting exception are never counted); backend invocation counters live
+    in _apply_single_fix (``deterministic``/``model``).
     """
     from bluei.engine.lifecycle import apply_autofix
     from bluei.engine.state import _append_text
@@ -107,6 +120,8 @@ def apply_batch_fixes(
     failures = 0
 
     for finding in batch.findings:
+        if counters is not None:
+            counters["attempts"] += 1
         result = _apply_single_fix(
             finding=finding,
             worktree_path=worktree_path,
@@ -117,8 +132,10 @@ def apply_batch_fixes(
             governor_ledger_path=governor_ledger_path,
             run_id=run_id,
             discovery=discovery,
-            cost_tracker=cost_tracker,
-        )
+                cost_tracker=cost_tracker,
+                baseline_results=baseline_results,
+                counters=counters,
+            )
         batch.fix_results[finding.finding_id] = result
 
         if result.status == FixStatus.SUCCESS.value:
@@ -157,13 +174,28 @@ def _apply_single_fix(
     run_id: str = "",
     discovery: Optional[ModelDiscovery] = None,
     cost_tracker: Any = None,
+    baseline_results: Optional[dict] = None,
+    counters: Optional[dict] = None,
 ) -> FixResult:
     """Apply one fix within a shared batch worktree.
 
-    Follows the same fix strategy as the existing pr-cycle:
+    Fix strategy:
     1. If safe_to_autofix → apply_autofix, verify, fallback to contextual
-    2. If LLM-fixable → apply_claude_fix
+    2. Else if the engine is explicitly claude → apply_claude_fix
     3. Otherwise → skip
+
+    Explicit ``fix_engine=deterministic`` NEVER falls back to the model:
+    CLAUDE_REQUIRED_RULES / llm-fixable membership do not override the
+    engine selection (no hidden model fallback).
+
+    The model request gets ``baseline_checks={}`` with only the private
+    ``baseline_statuses`` rc list — configured check argv/names never enter
+    the request (credential-leak hardening, PR14); enforcement of the real
+    checks stays in the outer acceptance gate.
+
+    ``counters`` counts ACTUAL backend invocations (deterministic before
+    each autofix/contextual call, model before the model subprocess launch —
+    a cost-limit skip launches nothing and counts nothing).
     """
     from bluei.engine.lifecycle import (
         ClaudeFixRequest,
@@ -171,26 +203,29 @@ def _apply_single_fix(
         apply_claude_fix,
     )
     from bluei.engine.validation import build_target_checks
-    from bluei.engine.constants import (
-        BASELINE_VALIDATION_CHECKS,
-        CLAUDE_REQUIRED_RULES,
-        load_llm_fixable_rules,
-    )
     from bluei.engine.state import _append_text
     import subprocess
 
-    llm_rules = load_llm_fixable_rules()
-    is_llm_fixable = not finding.safe_to_autofix and finding.rule in llm_rules
-    use_claude = (
-        getattr(args, "fix_engine", "deterministic") == FixEngine.CLAUDE.value
-        or finding.rule in CLAUDE_REQUIRED_RULES
-        or is_llm_fixable
-    )
+    engine = getattr(args, "fix_engine", "deterministic")
+    # Explicit deterministic engine: no hidden model fallback.
+    use_claude = engine == FixEngine.CLAUDE.value
 
-    # FIX: Even in 'claude' mode, always try apply_autofix first for safe_to_autofix
-    # findings. apply_autofix runs ruff --fix in seconds; Claude takes ~60s/finding
-    # and cannot apply edits in non-interactive --print mode.
-    if finding.safe_to_autofix:
+    # Ordinary-lane recipe eligibility, deterministic engine only: a
+    # needs_validation recipe (e.g. ruff-b904, whose automatic tool is
+    # unsafe) is still a DETERMINISTIC fix path — the recipe engine owns
+    # eligibility by existence here and does the actual file-text selection
+    # match inside apply_autofix. safe_to_autofix is NOT globally relaxed
+    # and ruff unsafe fixes stay off; the explicit claude engine keeps its
+    # existing model path (governor/cost coverage unchanged).
+    recipe_eligible = False
+    if not finding.safe_to_autofix and not use_claude:
+        from bluei.engine.lifecycle import _get_recipe_engine
+
+        recipe_eligible = _get_recipe_engine().has_recipe(finding.rule)
+
+    if finding.safe_to_autofix or recipe_eligible:
+        if counters is not None:
+            counters["deterministic"] += 1
         applied = apply_autofix(worktree_path, finding, log_file)
         if applied:
             closed = verify_finding_closed(worktree_path, finding, log_file)
@@ -211,6 +246,8 @@ def _apply_single_fix(
         try:
             from bluei.engine.context_fix import apply_contextual_fix
 
+            if counters is not None:
+                counters["deterministic"] += 1
             _append_text(
                 log_file,
                 f"batch-fix: contextual fallback for rule={finding.rule} path={finding.path}",
@@ -263,6 +300,17 @@ def _apply_single_fix(
         )
 
     # Claude fix path
+    # The chosen validation-baseline results are mandatory for the model
+    # request — without them there is nothing truthful to seed the private
+    # baseline_statuses with; fail the member WITHOUT launching the model.
+    if not baseline_results:
+        return FixResult(
+            finding_id=finding.finding_id,
+            status=FixStatus.FAILED.value,
+            error="baseline-results-unconfigured",
+            fix_method="claude",
+        )
+
     # Pre-invocation limit guard (mirrors the pr-cycle call site): once the
     # hard limit is reached, do not launch the Claude subprocess at all.
     # Returns the same FAILED shape a claude failure produces so the batch
@@ -338,11 +386,22 @@ def _apply_single_fix(
         )
 
     try:
+        if counters is not None:
+            counters["model"] += 1
         rc, output, prompt_file = apply_claude_fix(
             ClaudeFixRequest(
                 worktree_path=worktree_path,
                 finding=finding,
-                baseline_checks=BASELINE_VALIDATION_CHECKS,
+                # No check argv/names in the request (PR14 leak hardening):
+                # empty checks + private rc statuses only; real enforcement
+                # stays with the outer acceptance gate.
+                baseline_checks={},
+                baseline_statuses=[
+                    record.get("rc") for record in baseline_results.values()
+                ],
+                allow_unchanged_baseline_failures=getattr(
+                    args, "allow_unchanged_baseline_failures", False
+                ),
                 target_checks=target_checks,
                 claude_cmd_template=resolved_tmpl,
                 max_files_changed=args.max_files_changed,
