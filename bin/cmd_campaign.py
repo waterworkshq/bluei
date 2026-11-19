@@ -39,6 +39,11 @@ def _load_campaign_check_source(config_manager, repo: str):
     a mutating run without these is refused as unqualified downstream).
     The registered ``limits`` propagate to the executor's scope caps;
     absent entries fall back to the explicit product defaults only.
+    Each configured command is preserved verbatim — malformed (plain
+    string, dict) and empty (``[]``/``None``) entries included — never
+    coerced to argv and never silently dropped: the runtime records them
+    as unavailable (``invalid-argv``) evidence instead of executing a
+    fabricated command or hiding the misconfiguration.
 
     Returns:
         Tuple (named checks dict, source repo path or None, limits dict).
@@ -49,10 +54,16 @@ def _load_campaign_check_source(config_manager, repo: str):
         repo_config = None
     if repo_config is None:
         return {}, None, {}
+    # No coercion, no filtering: list("ruff check .") would fabricate a
+    # per-character argv masking the malformed entry as shape-valid, and
+    # dropping falsy entries ([]/None/"") would hide the
+    # misconfiguration entirely. RepoConfig.validate() checks no entry
+    # shapes, so the raw values pass through and run_named_checks
+    # classifies every non-argv value (incl. [] and None) as
+    # invalid-argv unavailable evidence.
     checks = {
-        f"baseline-{index}": list(command)
+        f"baseline-{index}": command
         for index, command in enumerate(repo_config.baseline_checks or [])
-        if command
     }
     source = Path(repo_config.path) if repo_config.path else None
     return checks, source, dict(getattr(repo_config, "limits", None) or {})

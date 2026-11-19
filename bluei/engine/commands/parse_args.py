@@ -207,7 +207,7 @@ def parse_args() -> argparse.Namespace:
     # Baseline checks (per-repo validation commands, JSON list of lists)
     p.add_argument(
         "--baseline-checks",
-        default="[]",
+        default=None,
         help='JSON list of baseline check command lists, e.g. \'[["npm","test"],["npm","run","build"]]\'',
     )
 
@@ -325,6 +325,8 @@ def resolve_baseline_checks(args: argparse.Namespace) -> Dict[str, List[str]]:
     Returns:
         Dict mapping 'baseline-N' to command lists.
     """
+    if args.baseline_checks is None:
+        return load_validation_config()["baseline_validation_checks"]
     try:
         raw = json.loads(args.baseline_checks)
     except (json.JSONDecodeError, TypeError):
@@ -333,9 +335,7 @@ def resolve_baseline_checks(args: argparse.Namespace) -> Dict[str, List[str]]:
         return {"baseline-invalid": []}
     if not isinstance(raw, list):
         return {"baseline-invalid": []}
-    if raw:
-        return {f"baseline-{idx}": cmd for idx, cmd in enumerate(raw)}
-    return load_validation_config()["baseline_validation_checks"]
+    return {f"baseline-{idx}": cmd for idx, cmd in enumerate(raw)}
 
 
 def normalize_run_phase(args: argparse.Namespace) -> None:

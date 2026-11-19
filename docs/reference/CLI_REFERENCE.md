@@ -959,8 +959,9 @@ bluei run <project-name> [options]
 |------|------|---------|-------------|
 | `--dry-run` | flag | — | Preview without making changes |
 | `--fix-engine <engine>` | string | `auto` | Fix engine: `auto`, `deterministic`, `claude`, `opencode` |
+| `--deterministic-only` | flag | — | Force deterministic fixes; overrides any `--fix-engine` model selection and repo fallback configuration — the run never escalates to a model backend |
 | `--no-learning` | flag | — | Disable pattern replay and learning evidence (forced on for selected repair) |
-| `--baseline-checks <json>` | string | `[]` | JSON list of baseline check command lists; overrides the workspace `baseline_validation_checks` config. Malformed JSON or a non-list is preserved as an invalid, unavailable check (no silent fallback) |
+| `--baseline-checks <json>` | string | `[]` | JSON list of baseline check command lists; overrides the workspace `baseline_validation_checks` config and the repo's configured baseline checks for this run. The value is forwarded verbatim: malformed JSON or a non-list is preserved as an invalid, unavailable check (no silent fallback). Requires exactly one value |
 
 **Engine mapping:** `run --repo <name> --phase orchestrated --no-dry-run`.
 

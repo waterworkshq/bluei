@@ -107,22 +107,19 @@ class TestResolveBaselineChecks:
             assert resolve_baseline_checks(args) == {"baseline-invalid": []}
             mock_cfg.assert_not_called()
 
-    def test_empty_list_uses_workspace_config_default_empty(self):
-        # A02 control: explicit empty list defers to workspace config, which
-        # is {} for an ordinary repo without config.yaml (no sandbox fallback).
-        clear_validation_config_cache()
-        args = _parse(["--baseline-checks", "[]"])
-        assert resolve_baseline_checks(args) == {}
+    def test_explicit_empty_list_does_not_consult_workspace_config(self):
+        with patch("bluei.engine.commands.parse_args.load_validation_config") as workspace:
+            assert resolve_baseline_checks(_parse(["--baseline-checks", "[]"])) == {}
+            workspace.assert_not_called()
 
-    def test_empty_list_uses_explicit_workspace_config(self):
+    def test_omitted_checks_use_workspace_config(self):
         with patch(
             "bluei.engine.commands.parse_args.load_validation_config",
             return_value={
                 "baseline_validation_checks": {"cfg-0": ["make", "check"]}
             },
         ):
-            args = _parse(["--baseline-checks", "[]"])
-            assert resolve_baseline_checks(args) == {"cfg-0": ["make", "check"]}
+            assert resolve_baseline_checks(_parse([])) == {"cfg-0": ["make", "check"]}
 
     def test_mixed_entries_all_retained_and_unqualified_when_run(self, tmp_path):
         # Every entry is preserved — including None/[] — so the trust

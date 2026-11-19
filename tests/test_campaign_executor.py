@@ -1009,7 +1009,9 @@ def test_autofix_fix_runner_adapts_finding_snapshot_to_sandbox_autofix(
     assert adapted_finding.finding_id == "f-1"
     assert adapted_finding.rule == "trailing-whitespace"
     assert adapted_finding.path == "src/app.py"
-    assert log_file == tmp_path / ".bluei" / "campaign-autofix.log"
+    assert log_file.name == "campaign-autofix.log"
+    assert not log_file.is_relative_to(tmp_path)
+    assert not (tmp_path / ".bluei").exists()
 
 
 def test_autofix_fix_runner_reports_missing_snapshot_fields(tmp_path) -> None:

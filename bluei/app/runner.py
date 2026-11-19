@@ -133,6 +133,12 @@ class RunOptions:
     batch_pr_enabled: bool = False
     max_queue_items: Optional[int] = None
     approve_refactor_item: Optional[str] = None
+    # Deterministic-only: never escalate to a model backend, even when the
+    # repo config or --fix-engine would select one.
+    deterministic_only: bool = False
+    # Raw --baseline-checks JSON override; forwarded verbatim so malformed
+    # input is preserved engine-side as an unavailable check (no fallback).
+    baseline_checks: Optional[str] = None
 
 
 @dataclass
@@ -310,7 +316,10 @@ class RunEngine:
         """Build CLI arguments for the bluei engine CLI."""
         config = repo.config
         repo_name = config.name
-        backend = backend or self._resolve_backend(repo, options.fix_engine)
+        if options.deterministic_only:
+            backend = self._resolve_backend(repo, "deterministic")
+        else:
+            backend = backend or self._resolve_backend(repo, options.fix_engine)
 
         args = [
             sys.executable,
@@ -366,6 +375,10 @@ class RunEngine:
         else:
             args.append("--no-dry-run")
 
+        # Deterministic-only: disable engine-side LLM fallback as well.
+        if options.deterministic_only:
+            args.append("--deterministic-only")
+
         # Command template for LLM-based backends
         if backend["runner_engine"] == "claude" and backend.get("template"):
             args.extend(["--claude-cmd-template", str(backend["template"])])
@@ -399,8 +412,13 @@ class RunEngine:
             )
             args.extend(["--rebase-max-prs", str(rebase_max)])
 
-        # Baseline checks (per-repo validation commands)
-        if config.baseline_checks:
+        # Baseline checks (per-repo validation commands). A run-level
+        # --baseline-checks override (raw JSON) wins over repo config and is
+        # forwarded verbatim; the engine preserves malformed input as an
+        # invalid, unavailable check instead of falling back.
+        if options.baseline_checks is not None:
+            args.extend(["--baseline-checks", options.baseline_checks])
+        elif config.baseline_checks:
             args.extend(["--baseline-checks", json.dumps(config.baseline_checks)])
 
         # Selected trials neither replay nor learn patterns.
@@ -665,6 +683,8 @@ class RunEngine:
         run_id = generate_id("run")
         if options.phase == "e2e":
             options = replace(options, phase="orchestrated")
+        if options.deterministic_only:
+            options = replace(options, fix_engine="deterministic")
         if options.discovery_scope not in {"repository", "python"}:
             raise ValueError("Unknown discovery scope")
         if options.discovery_scope == "python" and options.phase not in {"issue-cycle", "orchestrated"}:

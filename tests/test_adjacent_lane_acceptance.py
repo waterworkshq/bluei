@@ -232,6 +232,119 @@ def test_rejected_candidate_rolls_back_all_touched_paths(
     assert rollback_events and rollback_events[0]["payload"]["mode"] == "source-checkpoint"
 
 
+@pytest.mark.parametrize("stage, returncode", [("pre", 0), ("pre", 1), ("post", 0), ("post", 1)])
+def test_phase_check_cannot_leave_edits_or_positive_evidence(
+    tmp_path, make_finding, monkeypatch, stage, returncode
+):
+    from bluei.campaigns.types import LearningObjective, ObjectiveTarget
+    from bluei.engine import repair_acceptance
+
+    worktree = _make_git_worktree(tmp_path)
+    store = CampaignStateManager(tmp_path / "campaigns")
+    campaign = _campaign_with_one_finding(make_finding(path="app.py").to_dict())
+    campaign.learning_objective = LearningObjective(
+        target_type=ObjectiveTarget.emergent_rule, target_ref="er-target",
+    )
+    setattr(campaign.phases[0], f"{stage}_phase_checks", [[
+        "python3", "-c",
+        f"from pathlib import Path; Path('extra.py').write_text('x = 2\\n'); raise SystemExit({returncode})",
+    ]])
+    store.save(campaign)
+    monkeypatch.setattr(repair_acceptance, "verify_fix_closed", lambda *a, **kw: SimpleNamespace(is_closed=True))
+    evidence = []
+    fixes = []
+
+    def fix_runner(**kwargs):
+        fixes.append(kwargs)
+        (worktree / "app.py").write_text("print('fixed')\n")
+        return {"status": "success"}
+
+    result = CampaignExecutor(
+        store, fix_runner=fix_runner, baseline_checks={"control": PASSING_CHECK},
+        emergent_evidence_consumer=lambda **kwargs: evidence.append(kwargs) or {},
+    ).run(campaign.campaign_id, worktree_path=worktree)
+
+    assert result["status"] == CampaignStatus.paused
+    assert result["findings_fixed"] == 0
+    assert len(fixes) == (stage == "post")
+    assert (worktree / "extra.py").read_text() == "x = 1\n"
+    assert (worktree / "app.py").read_text() == "print('broken')\n"
+    assert not evidence
+    assert not list((store.campaigns_dir / campaign.campaign_id).rglob("campaign-fix-*.patch"))
+    assert not any(e["event"] == "finding.fixed" for e in store.events(campaign.campaign_id, limit=50))
+
+
+def test_campaign_keeps_existing_bluei_files(tmp_path, make_finding, monkeypatch):
+    from bluei.engine import repair_acceptance
+
+    worktree = _make_git_worktree(tmp_path)
+    owner_file = worktree / ".bluei" / "notes.txt"
+    owner_file.parent.mkdir()
+    owner_file.write_text("owner notes\n")
+    _commit_all(worktree)
+    store = CampaignStateManager(tmp_path / "campaigns")
+    campaign = _campaign_with_one_finding(make_finding(path="app.py").to_dict())
+    store.save(campaign)
+    collision = store.campaigns_dir / campaign.campaign_id / owner_file.name
+    collision.write_text("state notes\n")
+    monkeypatch.setattr(repair_acceptance, "verify_fix_closed", lambda *a, **kw: SimpleNamespace(is_closed=True))
+
+    def fix_runner(**kwargs):
+        (worktree / "app.py").write_text("print('fixed')\n")
+        return {"status": "success"}
+
+    result = CampaignExecutor(
+        store, fix_runner=fix_runner, baseline_checks={"control": PASSING_CHECK},
+    ).run(campaign.campaign_id, worktree_path=worktree)
+    assert result["status"] == CampaignStatus.completed
+    assert owner_file.read_text() == "owner notes\n"
+    assert collision.read_text() == "state notes\n"
+    patch_path, = (collision.parent / "patches").glob("campaign-fix-*.patch")
+    assert ".bluei" not in patch_path.read_text()
+
+
+def test_phase_save_failure_rolls_back_source_and_unpublishes_patches(
+    tmp_path, make_finding, monkeypatch
+):
+    import json
+
+    from bluei.campaigns import state as campaign_state
+    from bluei.campaigns.types import PhaseStatus
+    from bluei.engine import repair_acceptance
+
+    worktree = _make_git_worktree(tmp_path)
+    store = CampaignStateManager(tmp_path / "campaigns")
+    campaign = _campaign_with_one_finding(make_finding(path="app.py").to_dict())
+    store.save(campaign)
+    write = campaign_state._atomic_json_write
+
+    def fail_acceptance(path, data):
+        if path.name == "campaign.json" and data["phases"][0]["status"] == PhaseStatus.completed:
+            raise OSError("phase save refused")
+        write(path, data)
+
+    def fix_runner(**kwargs):
+        (worktree / "app.py").write_text("print('fixed')\n")
+        return {"status": "success"}
+
+    monkeypatch.setattr(campaign_state, "_atomic_json_write", fail_acceptance)
+    monkeypatch.setattr(
+        repair_acceptance, "verify_fix_closed", lambda *a, **kw: SimpleNamespace(is_closed=True),
+    )
+    with pytest.raises(OSError, match="phase save refused"):
+        CampaignExecutor(store, fix_runner=fix_runner, baseline_checks={"control": PASSING_CHECK}).run(
+            campaign.campaign_id, worktree_path=worktree,
+        )
+
+    assert (worktree / "app.py").read_text() == "print('broken')\n"
+    assert store.load(campaign.campaign_id).findings_fixed == 0
+    state_dir = store.campaigns_dir / campaign.campaign_id
+    phase_copy = json.loads((state_dir / "phases" / f"{campaign.phases[0].phase_id}.json").read_text())
+    assert phase_copy["status"] != PhaseStatus.completed
+    assert not list(state_dir.rglob("campaign-fix-*.patch"))
+    assert not any(e["event"] == "finding.fixed" for e in store.events(campaign.campaign_id, limit=50))
+
+
 def test_unretainable_patch_is_not_counted(tmp_path, make_finding, monkeypatch):
     from bluei.campaigns import executor as executor_module
     from bluei.engine import repair_acceptance

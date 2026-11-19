@@ -307,6 +307,13 @@ def _cmd_run(name: str, passthrough: list[str]):
         passthrough, "--no-dry-run"
     )
     fix_engine = _parse_option(passthrough, "--fix-engine")
+    deterministic_only = _has_flag(passthrough, "--deterministic-only")
+    if deterministic_only:
+        # The operator asked for deterministic fixes: force the deterministic
+        # engine and never escalate to a model backend, regardless of
+        # --fix-engine or repo fallback configuration.
+        fix_engine = "deterministic"
+    baseline_checks = _parse_option(passthrough, "--baseline-checks")
     discovery_scope = _parse_option(passthrough, "--discovery-scope") or "repository"
     finding_id = _parse_option(passthrough, "--finding-id")
     approve_refactor_item = _parse_option(passthrough, "--approve-refactor-item")
@@ -324,7 +331,7 @@ def _cmd_run(name: str, passthrough: list[str]):
     if approve_refactor_item is not None and phase != "refactor-cycle":
         print("bluei: --approve-refactor-item requires refactor-cycle", file=sys.stderr)
         return 2
-    for flag in ("--discovery-scope", "--finding-id", "--approve-refactor-item", "--max-queue-items"):
+    for flag in ("--discovery-scope", "--finding-id", "--approve-refactor-item", "--max-queue-items", "--baseline-checks"):
         if flag in passthrough and (_parse_option(passthrough, flag) is None
                                     or _parse_option(passthrough, flag).startswith("--")
                                     or not _parse_option(passthrough, flag).strip()
@@ -332,8 +339,8 @@ def _cmd_run(name: str, passthrough: list[str]):
             print(f"bluei: {flag} requires exactly one value", file=sys.stderr)
             return 2
     if discovery_scope != "repository" or finding_id is not None:
-        value_flags = {"--phase", "--fix-engine", "--discovery-scope", "--finding-id"}
-        switches = {"--dry-run", "--no-dry-run", "--no-learning"}
+        value_flags = {"--phase", "--fix-engine", "--discovery-scope", "--finding-id", "--baseline-checks"}
+        switches = {"--dry-run", "--no-dry-run", "--no-learning", "--deterministic-only"}
         index = 0
         while index < len(passthrough):
             flag = passthrough[index]
@@ -369,7 +376,9 @@ def _cmd_run(name: str, passthrough: list[str]):
                              batch_pr_enabled=_has_flag(passthrough, "--batch-pr-enabled")
                              and not _has_flag(passthrough, "--no-batch-pr"),
                              max_queue_items=max_queue_items,
-                             approve_refactor_item=approve_refactor_item)
+                             approve_refactor_item=approve_refactor_item,
+                             deterministic_only=deterministic_only,
+                             baseline_checks=baseline_checks)
         )
     except ValueError as exc:
         print(f"bluei: {exc}", file=sys.stderr)

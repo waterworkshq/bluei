@@ -773,3 +773,60 @@ def test_bluei_campaign_pause_resume_and_abort(tmp_path) -> None:
     ]
     assert events[-3]["payload"]["reason"] == "operator check"
     assert events[-1]["payload"]["reason"] == "superseded"
+
+
+def test_campaign_run_baseline_malformed_commands_preserved_as_unavailable(tmp_path) -> None:
+    """Malformed configured baseline commands are preserved verbatim.
+
+    A plain string (or any non-argv value, including empty ``[]`` and
+    ``None`` entries) must never be coerced into an argv list —
+    ``list("ruff check .")`` would fabricate a per-character command —
+    and must never be silently dropped, which would hide the
+    misconfiguration. RepoConfig.validate() checks no entry shapes, so
+    these load from real config and must surface at runtime as
+    unavailable (``invalid-argv``) evidence, while well-formed commands
+    keep their executable-evidence semantics.
+    """
+    from types import SimpleNamespace
+
+    from bin.cmd_campaign import _load_campaign_check_source
+    from bluei.engine.validation import RC_UNAVAILABLE, run_named_checks
+
+    registered = SimpleNamespace(
+        baseline_checks=[
+            "ruff check .",
+            ["git", "diff", "--check", "HEAD", "--"],
+            {"tool": "pytest"},
+            [],
+            None,
+        ],
+        path=str(tmp_path),
+        limits=None,
+    )
+    config_manager = SimpleNamespace(load_repo_config=lambda repo: registered)
+
+    checks, source, limits = _load_campaign_check_source(config_manager, "demo")
+
+    assert checks == {
+        "baseline-0": "ruff check .",
+        "baseline-1": ["git", "diff", "--check", "HEAD", "--"],
+        "baseline-2": {"tool": "pytest"},
+        "baseline-3": [],
+        "baseline-4": None,
+    }
+    assert source == Path(str(tmp_path))
+    assert limits == {}
+
+    observed = run_named_checks(
+        repo_path=tmp_path,
+        checks=checks,
+        log_file=tmp_path / "campaign-validation.log",
+        phase="test-malformed",
+    )
+    for name in ("baseline-0", "baseline-2", "baseline-3", "baseline-4"):
+        assert observed[name]["available"] is False
+        assert observed[name]["unavailable_reason"] == "invalid-argv"
+        assert observed[name]["rc"] == RC_UNAVAILABLE
+    # The well-formed command stays executable evidence; tmp_path is not a
+    # git repo so its real rc is non-zero, but it executed (available).
+    assert observed["baseline-1"]["available"] is True
