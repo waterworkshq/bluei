@@ -5,6 +5,7 @@ Three fix strategies are tried in cascade order: recipe → cascade → LLM.
 Safety gates block destructive operations; failed validations auto-rollback.
 """
 
+import ast
 import logging
 import os
 import re
@@ -18,7 +19,7 @@ if TYPE_CHECKING:
     from bluei.engine.pattern_store import FixPatternStore
 
 from bluei.engine.jsonl import append_jsonl
-from bluei.engine.models import Finding, now_iso
+from bluei.engine.models import Finding, canonical_ruff_rule, now_iso
 from bluei.engine.mnemo_client import MnemoClient
 from bluei.engine.reforge import (
     RefactorClass,
@@ -697,6 +698,35 @@ def _transactional_autofix(func):
     return wrapped
 
 
+def _chain_aliased_b904(source: bytes, line: int) -> tuple[bool, bytes | None]:
+    """Return whether the aliased path owns this finding and its optional edit."""
+    try:
+        tree = ast.parse(source.decode("utf-8"))
+    except (SyntaxError, UnicodeError):
+        return False, None
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    raises = [node for node in parents if isinstance(node, ast.Raise) and node.lineno == line]
+    if len(raises) != 1:
+        return bool(raises), None
+    target = raises[0]
+    handler = parents[target]
+    while handler in parents and not isinstance(handler, ast.ExceptHandler):
+        handler = parents[handler]
+    if not isinstance(handler, ast.ExceptHandler) or handler.name is None:
+        return False, None
+    # ponytail: support the first direct, single-line raise only. Later
+    # statements or assignment expressions require alias data-flow analysis.
+    if (not isinstance(parents[handler], ast.Try) or handler.body[0] is not target
+            or target.exc is None or target.cause is not None or target.end_lineno != line
+            or any(isinstance(node, ast.NamedExpr) for node in ast.walk(target.exc))):
+        return True, None
+    lines = source.splitlines(keepends=True)
+    offset = target.end_col_offset  # AST columns are UTF-8 byte offsets.
+    original = lines[line - 1]
+    lines[line - 1] = original[:offset] + f" from {handler.name}".encode("utf-8") + original[offset:]
+    return True, b"".join(lines)
+
+
 @_transactional_autofix
 def apply_autofix(
     worktree_path: Path,
@@ -761,6 +791,14 @@ def apply_autofix(
         from bluei.engine.retained_recipe import select_active_recipe
 
         recipe = select_active_recipe(*retained_state, finding, file_text)
+    if recipe is None and canonical_ruff_rule(finding.rule) == "ruff-b904" and file_path.is_file():
+        owns_finding, chained = _chain_aliased_b904(file_path.read_bytes(), finding.line)
+        if owns_finding:
+            if chained is None:
+                return False
+            file_path.write_bytes(chained)
+            _append_text(log_file, f"autofix: chained existing exception alias finding_id={finding.finding_id}")
+            return _tier_validate(FixTier.T2_VALIDATED, worktree_path, finding, log_file)
     if recipe is None:
         recipe = _get_recipe_engine().match(finding.rule, "python", file_text=file_text)
     if recipe:
